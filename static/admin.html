@@ -1,0 +1,1377 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LINE Bot 管理介面</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "Microsoft JhengHei", "PingFang TC", sans-serif;
+      background: #f0f2f5;
+      color: #2c2c2c;
+      min-height: 100vh;
+    }
+
+    /* ── 頂部導覽 ── */
+    .topbar {
+      background: linear-gradient(135deg, #1a73e8, #0d47a1);
+      color: white;
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .topbar-title { font-size: 1.05rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .topbar-clock { font-size: 0.85rem; opacity: 0.85; font-variant-numeric: tabular-nums; }
+    .topbar-url {
+      font-size: 0.78rem; opacity: 0.9;
+      background: rgba(255,255,255,0.15);
+      border-radius: 6px; padding: 4px 10px;
+      display: flex; align-items: center; gap: 6px;
+      max-width: 340px; overflow: hidden;
+    }
+    .topbar-url a { color: #fff; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .topbar-url a:hover { text-decoration: underline; }
+    .copy-btn {
+      background: none; border: none; color: #fff; cursor: pointer;
+      font-size: 0.85rem; padding: 0; opacity: 0.8; flex-shrink: 0;
+    }
+    .copy-btn:hover { opacity: 1; }
+
+    /* ── 版面 ── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+
+    /* ── 卡片 ── */
+    .card {
+      background: white;
+      border-radius: 14px;
+      padding: 22px 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+    }
+    .card-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #999;
+      margin-bottom: 18px;
+    }
+
+    /* ── Bot 控制 ── */
+    .bot-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .pulse-ring {
+      position: relative;
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
+    .pulse-ring::before {
+      content: '';
+      position: absolute;
+      inset: -4px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      animation: none;
+    }
+    .dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #ccc;
+      transition: background 0.3s;
+    }
+    .dot.on  { background: #34a853; box-shadow: 0 0 0 4px rgba(52,168,83,0.2); animation: pulseglow 2s infinite; }
+    .dot.off { background: #ea4335; }
+    @keyframes pulseglow {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(52,168,83,0.2); }
+      50%       { box-shadow: 0 0 0 8px rgba(52,168,83,0.05); }
+    }
+
+    .bot-label {
+      font-size: 1.15rem;
+      font-weight: 600;
+      flex: 1;
+    }
+    .bot-label small { font-size: 0.78rem; font-weight: 400; color: #888; margin-left: 8px; }
+
+    .btn {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 26px;
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+    .btn-start { background: #e6f4ea; color: #1e8e3e; }
+    .btn-start:hover:not(:disabled) { background: #ceead6; }
+    .btn-stop  { background: #fce8e6; color: #c5221f; }
+    .btn-stop:hover:not(:disabled)  { background: #f5c6c5; }
+
+    /* ── 報表工具列 ── */
+    .report-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn-refresh {
+      border: none;
+      background: #e8f0fe;
+      color: #1a73e8;
+      border-radius: 8px;
+      padding: 7px 16px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-refresh:hover { background: #d2e3fc; }
+
+    .countdown-badge {
+      font-size: 0.75rem;
+      color: #aaa;
+      background: #f5f5f5;
+      border-radius: 20px;
+      padding: 4px 10px;
+    }
+
+    /* ── 報表時間戳 ── */
+    .report-ts {
+      font-size: 0.75rem;
+      color: #bbb;
+      margin-bottom: 14px;
+    }
+
+    /* ── 雙欄報表 ── */
+    .report-columns {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+    .report-col {
+      flex: 1;
+      min-width: 0;
+    }
+    .report-col-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      padding: 8px 14px;
+      border-radius: 10px 10px 0 0;
+    }
+    .report-col-done    .report-col-title { background: #e6f4ea; color: #1e8e3e; border: 1px solid #c8e6c9; border-bottom: none; }
+    .report-col-pending .report-col-title { background: #fce8e6; color: #c5221f; border: 1px solid #ffcdd2; border-bottom: none; }
+
+    .report-col-box {
+      font-family: "Courier New", "Consolas", "Microsoft JhengHei", monospace;
+      font-size: 0.84rem;
+      line-height: 1.75;
+      white-space: pre-wrap;
+      border-radius: 0 0 10px 10px;
+      padding: 14px 16px;
+      min-height: 100px;
+      max-height: 460px;
+      overflow-y: auto;
+      color: #333;
+    }
+    .report-col-done    .report-col-box { background: #fafffe; border: 1px solid #c8e6c9; }
+    .report-col-pending .report-col-box { background: #fffafa; border: 1px solid #ffcdd2; }
+
+    /* 捲軸美化 */
+    .report-col-box::-webkit-scrollbar { width: 5px; }
+    .report-col-box::-webkit-scrollbar-track { background: transparent; }
+    .report-col-box::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+
+    /* ── 指令說明 ── */
+    .report-commands {
+      margin-top: 12px;
+      font-size: 0.76rem;
+      color: #aaa;
+      background: #f7f7f7;
+      border-radius: 8px;
+      padding: 8px 14px;
+      line-height: 2;
+    }
+
+    /* ── 載入指示器 ── */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid #ddd;
+      border-top-color: #1a73e8;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── 客戶標籤管理 ── */
+    .cust-search-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .cust-search-row input {
+      flex: 1;
+      min-width: 160px;
+      border: 1.5px solid #ddd;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .cust-search-row input:focus { border-color: #1a73e8; }
+    .btn-search {
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 18px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-search:hover { background: #1558b8; }
+
+    .cust-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .cust-table th {
+      text-align: left;
+      padding: 7px 10px;
+      background: #f5f5f5;
+      color: #777;
+      font-weight: 700;
+      font-size: 0.75rem;
+      letter-spacing: 0.4px;
+      border-bottom: 1.5px solid #eee;
+    }
+    .cust-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+    .cust-table tr:last-child td { border-bottom: none; }
+    .cust-table tr:hover td { background: #fafafa; }
+
+    .label-input {
+      border: 1.5px solid #ddd;
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 0.85rem;
+      width: 130px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .label-input:focus { border-color: #1a73e8; }
+
+    .btn-save-label {
+      background: #e6f4ea;
+      color: #1e8e3e;
+      border: none;
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-left: 6px;
+      transition: background 0.15s;
+    }
+    .btn-save-label:hover { background: #ceead6; }
+    .btn-save-label.saved { background: #ceead6; color: #155724; }
+
+    .cust-hint {
+      font-size: 0.75rem;
+      color: #bbb;
+      margin-top: 10px;
+    }
+    .cust-name-cell { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cust-phone-cell { color: #888; font-size: 0.8rem; }
+    .cust-uid-cell { color: #ccc; font-size: 0.72rem; font-family: monospace; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── 庫存情況表 ── */
+    .inv-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .inv-table th {
+      background: #f8f9fa;
+      color: #555;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 2px solid #eee;
+      white-space: nowrap;
+    }
+    .inv-table td {
+      padding: 7px 10px;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+    .inv-table tr:last-child td { border-bottom: none; }
+    .inv-table tr:hover td { background: #fafbff; }
+    .inv-table tr.inv-row-warn td { background: #fff8f0; }
+    .inv-table tr.inv-row-warn:hover td { background: #fff0e0; }
+    .inv-badge {
+      display: inline-block;
+      border-radius: 12px;
+      padding: 2px 9px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .inv-badge-ok  { background: #e8f5e9; color: #2e7d32; }
+    .inv-badge-no  { background: #fce8e6; color: #c5221f; }
+    .inv-qty       { font-weight: 700; color: #1a73e8; }
+    .inv-code      { font-family: monospace; font-size: 0.88rem; font-weight: 700; color: #333; }
+    .inv-name      { color: #555; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── 待審核品項表 ── */
+    .np-table { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+    .np-table th {
+      background: #f3f6ff; color: #1a73e8; font-weight: 700;
+      padding: 8px 10px; text-align: left; border-bottom: 2px solid #d0d8f5;
+      white-space: nowrap;
+    }
+    .np-table td {
+      padding: 8px 10px; border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+    .np-table tr:last-child td { border-bottom: none; }
+    .np-table tr:hover td { background: #f8f9ff; }
+    .np-code { font-family: monospace; font-weight: 700; color: #333; }
+    .np-badge {
+      display: inline-block; border-radius: 10px;
+      padding: 1px 8px; font-size: 0.72rem; font-weight: 700;
+    }
+    .np-badge-class { background: #e8f0fe; color: #1a73e8; }
+    .np-badge-empty { background: #f5f5f5; color: #999; }
+    .np-btn-confirm {
+      background: #1a73e8; color: #fff; border: none;
+      border-radius: 6px; padding: 4px 12px; font-size: 0.8rem;
+      cursor: pointer; white-space: nowrap;
+    }
+    .np-btn-confirm:hover { background: #1558c0; }
+    .np-btn-del {
+      background: none; color: #c5221f; border: 1px solid #c5221f;
+      border-radius: 6px; padding: 3px 10px; font-size: 0.8rem;
+      cursor: pointer; margin-left: 6px; white-space: nowrap;
+    }
+    .np-btn-del:hover { background: #fce8e6; }
+    .np-empty { color: #bbb; font-size: 0.85rem; text-align: center; padding: 24px 0; }
+    .np-badge-cnt {
+      display: inline-block; background: #e53935; color: #fff;
+      border-radius: 10px; padding: 1px 7px; font-size: 0.72rem;
+      font-weight: 700; margin-left: 6px; vertical-align: middle;
+    }
+
+    /* ── 響應式 ── */
+    @media (max-width: 640px) {
+      .report-columns { flex-direction: column; }
+      .btn { padding: 9px 18px; font-size: 0.85rem; }
+      .card { padding: 18px 16px; }
+      .cust-uid-cell { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-title">🐂 小蠻牛 LINE Bot 管理介面</div>
+  <div class="topbar-url" id="ngrok-bar" style="display:flex">
+    🌐 <a id="ngrok-link" href="https://xmnline.duckdns.org/admin" target="_blank">xmnline.duckdns.org</a>
+    <button class="copy-btn" onclick="copyNgrok()" title="複製 Webhook URL">📋</button>
+  </div>
+  <div class="topbar-clock" id="clock">--:--:--</div>
+</div>
+
+<div class="page">
+
+  <!-- ① Bot 控制 -->
+  <div class="card">
+    <div class="card-label">機器人控制</div>
+    <div class="bot-row">
+      <div class="dot" id="bot-dot"></div>
+      <div class="bot-label" id="bot-label">
+        載入中... <small id="bot-sub"></small>
+      </div>
+      <button class="btn btn-start" id="btn-on"  onclick="setBotState(true)"  style="display:none">▶ 啟動機器人</button>
+      <button class="btn btn-stop"  id="btn-off" onclick="setBotState(false)" style="display:none">⏹ 關閉機器人</button>
+      <button class="btn" onclick="restartServer()" style="margin-left:12px;background:#f57c00;color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.88rem;">🔄 重啟 Server</button>
+    </div>
+  </div>
+
+  <!-- ②-b 待審核新品項 -->
+  <div class="card" id="np-card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">
+        🆕 待審核新品項
+        <span id="np-count-badge" class="np-badge-cnt" style="display:none">0</span>
+      </div>
+      <button class="btn-refresh" onclick="loadNewProducts()">🔄 重新整理</button>
+    </div>
+    <div id="np-table-wrap" style="margin-top:14px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
+  <!-- ③ 處理記錄（左右雙欄） -->
+  <div class="card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">處理記錄（近 3 天）</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="countdown-badge" id="countdown-badge">--</span>
+        <button class="btn-refresh" onclick="refreshAll()">🔄 立即更新</button>
+      </div>
+    </div>
+
+    <div class="report-ts" id="report-ts"></div>
+
+    <div class="report-columns">
+      <!-- 左：已處理 -->
+      <div class="report-col report-col-done">
+        <div class="report-col-title">✅ 已處理</div>
+        <div class="report-col-box" id="report-done">載入中...</div>
+      </div>
+      <!-- 右：未處理 -->
+      <div class="report-col report-col-pending">
+        <div class="report-col-title">⏳ 未處理</div>
+        <div class="report-col-box" id="report-pending">載入中...</div>
+      </div>
+    </div>
+
+    <div class="report-commands" id="report-commands"></div>
+  </div>
+
+  <!-- ── 到店提醒 ── -->
+  <div class="section">
+    <div class="section-title">📅 預計到店客人</div>
+    <div id="visit-list-inline" style="min-height:40px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
+  <!-- ④ 合併客戶 -->
+  <div class="card">
+    <div class="card-label">合併客戶（同一人有兩筆記錄時使用）</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+
+      <!-- 保留那筆 -->
+      <div style="flex:1;min-width:220px">
+        <div style="font-size:0.78rem;font-weight:700;color:#1a73e8;margin-bottom:8px">① 保留（通常有 LINE ID）</div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input type="text" id="merge-keep-q" placeholder="搜尋姓名、暱稱…"
+            style="flex:1;border:1.5px solid #ddd;border-radius:8px;padding:7px 10px;font-size:0.85rem;outline:none"
+            onkeydown="if(event.key==='Enter')mergeSearch('keep')">
+          <button class="btn-search" style="padding:7px 12px" onclick="mergeSearch('keep')">🔍</button>
+        </div>
+        <div id="merge-keep-result" style="font-size:0.83rem;color:#aaa">（搜尋後點選）</div>
+        <div id="merge-keep-selected" style="margin-top:8px;padding:10px 12px;background:#e8f0fe;border-radius:8px;font-size:0.83rem;display:none"></div>
+      </div>
+
+      <!-- 箭頭 -->
+      <div style="align-self:center;font-size:1.4rem;color:#999;padding-top:32px">←</div>
+
+      <!-- 被合併那筆 -->
+      <div style="flex:1;min-width:220px">
+        <div style="font-size:0.78rem;font-weight:700;color:#f57c00;margin-bottom:8px">② 移除（通常有電話/Ecount，無 LINE ID）</div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input type="text" id="merge-remove-q" placeholder="搜尋姓名、電話…"
+            style="flex:1;border:1.5px solid #ddd;border-radius:8px;padding:7px 10px;font-size:0.85rem;outline:none"
+            onkeydown="if(event.key==='Enter')mergeSearch('remove')">
+          <button class="btn-search" style="padding:7px 12px;background:#f57c00" onclick="mergeSearch('remove')">🔍</button>
+        </div>
+        <div id="merge-remove-result" style="font-size:0.83rem;color:#aaa">（搜尋後點選）</div>
+        <div id="merge-remove-selected" style="margin-top:8px;padding:10px 12px;background:#fff3e0;border-radius:8px;font-size:0.83rem;display:none"></div>
+      </div>
+    </div>
+
+    <div style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button id="btn-merge" class="btn" onclick="doMerge()"
+        style="background:#c62828;color:#fff;padding:9px 24px;opacity:0.4;cursor:default" disabled>
+        🔀 執行合併（② 的資料補入 ①，刪除 ②）
+      </button>
+      <span id="merge-status" style="font-size:0.83rem;color:#888"></span>
+    </div>
+    <div style="margin-top:8px;font-size:0.74rem;color:#bbb">
+      ※ 合併只補入空欄位（① 已有值的不會被蓋掉）。② 記錄合併後會被刪除。
+    </div>
+  </div>
+
+  <!-- ⑤ 客戶標籤管理 -->
+  <div class="card">
+    <div class="card-label">客戶標籤管理</div>
+
+    <!-- 分類標籤設定 -->
+    <div id="tags-mgmt-bar" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px;padding:10px 12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0">
+      <span style="font-size:0.82rem;color:#555;font-weight:600;margin-right:4px">分類標籤：</span>
+      <span id="tags-chips"></span>
+      <input type="text" id="new-tag-input" placeholder="輸入新標籤名稱"
+        style="border:1px solid #ccc;border-radius:4px;padding:3px 8px;font-size:0.82rem;width:120px;outline:none"
+        onkeydown="if(event.key==='Enter')addTagConfig()">
+      <button onclick="addTagConfig()"
+        style="background:#1a73e8;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:0.82rem;cursor:pointer">+ 新增</button>
+      <span style="font-size:0.75rem;color:#aaa;margin-left:4px">（點 ✕ 刪除標籤）</span>
+    </div>
+
+    <div class="cust-search-row">
+      <input type="text" id="cust-search-input" placeholder="搜尋姓名、電話、LINE 暱稱…" onkeydown="if(event.key==='Enter')searchCustomers()">
+      <button class="btn-search" onclick="searchCustomers()">🔍 搜尋</button>
+      <button class="btn-search" style="background:#6c757d" onclick="loadRecentCustomers()">最近 50 筆</button>
+    </div>
+    <div id="cust-table-wrap">
+      <div style="color:#bbb;font-size:0.85rem">輸入關鍵字搜尋，或點「最近 50 筆」顯示清單</div>
+    </div>
+    <div class="cust-hint">※ 標籤優先顯示於待處理清單，蓋過 LINE 暱稱。留空表示使用 LINE 暱稱。</div>
+  </div>
+
+
+  <!-- 庫存情況表 -->
+  <div class="card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">📦 庫存情況表（有庫存品項）</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span id="inv-updated-at" style="font-size:0.75rem;color:#bbb"></span>
+        <span id="inv-stats" style="font-size:0.78rem;color:#888"></span>
+        <button class="btn-refresh" onclick="refreshInventoryCheck()">🔄 立即更新</button>
+      </div>
+    </div>
+    <div id="inv-table-wrap" style="margin-top:12px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
+</div><!-- /page -->
+
+<script>
+  // ── 時鐘 ─────────────────────────────────────────
+  function updateClock() {
+    const now = new Date();
+    const pad = n => String(n).padStart(2,'0');
+    document.getElementById('clock').textContent =
+      `${pad(now.getMonth()+1)}/${pad(now.getDate())} ` +
+      `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ── Bot 狀態 + API 狀態 ──────────────────────────
+  async function loadStatus() {
+    try {
+      const r = await fetch('/admin/api-status');
+      const d = await r.json();
+
+      const on = d.bot_active;
+      const dot = document.getElementById('bot-dot');
+      dot.className = 'dot ' + (on ? 'on' : 'off');
+      document.getElementById('bot-label').innerHTML =
+        (on ? '機器人運作中' : '機器人已關閉') +
+        `<small id="bot-sub">${on ? '正在接收並處理訊息' : '訊息不會被處理'}</small>`;
+      document.getElementById('btn-on').style.display  = on ? 'none' : '';
+      document.getElementById('btn-off').style.display = on ? '' : 'none';
+
+      // ── ngrok topbar 更新 ──
+      const ng = d.ngrok || {};
+      if (ng.ok && ng.url) {
+        _ngrokUrl = ng.url;
+        const bar  = document.getElementById('ngrok-bar');
+        const link = document.getElementById('ngrok-link');
+        link.href        = ng.url + '/admin';
+        link.textContent = ng.url;
+        bar.style.display = 'flex';
+      }
+    } catch(e) {
+      console.error('loadStatus error:', e);
+    }
+  }
+
+  // ── 報表（解析成左右兩欄） ───────────────────────
+  async function loadReport() {
+    const elDone     = document.getElementById('report-done');
+    const elPending  = document.getElementById('report-pending');
+    const elCommands = document.getElementById('report-commands');
+    const elTs       = document.getElementById('report-ts');
+    try {
+      const r = await fetch('/admin/full-report?days=3');
+      const d = await r.json();
+      const lines = d.report.split('\n');
+
+      let ts = '';
+      const resolvedLines = [];
+      const pendingLines  = [];
+      const commandLines  = [];
+      let section = 'header';
+
+      for (const line of lines) {
+        // 第一個非空行是時間戳
+        if (!ts && line.trim()) { ts = line.trim(); continue; }
+
+        if (line.startsWith('✅ 已處理'))             { section = 'resolved'; continue; }
+        if (line.startsWith('⏳ 未處理'))             { section = 'pending';  continue; }
+        if (line.startsWith('✅ 目前無待處理項目'))    { pendingLines.push(line); continue; }
+        if (line.startsWith('———'))                   { section = 'commands'; continue; }
+
+        if      (section === 'resolved') resolvedLines.push(line);
+        else if (section === 'pending')  pendingLines.push(line);
+        else if (section === 'commands') commandLines.push(line);
+      }
+
+      elTs.textContent       = ts;
+      elDone.textContent     = resolvedLines.join('\n').trim() || '（近 3 天內無已處理記錄）';
+      elPending.textContent  = pendingLines.join('\n').trim()  || '目前無待處理項目 ✓';
+      elCommands.textContent = commandLines.join('\n').trim();
+
+    } catch(e) {
+      elDone.textContent    = '載入失敗，請重試';
+      elPending.textContent = '載入失敗，請重試';
+    }
+  }
+
+  // ── 重啟 Server ──────────────────────────────────
+  async function restartServer() {
+    if (!confirm('確定要重啟 Server？重啟期間約 3 秒無法服務。')) return;
+    try {
+      await fetch('/admin/restart', { method: 'POST' });
+      const btn = event.target;
+      btn.textContent = '重啟中...';
+      btn.disabled = true;
+      setTimeout(() => { location.reload(); }, 4000);
+    } catch(e) {
+      alert('重啟指令已送出，頁面將自動重新整理');
+      setTimeout(() => { location.reload(); }, 4000);
+    }
+  }
+
+  // ── Bot 開關 ─────────────────────────────────────
+  async function setBotState(on) {
+    const btnOn  = document.getElementById('btn-on');
+    const btnOff = document.getElementById('btn-off');
+    btnOn.disabled = btnOff.disabled = true;
+    try {
+      await fetch('/admin/bot/' + (on ? 'on' : 'off'), { method: 'POST' });
+      await loadStatus();
+    } finally {
+      btnOn.disabled = btnOff.disabled = false;
+    }
+  }
+
+  // ── 自動更新倒數 ──────────────────────────────────
+  let _timer   = null;
+  let _seconds = 30;
+
+  function startCountdown() {
+    clearInterval(_timer);
+    _seconds = 30;
+    updateBadge();
+    _timer = setInterval(() => {
+      _seconds--;
+      updateBadge();
+      if (_seconds <= 0) refreshAll();
+    }, 1000);
+  }
+
+  function updateBadge() {
+    document.getElementById('countdown-badge').textContent =
+      _seconds > 0 ? `${_seconds} 秒後自動更新` : '更新中...';
+  }
+
+  async function refreshAll() {
+    clearInterval(_timer);
+    document.getElementById('countdown-badge').textContent = '更新中...';
+    await Promise.all([loadStatus(), loadReport()]);
+    startCountdown();
+  }
+
+  // ── 庫存情況表 ─────────────────────────────────────
+  async function loadInventoryCheck(forceRefresh) {
+    const wrap = document.getElementById('inv-table-wrap');
+    wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem"><span class="spinner"></span> 查詢中…</div>';
+    const url = '/admin/inventory-check' + (forceRefresh ? '?refresh=true' : '');
+    try {
+      const r = await fetch(url);
+      const d = await r.json();
+      if (d.error) {
+        wrap.innerHTML = `<div style="color:#c5221f">查詢失敗：${d.error}</div>`;
+        return;
+      }
+      const ts = d.updated_at || '';
+      document.getElementById('inv-updated-at').textContent = ts ? `更新時間：${ts}` : '';
+
+      const items = d.items || [];
+      const total     = items.length;
+      const missingSpec  = items.filter(x => !x.has_spec).length;
+      const missingPhoto = items.filter(x => !x.has_photo).length;
+      const needAction   = items.filter(x => !x.has_spec || !x.has_photo).length;
+      document.getElementById('inv-stats').textContent =
+        `共 ${total} 筆 ｜ 缺規格 ${missingSpec} ｜ 缺照片 ${missingPhoto} ｜ 需補資料 ${needAction}`;
+
+      if (!items.length) {
+        wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">目前無有庫存品項（或 Ecount 未回應）</div>';
+        return;
+      }
+
+      let html = `<table class="inv-table">
+        <thead><tr>
+          <th>貨號</th>
+          <th>品名</th>
+          <th style="text-align:center">庫存</th>
+          <th style="text-align:center">規格表</th>
+          <th style="text-align:center">產品照片</th>
+        </tr></thead><tbody>`;
+      for (const it of items) {
+        const isWarn = !it.has_spec || !it.has_photo;
+        html += `<tr class="${isWarn ? 'inv-row-warn' : ''}">
+          <td><span class="inv-code">${it.code}</span></td>
+          <td class="inv-name" title="${it.name}">${it.name || '—'}</td>
+          <td style="text-align:center"><span class="inv-qty">${it.qty}</span></td>
+          <td style="text-align:center">
+            <span class="inv-badge ${it.has_spec ? 'inv-badge-ok' : 'inv-badge-no'}">
+              ${it.has_spec ? '✓ 有' : '✗ 缺'}
+            </span>
+          </td>
+          <td style="text-align:center">
+            <span class="inv-badge ${it.has_photo ? 'inv-badge-ok' : 'inv-badge-no'}">
+              ${it.has_photo ? '✓ 有' : '✗ 缺'}
+            </span>
+          </td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:#c5221f">載入失敗：${e}</div>`;
+    }
+  }
+
+  async function refreshInventoryCheck() {
+    await loadInventoryCheck(true);
+  }
+
+  // ── 每日 00:00 自動重載庫存表 ─────────────────────
+  function scheduleInventoryMidnightRefresh() {
+    const now = new Date();
+    const nxt = new Date(now);
+    nxt.setDate(nxt.getDate() + 1);
+    nxt.setHours(0, 0, 30, 0);   // 00:00:30（略晚一點確保後端已跑完）
+    const ms = nxt - now;
+    setTimeout(async () => {
+      await loadInventoryCheck(false);
+      scheduleInventoryMidnightRefresh();
+    }, ms);
+  }
+
+  // ── 待審核新品項 ──────────────────────────────────
+  async function loadNewProducts() {
+    const wrap = document.getElementById('np-table-wrap');
+    const badge = document.getElementById('np-count-badge');
+    try {
+      const r = await fetch('/admin/new-products');
+      const d = await r.json();
+      const items = d.items || [];
+
+      // 更新紅色計數徽章
+      if (items.length > 0) {
+        badge.textContent = items.length;
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
+
+      if (!items.length) {
+        wrap.innerHTML = '<div class="np-empty">✅ 目前無待審核品項</div>';
+        return;
+      }
+
+      const CLASS_LABEL = { '00001':'原裝', '00002':'盒', '00004':'定裝' };
+
+      let html = `<div style="overflow-x:auto"><table class="np-table">
+        <thead><tr>
+          <th>時間</th><th>貨號</th><th>品名</th><th>單位</th>
+          <th>條碼</th><th>CLASS</th><th>售價</th><th>入庫價</th>
+          <th>規格</th><th style="min-width:120px">操作</th>
+        </tr></thead><tbody>`;
+
+      for (const it of items) {
+        const t = (it.created_at || '').substring(5, 16); // MM-DD HH:mm
+        const classLbl = it.class_cd
+          ? `<span class="np-badge np-badge-class">${CLASS_LABEL[it.class_cd] || it.class_cd}</span>`
+          : '<span class="np-badge np-badge-empty">—</span>';
+        html += `<tr id="np-row-${it.id}">
+          <td style="white-space:nowrap;color:#999;font-size:0.78rem">${t}</td>
+          <td><span class="np-code">${it.prod_cd}</span></td>
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${it.prod_name}">${it.prod_name}</td>
+          <td style="text-align:center">${it.unit || '個'}</td>
+          <td style="font-family:monospace;font-size:0.8rem;color:#666">${it.bar_code || '—'}</td>
+          <td>${classLbl}</td>
+          <td style="text-align:right;font-weight:700;color:#1a73e8">${it.out_price ? '$'+it.out_price : '—'}</td>
+          <td style="text-align:right;color:#2e7d32">${it.in_price ? '$'+it.in_price : '—'}</td>
+          <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.8rem;color:#666" title="${it.size_des}">${it.size_des || '—'}</td>
+          <td>
+            <button class="np-btn-confirm" onclick="confirmNewProduct(${it.id})">✅ 確認</button>
+            <button class="np-btn-del"     onclick="deleteNewProduct(${it.id})">✕</button>
+          </td>
+        </tr>`;
+      }
+      html += '</tbody></table></div>';
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = `<div class="np-empty" style="color:#c5221f">載入失敗：${e.message}</div>`;
+    }
+  }
+
+  async function confirmNewProduct(id) {
+    const row = document.getElementById('np-row-' + id);
+    if (row) row.style.opacity = '0.4';
+    try {
+      const r = await fetch(`/admin/new-products/${id}/confirm`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        if (row) row.remove();
+        // 更新計數
+        const remaining = document.querySelectorAll('#np-table-wrap tbody tr').length;
+        const badge = document.getElementById('np-count-badge');
+        if (remaining === 0) {
+          document.getElementById('np-table-wrap').innerHTML = '<div class="np-empty">✅ 目前無待審核品項</div>';
+          badge.style.display = 'none';
+        } else {
+          badge.textContent = remaining;
+        }
+      } else {
+        if (row) row.style.opacity = '1';
+        alert('確認失敗');
+      }
+    } catch(e) {
+      if (row) row.style.opacity = '1';
+      alert('錯誤：' + e.message);
+    }
+  }
+
+  async function deleteNewProduct(id) {
+    if (!confirm('確定要刪除這筆品項記錄？')) return;
+    const row = document.getElementById('np-row-' + id);
+    if (row) row.style.opacity = '0.4';
+    try {
+      const r = await fetch(`/admin/new-products/${id}/delete`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        if (row) row.remove();
+        const remaining = document.querySelectorAll('#np-table-wrap tbody tr').length;
+        const badge = document.getElementById('np-count-badge');
+        if (remaining === 0) {
+          document.getElementById('np-table-wrap').innerHTML = '<div class="np-empty">✅ 目前無待審核品項</div>';
+          badge.style.display = 'none';
+        } else {
+          badge.textContent = remaining;
+        }
+      } else {
+        if (row) row.style.opacity = '1';
+      }
+    } catch(e) {
+      if (row) row.style.opacity = '1';
+    }
+  }
+
+  // ── 固定 Webhook URL ─────────────────────────────
+  const _webhookUrl = 'https://xmnline.duckdns.org/webhook';
+  function loadNgrokUrl() {}  // 不再需要動態抓
+  function copyNgrok() {
+    navigator.clipboard.writeText(_webhookUrl).then(() => {
+      const btn = document.querySelector('.copy-btn');
+      btn.textContent = '✅';
+      setTimeout(() => btn.textContent = '📋', 1500);
+    });
+  }
+
+  // ── 合併客戶 ──────────────────────────────────────
+  const _mergeState = { keep: null, remove: null };
+
+  function _custCard(c) {
+    const name  = c.chat_label || c.display_name || c.real_name || '（無名稱）';
+    const phone = c.phone || '無電話';
+    const uid   = c.line_user_id ? '有 LINE ID' : '無 LINE ID';
+    const ecount= c.ecount_cust_cd || '無';
+    return `<b>${name}</b>　${phone}　${uid}　Ecount:${ecount}　<span style="color:#bbb;font-size:0.75rem">id=${c.id}</span>`;
+  }
+
+  async function mergeSearch(side) {
+    const q = document.getElementById(`merge-${side}-q`).value.trim();
+    if (!q) return;
+    const resultEl = document.getElementById(`merge-${side}-result`);
+    resultEl.innerHTML = '<span class="spinner"></span>';
+    try {
+      const r = await fetch('/admin/customers?q=' + encodeURIComponent(q));
+      const d = await r.json();
+      const rows = d.customers || [];
+      if (!rows.length) { resultEl.textContent = '找不到'; return; }
+      resultEl.innerHTML = rows.slice(0, 5).map(c =>
+        `<div style="padding:5px 8px;cursor:pointer;border-radius:6px;border:1px solid #eee;margin-bottom:4px;background:#fff"
+          onmouseover="this.style.background='#f0f4ff'" onmouseout="this.style.background='#fff'"
+          data-cust="${JSON.stringify(c).replace(/"/g,'&quot;')}"
+          onclick="mergeSelectFromEl(this,'${side}')">
+          ${_custCard(c)}
+        </div>`
+      ).join('');
+    } catch(e) {
+      resultEl.textContent = '搜尋失敗';
+    }
+  }
+
+  function mergeSelectFromEl(el, side) {
+    try {
+      const c = JSON.parse(el.dataset.cust);
+      mergeSelect(side, c);
+    } catch(e) { console.error('mergeSelectFromEl parse error', e); }
+  }
+
+  function mergeSelect(side, c) {
+    _mergeState[side] = c;
+    const selEl = document.getElementById(`merge-${side}-selected`);
+    selEl.innerHTML = '✅ 已選擇：' + _custCard(c);
+    selEl.style.display = 'block';
+    document.getElementById(`merge-${side}-result`).innerHTML = '';
+    _updateMergeBtn();
+  }
+
+  function _updateMergeBtn() {
+    const btn = document.getElementById('btn-merge');
+    const ok  = _mergeState.keep && _mergeState.remove &&
+                _mergeState.keep.id !== _mergeState.remove.id;
+    btn.disabled = !ok;
+    btn.style.opacity  = ok ? '1'       : '0.4';
+    btn.style.cursor   = ok ? 'pointer' : 'default';
+  }
+
+  async function doMerge() {
+    const keep   = _mergeState.keep;
+    const remove = _mergeState.remove;
+    if (!keep || !remove) return;
+    if (keep.id === remove.id) { alert('不能合併同一筆'); return; }
+
+    const keepName   = keep.chat_label   || keep.display_name   || keep.real_name   || `id=${keep.id}`;
+    const removeName = remove.chat_label || remove.display_name || remove.real_name || `id=${remove.id}`;
+    if (!confirm(`確定要合併？\n\n保留：${keepName}（id=${keep.id}）\n移除：${removeName}（id=${remove.id}）\n\n② 記錄合併後會被刪除，無法復原。`)) return;
+
+    const btn    = document.getElementById('btn-merge');
+    const status = document.getElementById('merge-status');
+    btn.disabled = true;
+    status.textContent = '合併中…';
+
+    try {
+      const res = await fetch(
+        `/admin/merge-customers?keep_id=${keep.id}&remove_id=${remove.id}`,
+        { method: 'POST' }
+      );
+      const d = await res.json();
+      if (res.ok) {
+        const fields = d.merged_fields.length ? d.merged_fields.join(', ') : '（無新增欄位）';
+        status.style.color = '#1e8e3e';
+        status.textContent = `✅ 合併成功！補入欄位：${fields}`;
+        // 重置
+        _mergeState.keep = _mergeState.remove = null;
+        ['keep','remove'].forEach(s => {
+          document.getElementById(`merge-${s}-selected`).style.display = 'none';
+          document.getElementById(`merge-${s}-result`).innerHTML = '';
+          document.getElementById(`merge-${s}-q`).value = '';
+        });
+      } else {
+        status.style.color = '#c62828';
+        status.textContent = '❌ ' + (d.detail || '合併失敗');
+        btn.disabled = false;
+      }
+    } catch(e) {
+      status.style.color = '#c62828';
+      status.textContent = '❌ 網路錯誤';
+      btn.disabled = false;
+    }
+  }
+
+  // ── 分類標籤設定管理 ─────────────────────────────
+  let _allTags = ['VIP', '野獸國', '標準', '中句', 'K霸'];  // 預設，載入後覆蓋
+
+  async function loadTagsConfig() {
+    try {
+      const r = await fetch('/admin/tags-config');
+      const d = await r.json();
+      _allTags = d.tags || _allTags;
+      _renderTagsChips();
+    } catch(e) {
+      console.warn('loadTagsConfig error', e);
+    }
+  }
+
+  function _renderTagsChips() {
+    const el = document.getElementById('tags-chips');
+    if (!el) return;
+    el.innerHTML = _allTags.map(t =>
+      `<span style="display:inline-flex;align-items:center;gap:2px;background:#e3f0ff;color:#1a73e8;border-radius:12px;padding:2px 8px;font-size:0.8rem;font-weight:600">
+        ${t}
+        <button onclick="removeTagConfig('${t.replace(/'/g,"\\'")}')"
+          style="background:none;border:none;cursor:pointer;color:#999;font-size:0.85rem;line-height:1;padding:0 0 0 2px"
+          title="刪除「${t}」">✕</button>
+      </span>`
+    ).join('');
+  }
+
+  async function addTagConfig() {
+    const input = document.getElementById('new-tag-input');
+    const tag = input.value.trim();
+    if (!tag) return;
+    try {
+      const r = await fetch('/admin/tags-config/add?tag=' + encodeURIComponent(tag), { method: 'POST' });
+      if (r.ok) {
+        const d = await r.json();
+        _allTags = d.tags;
+        _renderTagsChips();
+        input.value = '';
+        // 若已有客戶表格，重新渲染以顯示新標籤欄
+        const lastRows = window._lastCustomerRows;
+        if (lastRows) _renderCustomerTable(lastRows);
+      } else {
+        const e = await r.json();
+        alert('新增失敗：' + (e.detail || r.status));
+      }
+    } catch(e) { alert('新增失敗：' + e); }
+  }
+
+  async function removeTagConfig(tag) {
+    if (!confirm(`確定要刪除分類「${tag}」嗎？\n（已設定的客戶不會受影響，僅移除標籤選項）`)) return;
+    try {
+      const r = await fetch('/admin/tags-config/remove?tag=' + encodeURIComponent(tag), { method: 'POST' });
+      if (r.ok) {
+        const d = await r.json();
+        _allTags = d.tags;
+        _renderTagsChips();
+        const lastRows = window._lastCustomerRows;
+        if (lastRows) _renderCustomerTable(lastRows);
+      }
+    } catch(e) { alert('刪除失敗：' + e); }
+  }
+
+  // ── 客戶標籤管理 ─────────────────────────────────
+  function _renderCustomerTable(rows) {
+    window._lastCustomerRows = rows;  // 快取供重新渲染用
+    const wrap = document.getElementById('cust-table-wrap');
+    if (!rows || rows.length === 0) {
+      wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">找不到符合的客戶</div>';
+      return;
+    }
+    const ALL_TAGS = _allTags;
+    let html = `<table class="cust-table">
+      <thead><tr>
+        <th>LINE 暱稱</th>
+        <th>真實姓名</th>
+        <th>電話</th>
+        <th>Ecount 代碼</th>
+        <th>對話標籤（chat_label）</th>
+        <th>分類標籤</th>
+        <th>LINE ID</th>
+      </tr></thead><tbody>`;
+    for (const c of rows) {
+      const uid        = c.line_user_id   || '';
+      const dbId       = c.id             || 0;
+      const dispName   = c.display_name   || '—';
+      const realName   = c.real_name      || '';
+      const phone      = c.phone          || '';
+      const ecountCode = c.ecount_cust_cd || '';
+      const label      = c.chat_label     || '';
+      const safeUid    = uid.replace(/"/g, '&quot;');
+      // 解析 tags JSON
+      let currentTags = [];
+      try { currentTags = JSON.parse(c.tags || '[]'); } catch(e) { currentTags = []; }
+      const tagBoxes = ALL_TAGS.map(t =>
+        `<label style="display:inline-flex;align-items:center;gap:2px;margin:1px 3px;font-size:0.78rem;cursor:pointer;">
+          <input type="checkbox" value="${t}" ${currentTags.includes(t)?'checked':''}
+            onchange="saveTagsFromRow(this, ${dbId})">
+          ${t}
+         </label>`
+      ).join('');
+      html += `<tr>
+        <td class="cust-name-cell">${dispName}</td>
+        <td>
+          <input class="label-input" type="text" value="${realName.replace(/"/g,'&quot;')}"
+            placeholder="（未設定）"
+            data-uid="${safeUid}" data-dbid="${dbId}"
+            onkeydown="if(event.key==='Enter')saveRealNameFromBtn(this.nextElementSibling)">
+          <button class="btn-save-label" onclick="saveRealNameFromBtn(this)">儲存</button>
+        </td>
+        <td>
+          <input class="label-input" type="text" value="${phone.replace(/"/g,'&quot;')}"
+            placeholder="（未設定）"
+            data-uid="${safeUid}" data-dbid="${dbId}"
+            onkeydown="if(event.key==='Enter')savePhoneFromBtn(this.nextElementSibling)">
+          <button class="btn-save-label" onclick="savePhoneFromBtn(this)">儲存</button>
+        </td>
+        <td>
+          <input class="label-input" type="text" value="${ecountCode.replace(/"/g,'&quot;')}"
+            placeholder="（未設定）"
+            data-uid="${safeUid}" data-dbid="${dbId}"
+            onkeydown="if(event.key==='Enter')saveEcountCodeFromBtn(this.nextElementSibling)">
+          <button class="btn-save-label" onclick="saveEcountCodeFromBtn(this)">儲存</button>
+        </td>
+        <td>
+          <input class="label-input" type="text" value="${label.replace(/"/g,'&quot;')}"
+            data-uid="${safeUid}" data-dbid="${dbId}"
+            onkeydown="if(event.key==='Enter')saveLabelFromBtn(this.nextElementSibling)">
+          <button class="btn-save-label" onclick="saveLabelFromBtn(this)">儲存</button>
+        </td>
+        <td style="min-width:160px">${tagBoxes}</td>
+        <td class="cust-uid-cell" title="${uid}">${uid ? uid.slice(0,12)+'…' : '—'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  }
+
+  async function searchCustomers() {
+    const q = document.getElementById('cust-search-input').value.trim();
+    if (!q) { loadRecentCustomers(); return; }
+    document.getElementById('cust-table-wrap').innerHTML = '<span class="spinner"></span> 搜尋中…';
+    try {
+      const r = await fetch('/admin/customers?q=' + encodeURIComponent(q));
+      const d = await r.json();
+      _renderCustomerTable(d.customers || []);
+    } catch(e) {
+      document.getElementById('cust-table-wrap').innerHTML = '<div style="color:red">搜尋失敗</div>';
+    }
+  }
+
+  async function loadRecentCustomers() {
+    document.getElementById('cust-table-wrap').innerHTML = '<span class="spinner"></span> 載入中…';
+    try {
+      const r = await fetch('/admin/customers?q=');
+      const d = await r.json();
+      _renderCustomerTable(d.customers || []);
+    } catch(e) {
+      document.getElementById('cust-table-wrap').innerHTML = '<div style="color:red">載入失敗</div>';
+    }
+  }
+
+  async function saveLabelFromBtn(btn) {
+    const input = btn.previousElementSibling;
+    const uid   = input.dataset.uid;
+    const dbId  = input.dataset.dbid || '0';
+    const label = input.value.trim();
+    // 優先用 line_user_id，無則用 db_id（CSV 匯入客戶）
+    let url;
+    if (uid) {
+      url = '/admin/update-customer-label?line_user_id=' + encodeURIComponent(uid) +
+            '&label=' + encodeURIComponent(label);
+    } else if (dbId && dbId !== '0') {
+      url = '/admin/update-customer-label?db_id=' + dbId +
+            '&label=' + encodeURIComponent(label);
+    } else {
+      alert('此客戶無 LINE ID 且無 DB ID，無法更新標籤'); return;
+    }
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      const res = await fetch(url, { method: 'POST' });
+      if (res.ok) {
+        btn.textContent = '✅';
+        btn.classList.add('saved');
+        setTimeout(() => { btn.textContent = '儲存'; btn.classList.remove('saved'); btn.disabled = false; }, 1500);
+      } else {
+        btn.textContent = '❌';
+        btn.disabled = false;
+        setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+      }
+    } catch(e) {
+      btn.textContent = '❌';
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+    }
+  }
+
+  async function saveTagsFromRow(checkbox, dbId) {
+    // 找到同一個 td 內所有勾選的 checkbox
+    const td = checkbox.closest('td');
+    const checked = [...td.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value);
+    const tags = checked.join(',');
+    try {
+      const res = await fetch(
+        '/admin/update-customer-tags?db_id=' + dbId + '&tags=' + encodeURIComponent(tags),
+        { method: 'POST' }
+      );
+      if (res.ok) {
+        td.style.outline = '2px solid #43a047';
+        setTimeout(() => { td.style.outline = ''; }, 1000);
+      } else {
+        td.style.outline = '2px solid #e53935';
+        setTimeout(() => { td.style.outline = ''; }, 1000);
+      }
+    } catch(e) {
+      console.error('saveTagsFromRow error', e);
+    }
+  }
+
+  async function saveRealNameFromBtn(btn) {
+    const input    = btn.previousElementSibling;
+    const uid      = input.dataset.uid;
+    const realName = input.value.trim();
+    if (!uid) { alert('此客戶無 LINE ID，無法更新真實姓名'); return; }
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      const res = await fetch(
+        '/admin/update-customer-real-name?line_user_id=' + encodeURIComponent(uid) +
+        '&real_name=' + encodeURIComponent(realName),
+        { method: 'POST' }
+      );
+      if (res.ok) {
+        btn.textContent = '✅';
+        btn.classList.add('saved');
+        setTimeout(() => { btn.textContent = '儲存'; btn.classList.remove('saved'); btn.disabled = false; }, 1500);
+      } else {
+        btn.textContent = '❌';
+        btn.disabled = false;
+        setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+      }
+    } catch(e) {
+      btn.textContent = '❌';
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+    }
+  }
+
+  async function savePhoneFromBtn(btn) {
+    const input = btn.previousElementSibling;
+    const uid   = input.dataset.uid;
+    const phone = input.value.trim();
+    if (!uid) { alert('此客戶無 LINE ID，無法更新電話'); return; }
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      const res = await fetch(
+        '/admin/update-customer-phone?line_user_id=' + encodeURIComponent(uid) +
+        '&phone=' + encodeURIComponent(phone),
+        { method: 'POST' }
+      );
+      if (res.ok) {
+        btn.textContent = '✅';
+        btn.classList.add('saved');
+        setTimeout(() => { btn.textContent = '儲存'; btn.classList.remove('saved'); btn.disabled = false; }, 1500);
+      } else {
+        btn.textContent = '❌';
+        btn.disabled = false;
+        setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+      }
+    } catch(e) {
+      btn.textContent = '❌';
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+    }
+  }
+
+  async function saveEcountCodeFromBtn(btn) {
+    const input    = btn.previousElementSibling;
+    const uid      = input.dataset.uid;
+    const ecountCd = input.value.trim();
+    if (!uid) { alert('此客戶無 LINE ID，無法更新 Ecount 代碼'); return; }
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      const res = await fetch(
+        '/admin/update-customer-ecount-code?line_user_id=' + encodeURIComponent(uid) +
+        '&ecount_cust_cd=' + encodeURIComponent(ecountCd),
+        { method: 'POST' }
+      );
+      if (res.ok) {
+        btn.textContent = '✅';
+        btn.classList.add('saved');
+        setTimeout(() => { btn.textContent = '儲存'; btn.classList.remove('saved'); btn.disabled = false; }, 1500);
+      } else {
+        btn.textContent = '❌';
+        btn.disabled = false;
+        setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+      }
+    } catch(e) {
+      btn.textContent = '❌';
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = '儲存'; }, 1500);
+    }
+  }
+
+  // ── 到店清單 ─────────────────────────────────────
+  async function loadVisits() {
+    const wrap = document.getElementById('visit-list-inline');
+    try {
+      const r = await fetch('/admin/visits');
+      const d = await r.json();
+      const visits = d.visits || [];
+      if (!visits.length) {
+        wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">目前沒有客人預告要來店</div>';
+        return;
+      }
+      const today = new Date(); today.setHours(0,0,0,0);
+      let html = '<table style="width:100%;border-collapse:collapse;font-size:0.88rem">';
+      html += '<tr style="background:#f5f7fa;font-weight:600"><th style="padding:6px 8px;text-align:left">客人</th><th style="padding:6px 8px;text-align:left">預計日期</th><th style="padding:6px 8px;text-align:left">原話</th><th style="padding:6px 8px"></th></tr>';
+      visits.forEach(v => {
+        let dateLabel = v.visit_note || '未定';
+        let rowColor = '';
+        if (v.visit_date) {
+          const vd = new Date(v.visit_date); vd.setHours(0,0,0,0);
+          const diff = Math.round((vd - today) / 86400000);
+          if (diff < 0)       { dateLabel = v.visit_date + ' (已過期)'; rowColor = 'background:#fff8e1'; }
+          else if (diff === 0){ dateLabel = '今天'; rowColor = 'background:#fff3cd'; }
+          else if (diff === 1){ dateLabel = '明天'; rowColor = 'background:#e8f5e9'; }
+          else                { dateLabel = v.visit_date + ' (' + v.visit_note + ')'; }
+        }
+        const raw = (v.visit_text || '').substring(0, 30);
+        html += `<tr style="border-bottom:1px solid #eee;${rowColor}">
+          <td style="padding:6px 8px">${v.display_name || '客人'}</td>
+          <td style="padding:6px 8px">${dateLabel}</td>
+          <td style="padding:6px 8px;color:#666">${raw}</td>
+          <td style="padding:6px 8px">
+            <button onclick="markVisited(${v.id})" style="font-size:0.78rem;padding:2px 8px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer">已到店</button>
+          </td>
+        </tr>`;
+      });
+      html += '</table>';
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = '<div style="color:#e57373;font-size:0.85rem">載入失敗</div>';
+    }
+  }
+
+  async function markVisited(id) {
+    await fetch('/admin/visits/' + id + '/resolve', { method: 'POST' });
+    loadVisits();
+  }
+
+  // ── 初始化 ────────────────────────────────────────
+  loadNgrokUrl();
+  refreshAll();
+  loadTagsConfig();  // 載入分類標籤設定
+  loadVisits();
+  setInterval(loadVisits, 60000);  // 每分鐘自動刷新
+  loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
+  scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
+  loadNewProducts();               // 載入待審核新品項
+</script>
+</body>
+</html>

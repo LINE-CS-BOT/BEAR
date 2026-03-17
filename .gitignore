@@ -1,0 +1,33 @@
+# 環境變數（重要！不能上傳）
+.env
+
+# Chrome 瀏覽器資料（Playwright）
+data/chrome_ecount_session/
+
+# 資料庫
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# 快取
+data/available.json
+data/products_cache.json
+data/label_queue.json
+
+# PDF 輸出
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Caddy
+caddy.exe
+
+# Log
+*.log
+
+# 系統
+.DS_Store
+Thumbs.db
