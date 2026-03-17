@@ -1,0 +1,2 @@
+{"id": 272, "line_user_id": "U410bafe33a29d9d52ee0e982f5b7c660", "display_name": "侑芩", "real_name": "李昶信", "chat_label": "李昶信", "phone": null, "ecount_cust_cd": null}
+{"id": 219, "line_user_id": null, "display_name": "李昶信", "real_name": "李昶信", "chat_label": "李昶信", "phone": "0981675916", "ecount_cust_cd": "M2510040005"}

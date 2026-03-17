@@ -1,0 +1,83 @@
+"""
+模擬測試「新增品項」指令解析（單筆 + 多筆）
+"""
+import sys, os
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from handlers.internal import _parse_new_product_fields, _split_new_product_entries
+
+CASES = [
+    # (說明, 輸入)
+    ("單行完整",
+     "新增品項 Z9999 (原)多色麥克風音響 個 條碼:1234567890 售價:299 規格:30×20cm"),
+
+    ("大包裝＋加盟商價",
+     "新增品項 Z0123 (大)泡澡球禮盒 個 售價:399 加盟商:250"),
+
+    ("定裝＋加盟商價",
+     "新增品項 Z0456 (定)厚款衛生紙 箱 售價:599 加盟商商價:480 規格:300抽×6包"),
+
+    ("原定裝",
+     "新增品項 Z0789 (原定)洗衣球 個 售價:199 加盟商:160"),
+
+    ("無前綴，無規格",
+     "新增品項 Z1111 多用途清潔劑 個 售價:88"),
+
+    ("多行格式",
+     "新增品項 Z2222\n品名：(原)彩虹積木組\n條碼：9876543210\n售價：499\n加盟商：450\n規格：30×20×15cm"),
+
+    ("無前綴＋無條碼（條碼應自動填貨號）",
+     "新增品項 Z3333 環保購物袋 個 售價:59 加盟商:45"),
+]
+
+print("=" * 65)
+for title, text in CASES:
+    print(f"\n【{title}】")
+    print(f"  輸入：{text!r}")
+    result = _parse_new_product_fields(text)
+    if result is None:
+        print("  ❌ 解析失敗（回傳 None）")
+    else:
+        print(f"  貨號     : {result['prod_cd']}")
+        print(f"  品名     : {result['prod_name']}")
+        print(f"  單位     : {result['unit']}")
+        print(f"  條碼     : {result['bar_code']}")
+        print(f"  CLASS_CD : {result['class_cd'] or '（無）'}")
+        print(f"  售價     : {result['out_price'] or '（無）'}")
+        print(f"  入庫價   : {result['in_price'] or '（無）'}")
+        print(f"  規格     : {result['size_des'] or '（無）'}")
+        print(f"  CUST     : {result['cust']}")
+print("\n" + "=" * 65)
+
+# ── 多筆測試 ──────────────────────────────────────────────
+MULTI_CASES = [
+    ("多筆（3筆，換行格式）",
+     "新增品項\nZ9999 (原)多色麥克風音響 個 售價:299\nZ0123 (大)泡澡球禮盒 個 售價:399 加盟商:250\nZ0456 (定)厚款衛生紙 箱 售價:599 加盟商價:480 規格:300抽×6包"),
+
+    ("多筆（2筆，含規格）",
+     "新增品項\nZ1001 (原定)洗衣球 個 售價:199 加盟商:160 規格:50顆\nZ1002 環保購物袋 個 售價:59 加盟商:45"),
+
+    ("格式③貨號獨行（3筆）",
+     "新增品項\nZ9999\n(原)多色麥克風音響\n規格:12個/箱\n加盟商價:250\nZ0123\n(大)泡澡球禮盒\n規格:50顆\nZ0456\n(定)厚款衛生紙\n規格:300抽×6包\n加盟商價:480"),
+
+    ("格式③貨號獨行（2筆，其中一筆無加盟商價）",
+     "新增品項\nZ1111\n(原定)洗衣球\n售價:199\n加盟商:160\nZ2222\n多用途清潔劑\n售價:88"),
+]
+
+print("\n【多筆拆分測試】")
+print("=" * 65)
+for title, text in MULTI_CASES:
+    print(f"\n【{title}】")
+    entries = _split_new_product_entries(text)
+    print(f"  拆出 {len(entries)} 筆：")
+    for i, entry in enumerate(entries, 1):
+        f = _parse_new_product_fields(entry)
+        if f:
+            print(f"  [{i}] {f['prod_cd']} {f['prod_name']} 單:{f['unit']} "
+                  f"售:{f['out_price'] or '-'} 入:{f['in_price'] or '-'} "
+                  f"class:{f['class_cd'] or '-'} 規:{f['size_des'] or '-'}")
+        else:
+            print(f"  [{i}] ❌ 解析失敗")
+print("\n" + "=" * 65)

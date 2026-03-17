@@ -1,0 +1,7 @@
+{
+    acme_dns duckdns ecee899b-b56f-4b99-b63a-d92e9d244589
+}
+
+xmnline.duckdns.org {
+    reverse_proxy localhost:8000
+}
