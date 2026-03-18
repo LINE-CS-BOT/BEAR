@@ -24,7 +24,7 @@ from config import settings
 
 # ── 正則 ──────────────────────────────────────────────────────────────
 # 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-1、-2 等），例：T1202、BB-232、Q0312-1
-_PROD_CODE_RE = re.compile(r'\b([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\b')
+_PROD_CODE_RE = re.compile(r'(?<![A-Za-z])([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)(?!\d)')
 
 # 到貨觸發詞
 _ARRIVAL_KW = ["到貨", "到了", "到齊", "收到了", "進來了", "到貨了", "貨到了", "貨到"]
@@ -269,12 +269,30 @@ def handle_internal_order(
         if not _STAFF_ORDER_LINE_RE.search(lines[0]):
             cust_name = header_m.group(1).strip()
             items_raw = []
+            note_b    = ""
             for l in lines[1:]:
                 im = _STAFF_ORDER_ITEM_RE.search(l)
                 if im:
                     items_raw.append((im.group(1).strip(), _parse_qty(im.group(2))))
+                elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
+                    note_b = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
             if items_raw:
-                return _do_order(cust_name, items_raw)
+                return _do_order(cust_name, items_raw, note=note_b)
+
+    # ── 格式B2：第一行只有姓名（無「訂」），後續行有貨號+數量 ──
+    # 例：鄭鉅耀\nZ3340 10個\nZ3338 20個\n備註 送松山
+    if len(lines) > 1 and not _PROD_CODE_RE.search(lines[0]) and not _STAFF_ORDER_HEADER_RE.match(lines[0]):
+        items_b2 = []
+        note_b2  = ""
+        for l in lines[1:]:
+            im = _STAFF_ORDER_ITEM_RE.search(l)
+            if im:
+                items_b2.append((im.group(1).strip(), _parse_qty(im.group(2))))
+            elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
+                note_b2 = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
+        if items_b2:
+            cust_name_b2 = lines[0].strip()
+            return _do_order(cust_name_b2, items_b2, note=note_b2)
 
     # ── 格式A：每行各自獨立 ──
     valid = [(l, _STAFF_ORDER_LINE_RE.search(l)) for l in lines]
@@ -635,6 +653,116 @@ def handle_name_order_confirm(group_id: str, text: str) -> str | None:
 
 
 # ── 4. 手動通知登記 ────────────────────────────────────────────────────
+
+# ── 新增客戶 ────────────────────────────────────────────────────────────
+# 支援格式：
+#   新增客戶 張三
+#   新增客戶 張三 0912345678
+#   新增客戶 張三 0912345678 台北市XX路1號
+#   新增客戶\n張三\n0912345678\n台北市XX路1號   （名字可換行）
+_ADD_CUST_TRIGGER_RE = re.compile(r'^新增客戶[\s\n]+(.+)', re.DOTALL)
+_PHONE_RE_EXTRACT    = re.compile(r'(09\d{8})')
+
+def _gen_ecount_cust_cd() -> str:
+    """
+    自動產生 Ecount 客戶代碼。
+    格式：M + 年後兩碼 + 月(2位) + 日(2位) + 流水號(4位，1000起)
+    例：M2603171000、M2603171001
+    """
+    from datetime import datetime
+    import sqlite3, os
+    now    = datetime.now()
+    prefix = f"M{now.strftime('%y%m%d')}"  # e.g. M260317
+    db_path = os.path.join(os.path.dirname(__file__), "..", "data", "customers.db")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT ecount_cust_cd FROM customers WHERE ecount_cust_cd LIKE ?",
+                (f"{prefix}%",)
+            ).fetchall()
+        nums = [int(cd[len(prefix):]) for (cd,) in rows
+                if cd and cd.startswith(prefix) and cd[len(prefix):].isdigit()]
+        seq = max(nums) + 1 if nums else 1000
+    except Exception:
+        seq = 1000
+    return f"{prefix}{seq}"
+
+def handle_internal_add_customer(text: str) -> str | None:
+    """
+    內部群新增客戶指令（支援單行/多行）。
+    同步建立 Ecount 客戶，回覆帶 Ecount 代碼。
+    """
+    t = text.strip()
+    m = _ADD_CUST_TRIGGER_RE.match(t)
+    if not m:
+        return None
+
+    rest  = m.group(1).strip()
+    lines = [l.strip() for l in rest.splitlines() if l.strip()]
+    if not lines:
+        return None
+
+    # 第一行：姓名（去掉電話後的第一個詞）
+    first   = lines[0]
+    phone_m = _PHONE_RE_EXTRACT.search(first)
+    phone   = phone_m.group(1) if phone_m else ""
+    name    = _PHONE_RE_EXTRACT.sub("", first).strip().split()[0]
+
+    # 地址：第一行電話後的剩餘 + 後續行
+    addr_inline = _PHONE_RE_EXTRACT.sub("", first).replace(name, "", 1).strip()
+    addr_parts  = [addr_inline] if addr_inline else []
+
+    for ln in lines[1:]:
+        p_m = _PHONE_RE_EXTRACT.search(ln)
+        if p_m and not phone:
+            phone = p_m.group(1)
+            remainder = _PHONE_RE_EXTRACT.sub("", ln).strip()
+            if remainder:
+                addr_parts.append(remainder)
+        else:
+            addr_parts.append(ln)
+
+    address = " ".join(addr_parts).strip()
+
+    # 若姓名已存在則提示（含現有 Ecount 代碼）
+    existing = customer_store.search_by_name(name)
+    if existing:
+        ex       = existing[0]
+        ex_phone = ex.get("phone") or "無"
+        ex_code  = ex.get("ecount_cust_cd") or "無"
+        return f"⚠️ 客戶「{name}」已存在\n📞 {ex_phone}\n🔑 Ecount代碼：{ex_code}"
+
+    # 建立本地客戶
+    customer_store.import_from_csv_data(
+        display_name=name,
+        chat_label=name,
+        phones=[phone] if phone else [],
+        address=address,
+    )
+
+    # 自動產生 Ecount 代碼並同步
+    cust_cd = _gen_ecount_cust_cd()
+    ec_ok = ecount_client.save_customer(
+        business_no=cust_cd,
+        cust_name=name,
+        hp_no=phone,
+        addr=address,
+    )
+
+    # 把代碼存回本地 DB
+    cust_matches = customer_store.search_by_name(name)
+    if cust_matches:
+        db_id = cust_matches[0]["id"]
+        customer_store.update_ecount_cust_cd_by_db_id(db_id, cust_cd)
+
+    parts = [f"✅ 已新增客戶「{name}」"]
+    parts.append(f"🔑 Ecount代碼：{cust_cd}" + ("" if ec_ok else "（本地已存，Ecount同步失敗）"))
+    if phone:
+        parts.append(f"📞 {phone}")
+    if address:
+        parts.append(f"📍 {address}")
+    return "\n".join(parts)
+
 
 def handle_internal_notify_register(text: str) -> str | None:
     """
@@ -1317,18 +1445,17 @@ def handle_internal_inventory(text: str, state_key: str | None = None) -> str | 
                     results.append(f"📦 {name}（{prod_code}）\n  可預購：{preorder} 個")
                     result_codes.append((prod_code, name))
             else:
-                # 庫存模式：只回 available>0 或 preorder>0
-                if (item.get("qty") or 0) > 0 or (item.get("preorder") or 0) > 0:
-                    results.append(_fmt_inv_block(item, prod_code))
-                    result_codes.append((prod_code, item.get("name") or prod_code))
+                # 庫存模式：不管有無庫存都顯示完整明細
+                results.append(_fmt_inv_block(item, prod_code))
+                result_codes.append((prod_code, item.get("name") or prod_code))
                 # 只記「實際可售庫存 qty > 0」的（供 state 判斷用）
                 if (item.get("qty") or 0) > 0:
                     stock_codes.append((prod_code, item.get("name") or prod_code))
 
         kw_label = "".join(tokens)
         if not results:
-            return f"🔍 目前「{kw_label}」相關產品均無庫存或可預購數量"
-        print(f"[internal] 品名庫存搜尋「{kw_label}」→ {len(results)} 筆有庫存（其中 {len(stock_codes)} 筆 qty>0）", flush=True)
+            return f"🔍 找不到「{kw_label}」的庫存資料"
+        print(f"[internal] 品名庫存搜尋「{kw_label}」→ {len(results)} 筆（其中 {len(stock_codes)} 筆 qty>0）", flush=True)
 
         # 決定用哪個清單來設 state：
         # 優先用有實際庫存（qty>0）的；若全是預購則用 result_codes
@@ -2222,16 +2349,16 @@ def handle_internal_upload_finish(user_id: str) -> str:
 #   售價：299
 #   加盟商：250
 #   規格：30×20cm
-_NEW_PROD_TRIGGER_RE = re.compile(r'^新增品項', re.IGNORECASE)
-_NEW_PROD_CODE_RE    = re.compile(r'([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)')
+_NEW_PROD_TRIGGER_RE = re.compile(r'^(?:新增|新建)品項', re.IGNORECASE)
+_NEW_PROD_CODE_RE    = re.compile(r'([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?|\d{5,6}(?:-\d+)?)')
 _UNIT_WORDS_NP       = r'個|件|盒|套|箱|組|片|包|瓶|罐|條|支|只|枚|粒|顆|袋|塊'
 
 # CLASS_CD 對應（品名前綴，按長到短排列避免短前綴先匹配）
 _CLASS_CD_MAP = [
-    (r'^\(原定\)', "00004"),
-    (r'^\(定\)',   "00004"),
-    (r'^\(原\)',   "00001"),
-    (r'^\(大\)',   "00002"),
+    (r'^[（(]原定[)）]', "00004"),
+    (r'^[（(]定[)）]',   "00004"),
+    (r'^[（(]原[)）]',   "00001"),
+    (r'^[（(]大[)）]',   "00002"),
 ]
 
 def _detect_class_cd(prod_name: str) -> str:
@@ -2285,12 +2412,15 @@ def _parse_new_product_fields(text: str) -> dict | None:
     bar_code_m = re.search(r'條碼\s*[:：]?\s*(\S+)', flat)
     bar_code   = bar_code_m.group(1) if bar_code_m else prod_cd  # 預設條碼 = 品項編碼（貨號）
 
-    # 售價 / 賣價 / 出庫單價
-    out_price_m = re.search(r'(?:售價|賣價|出庫單價)\s*[:：]?\s*([\d.]+)', flat)
-    out_price   = out_price_m.group(1) if out_price_m else ""
+    # 售價 / 賣價 / 出庫單價（含簡寫「售299」「售:299」，以及裸數字行）
+    out_price_m = re.search(r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)', flat)
+    if not out_price_m:
+        # fallback：一行只有純數字，視為售價
+        out_price_m = re.search(r'(?:^|\s)([\d.]+)(?=\s|$)', flat)
+    out_price = out_price_m.group(1) if out_price_m else ""
 
     # 加盟商價格 / 入庫單價（按長到短排，避免短詞先匹配）
-    in_price_m   = re.search(r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*([\d.]+)', flat)
+    in_price_m   = re.search(r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*([\d.]+)', flat)
     in_price_raw = in_price_m.group(1) if in_price_m else ""
 
     # 規格（取到行末或下一個關鍵字前）
@@ -2312,12 +2442,13 @@ def _parse_new_product_fields(text: str) -> dict | None:
     name_part = flat[m_code.end():]
     for strip_pat in [
         r'條碼\s*[:：]?\s*\S+',
-        r'(?:售價|賣價|出庫單價)\s*[:：]?\s*[\d.]+',
-        r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[\d.]+',
+        r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+',
+        r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
         r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
         rf'單位\s*[:：]?\s*(?:{_UNIT_WORDS_NP})',
         rf'(?:^|\s)(?:{_UNIT_WORDS_NP})(?:\s|$)',
         r'品名\s*[:：]?\s*',
+        r'(?:^|\s)[\d.]+(?=\s|$)',  # 裸數字（售價 fallback）
     ]:
         name_part = re.sub(strip_pat, ' ', name_part)
     prod_name = name_part.strip()
@@ -2341,11 +2472,11 @@ def _parse_new_product_fields(text: str) -> dict | None:
     }
 
 
-_CLASS_LABEL_NP = {"00001": "原裝", "00002": "盒", "00004": "定裝"}
+_CLASS_LABEL_NP = {"00001": "原裝", "00002": "改裝", "00004": "定裝"}
 # 以貨號開頭且後接空白的行（貨號+品名同行）
 _PROD_LINE_START_RE = re.compile(r'^([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s', re.IGNORECASE)
 # 整行只有貨號（貨號獨行格式）
-_CODE_ONLY_RE = re.compile(r'^[A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?$', re.IGNORECASE)
+_CODE_ONLY_RE = re.compile(r'^(?:[A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?|\d{5,6}(?:-\d+)?)$', re.IGNORECASE)
 # 欄位關鍵字開頭的行（不會是品名）
 _FIELD_LINE_RE = re.compile(
     r'^(?:規格|售價|賣價|出庫單價|加盟商|入庫單價|進價|條碼|單位)[:：]',
@@ -2375,7 +2506,7 @@ def _split_new_product_entries(text: str) -> list[str]:
     if not lines:
         return []
 
-    first = re.sub(r'^新增品項\s*', '', lines[0], flags=re.IGNORECASE).strip()
+    first = re.sub(r'^(?:新增|新建)品項\s*', '', lines[0], flags=re.IGNORECASE).strip()
     rest  = lines[1:]
     all_lines = ([first] if first else []) + rest
 
@@ -2454,17 +2585,18 @@ def _build_one_product(fields: dict) -> str:
         prod_cd=prod_cd, prod_name=prod_name, unit=unit, extra=extra,
     )
 
-    from storage.new_products import new_products_store
-    new_products_store.add(
-        prod_cd=prod_cd,   prod_name=prod_name, unit=unit,
-        bar_code=bar_code, class_cd=class_cd,   out_price=out_price,
-        in_price=in_price, size_des=size_des,   cust="10003",
-    )
+    if result:
+        from storage.new_products import new_products_store
+        new_products_store.add(
+            prod_cd=prod_cd,   prod_name=prod_name, unit=unit,
+            bar_code=bar_code, class_cd=class_cd,   out_price=out_price,
+            in_price=in_price, size_des=size_des,   cust="10003",
+        )
 
     icon = "✅" if result else "⚠️"
     details = []
-    if out_price: details.append(f"售:{out_price}")
-    if in_price:  details.append(f"入:{in_price}")
+    details.append(f"售:{out_price}" if out_price else "售:-")
+    details.append(f"入:{in_price}" if in_price else "入:-")
     if size_des:  details.append(f"規:{size_des}")
     if class_cd:  details.append(_CLASS_LABEL_NP.get(class_cd, class_cd))
     detail_str = "　" + "　".join(details) if details else ""

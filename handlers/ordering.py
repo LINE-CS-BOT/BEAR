@@ -180,9 +180,23 @@ def _create_ecount_customer(user_id: str) -> str | None:
         return None
 
     from datetime import datetime as _dt
+    import sqlite3 as _sqlite3
     today  = _dt.now().strftime("%y%m%d")
-    serial = 1000 + (db_id % 9000) if db_id else 1000 + (int(time.time()) % 9000)
-    new_code = f"M{today}{serial}"
+    prefix = f"M{today}"
+    # 每日流水號從 1000 起，查 DB 已有同前綴最大號 +1
+    try:
+        _db_path = str(_Path(__file__).parent.parent / "data" / "customers.db")
+        with _sqlite3.connect(_db_path) as _conn:
+            _rows = _conn.execute(
+                "SELECT ecount_cust_cd FROM customers WHERE ecount_cust_cd LIKE ?",
+                (f"{prefix}%",)
+            ).fetchall()
+        _nums = [int(cd[len(prefix):]) for (cd,) in _rows
+                 if cd and cd.startswith(prefix) and cd[len(prefix):].isdigit()]
+        serial = max(_nums) + 1 if _nums else 1000
+    except Exception:
+        serial = 1000
+    new_code = f"{prefix}{serial}"
 
     from datetime import datetime as _dt2
     remarks = f"LINE客戶自動建立 {_dt2.now().strftime('%Y-%m-%d %H:%M')}"

@@ -114,5 +114,15 @@ class StateManager:
         """清除群組預設代碼（訂單完成或取消後呼叫）"""
         self._group_pref.pop(user_id, None)
 
+    def all_states(self) -> dict[str, dict]:
+        """回傳所有尚未過期的狀態（供接手面板列舉用）"""
+        now = datetime.now()
+        with self._lock:
+            return {
+                uid: {k: v for k, v in st.items() if k != "_expires_at"}
+                for uid, st in self._store.items()
+                if st.get("_expires_at", now) > now
+            }
+
 
 state_manager = StateManager()

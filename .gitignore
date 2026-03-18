@@ -9,10 +9,17 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 
-# 快取
+# 快取 / 動態資料
 data/available.json
 data/products_cache.json
 data/label_queue.json
+data/ecount_customers.json
+data/image_hashes.json
+data/specs.json
+data/tray.lock
+data/group_ids.txt
+data/unfulfilled.json
+data/ecount_web_config.json
 
 # PDF 輸出
 *.pdf

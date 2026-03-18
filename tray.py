@@ -10,6 +10,7 @@ import sys
 import os
 import webbrowser
 import time
+import threading
 import urllib.request
 import json
 
@@ -18,7 +19,10 @@ from PIL import Image, ImageDraw
 
 # ── 路徑設定 ──────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-PYTHON      = sys.executable
+# 固定用 python.exe（不用 pythonw.exe），確保 uvicorn --reload 正常運作
+PYTHON      = os.path.join(os.path.dirname(sys.executable), "python.exe")
+if not os.path.exists(PYTHON):          # fallback
+    PYTHON  = sys.executable
 LOCK_FILE   = os.path.join(BASE_DIR, "data", "tray.lock")
 
 UVICORN_CMD = [PYTHON, "-m", "uvicorn", "main:app",
@@ -67,11 +71,13 @@ CREATE_NO_WINDOW = 0x08000000
 def _start_uvicorn():
     _kill_port_8000()   # 啟動前先清掉殘留 process
     time.sleep(0.5)
+    log_path = os.path.join(BASE_DIR, "server.log")
+    # 用 shell 重導向，讓 uvicorn 程序自己持有 fd，tray 重啟不影響
+    cmd_str = " ".join(f'"{c}"' if " " in c else c for c in UVICORN_CMD)
     p = subprocess.Popen(
-        UVICORN_CMD,
+        f'{cmd_str} >> "{log_path}" 2>&1',
         cwd=BASE_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        shell=True,
         creationflags=CREATE_NO_WINDOW,
     )
     _procs["uvicorn"] = p
@@ -109,7 +115,28 @@ def _kill_port_8000():
         pass
 
 
+_watchdog_running = False
+
+def _watchdog_loop():
+    """背景執行緒：每 5 秒檢查 uvicorn + caddy，若死掉就自動重啟"""
+    global _watchdog_running
+    while _watchdog_running:
+        time.sleep(5)
+        if not _watchdog_running:
+            break
+        p = _procs.get("uvicorn")
+        if p is not None and p.poll() is not None:
+            _kill_port_8000()
+            time.sleep(1)
+            _start_uvicorn()
+        c = _procs.get("caddy")
+        if c is not None and c.poll() is not None:
+            time.sleep(1)
+            _start_caddy()
+
 def _stop_all():
+    global _watchdog_running
+    _watchdog_running = False
     for name, p in list(_procs.items()):
         try:
             p.terminate()
@@ -182,6 +209,12 @@ def main():
     os.chdir(BASE_DIR)
     _start_uvicorn()
     _start_caddy()
+
+    # ── 啟動 watchdog 背景執行緒 ──
+    global _watchdog_running
+    _watchdog_running = True
+    t = threading.Thread(target=_watchdog_loop, daemon=True)
+    t.start()
 
     menu = pystray.Menu(
         pystray.MenuItem("🌐 開啟 Admin 介面", action_open_admin),
