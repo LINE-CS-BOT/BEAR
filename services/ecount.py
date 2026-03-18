@@ -134,7 +134,7 @@ class EcountClient:
                 json={"PROD_CD": prod_cd, "PROD_TYPE": "0"},
                 timeout=10,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 r = data.get("Data", {}).get("Result", {})
                 if r:
@@ -202,7 +202,7 @@ class EcountClient:
                 json={},
                 timeout=20,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 results = data.get("Data", {}).get("Result", [])
                 customers = []
@@ -334,7 +334,7 @@ class EcountClient:
                 json={"ProductList": [{"BulkDatas": bulk}]},
                 timeout=15,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200" and not data.get("Errors"):
                 slip = (data.get("Data", {}).get("SlipNos") or [""])[0]
                 print(f"[Ecount] save_product 成功: {prod_cd} → {slip}")
@@ -397,7 +397,7 @@ class EcountClient:
                     "PRICE":          price,
                     "SUPPLY_AMT":     supply_amt,
                     "ITEM_TIME_DATE": today,
-                    "ITEM_REMARK":    item.get("note", ""),   # 對應 Ecount 訂貨單行項「摘要」欄
+                    "REMARKS":        item.get("note", ""),   # 對應 Ecount 訂貨單行項「摘要」欄
                 }})
 
             resp = httpx.post(
@@ -406,7 +406,7 @@ class EcountClient:
                 json={"SaleOrderList": bulk_list},
                 timeout=10,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 slip_nos = data.get("Data", {}).get("SlipNos", [])
                 slip_no = slip_nos[0] if slip_nos else ""
@@ -499,7 +499,7 @@ class EcountClient:
                 json={},
                 timeout=20,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 results = data.get("Data", {}).get("Result", [])
                 import re as _re
@@ -598,7 +598,7 @@ class EcountClient:
                 json={"PROD_CD": prod_cd, "WH_CD": "101", "BASE_DATE": today, "ZERO_FLAG": "Y"},
                 timeout=10,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 results = data.get("Data", {}).get("Result", [])
                 if results:
@@ -653,7 +653,7 @@ class EcountClient:
                     json={"WH_CD": "101", "BASE_DATE": today, "ZERO_FLAG": "N"},
                     timeout=30,
                 )
-                data = resp.json()
+                data = self._safe_json(resp)
                 if str(data.get("Status")) == "200":
                     results = data.get("Data", {}).get("Result", [])
                     if results:
@@ -724,7 +724,7 @@ class EcountClient:
                 },
                 timeout=10,
             )
-            data = resp.json()
+            data = self._safe_json(resp)
             if str(data.get("Status")) == "200" and str(data.get("Data", {}).get("Code")) == "00":
                 self._session_id = data["Data"]["Datas"]["SESSION_ID"]
                 self._session_expires = time.time() + 3600  # 1 小時有效

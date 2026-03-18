@@ -426,18 +426,25 @@
     </div>
   </div>
 
-  <!-- ②-b 待審核新品項 -->
-  <div class="card" id="np-card">
-    <div class="report-toolbar">
-      <div class="card-label" style="margin-bottom:0">
-        🆕 待審核新品項
-        <span id="np-count-badge" class="np-badge-cnt" style="display:none">0</span>
-      </div>
-      <button class="btn-refresh" onclick="loadNewProducts()">🔄 重新整理</button>
-    </div>
-    <div id="np-table-wrap" style="margin-top:14px">
+  <!-- ── 到店提醒 ── -->
+  <div class="section">
+    <div class="section-title">📅 預計到店客人</div>
+    <div id="visit-list-inline" style="min-height:40px">
       <div style="color:#bbb;font-size:0.85rem">載入中...</div>
     </div>
+  </div>
+
+  <!-- 接手面板 -->
+  <div class="card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">👤 人工接手面板</div>
+      <button class="btn-refresh" onclick="loadTakeoverPanel()">🔄 重新整理</button>
+    </div>
+    <!-- 接手中清單 -->
+    <div id="takeover-active" style="margin-top:10px"></div>
+    <div style="font-size:0.8rem;color:#888;margin:10px 0 6px">最近 30 位客戶：</div>
+    <!-- 多欄網格：每欄 5 人 -->
+    <div id="takeover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:6px"></div>
   </div>
 
   <!-- ③ 處理記錄（左右雙欄） -->
@@ -468,10 +475,16 @@
     <div class="report-commands" id="report-commands"></div>
   </div>
 
-  <!-- ── 到店提醒 ── -->
-  <div class="section">
-    <div class="section-title">📅 預計到店客人</div>
-    <div id="visit-list-inline" style="min-height:40px">
+  <!-- ②-b 待審核新品項 -->
+  <div class="card" id="np-card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">
+        🆕 待審核新品項
+        <span id="np-count-badge" class="np-badge-cnt" style="display:none">0</span>
+      </div>
+      <button class="btn-refresh" onclick="loadNewProducts()">🔄 重新整理</button>
+    </div>
+    <div id="np-table-wrap" style="margin-top:14px">
       <div style="color:#bbb;font-size:0.85rem">載入中...</div>
     </div>
   </div>
@@ -1372,6 +1385,70 @@
   loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
   scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
   loadNewProducts();               // 載入待審核新品項
+  loadTakeoverPanel();
+  setInterval(loadTakeoverPanel, 30000); // 每 30 秒刷新接手面板
+
+  // ── 接手面板 ──────────────────────────────────────────
+  async function loadTakeoverPanel() {
+    const [custRes, toRes] = await Promise.all([
+      fetch('/admin/recent-customers'),
+      fetch('/admin/takeovers')
+    ]);
+    const customers = await custRes.json();  // [{user_id, display_name, real_name, last_seen}, ...]
+    const takeovers = await toRes.json();    // [{user_id, display_name, elapsed_min, remaining_min}, ...]
+    const takenSet  = new Set(takeovers.map(t => t.user_id));
+
+    // ── 接手中區塊 ──
+    const activeWrap = document.getElementById('takeover-active');
+    if (takeovers.length === 0) {
+      activeWrap.innerHTML = '<div style="font-size:0.8rem;color:#888;padding:4px 0">（目前無接手中的客戶）</div>';
+    } else {
+      activeWrap.innerHTML = takeovers.map(t => `
+        <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:#fff3e0;border-radius:6px;margin-bottom:5px;flex-wrap:wrap">
+          <span style="font-weight:600;font-size:0.88rem">🟠 ${t.display_name}</span>
+          <span style="font-size:0.78rem;color:#888">已接手 ${t.elapsed_min} 分，剩 ${t.remaining_min} 分</span>
+          <button onclick="doRelease('${t.user_id}')"
+                  style="margin-left:auto;padding:3px 10px;background:#388e3c;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:0.8rem">
+            ✅ 結束接手
+          </button>
+        </div>`).join('');
+    }
+
+    // ── 客戶網格 ──
+    const grid = document.getElementById('takeover-grid');
+    if (!customers.length) {
+      grid.innerHTML = '<div style="font-size:0.8rem;color:#aaa;padding:6px">尚無近期客戶紀錄</div>';
+      return;
+    }
+    grid.innerHTML = customers.map(c => {
+      const name    = c.name || c.user_id;
+      const taken   = takenSet.has(c.user_id);
+      const safeName = name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;
+                    padding:5px 8px;background:#fff;border-radius:6px;border:1px solid #e0e0e0;
+                    ${taken ? 'opacity:0.6' : ''}">
+          <span style="font-size:0.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:78px" title="${name}">${name}</span>
+          ${taken
+            ? `<span style="padding:3px 8px;background:#9e9e9e;color:#fff;border-radius:5px;font-size:0.76rem">接手中</span>`
+            : `<button onclick="doTakeover('${c.user_id}','${safeName}')"
+                       style="padding:3px 10px;background:#1a73e8;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:0.78rem">
+                 接手
+               </button>`
+          }
+        </div>`;
+    }).join('');
+  }
+
+  async function doTakeover(uid, name) {
+    await fetch(`/admin/takeover?user_id=${encodeURIComponent(uid)}&display_name=${encodeURIComponent(name)}`, { method: 'POST' });
+    await loadTakeoverPanel();
+  }
+
+  async function doRelease(uid) {
+    await fetch(`/admin/release?user_id=${encodeURIComponent(uid)}`, { method: 'POST' });
+    await loadTakeoverPanel();
+  }
 </script>
 </body>
 </html>

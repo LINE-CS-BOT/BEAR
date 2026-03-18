@@ -183,9 +183,12 @@ def detect_intent(text: str) -> Intent:
         if kw in text:
             return Intent.BARGAINING
 
-    for kw in _PRICE_KEYWORDS:
-        if kw in text:
-            return Intent.PRICE
+    # 運費相關問題優先排除，不走 PRICE（→ UNKNOWN 轉真人）
+    _SHIPPING_WORDS = ["運費", "含運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
+    if not any(w in text for w in _SHIPPING_WORDS):
+        for kw in _PRICE_KEYWORDS:
+            if kw in text:
+                return Intent.PRICE
 
     # 規格/介紹（在庫存之前，避免「有什麼顏色」被判成庫存）
     for kw in _SPEC_KEYWORDS:
@@ -220,9 +223,12 @@ def detect_intent(text: str) -> Intent:
             return Intent.CHECKOUT
 
     # 確認語放最後（避免「好的有貨嗎」被誤判）
-    for kw in _CONFIRMATION_KEYWORDS:
-        if text.strip() == kw or text.strip().startswith(kw):
-            return Intent.CONFIRMATION
+    # 若同時含有運費相關詞（如「好，謝謝，含運多少？」）→ 轉真人，不走確認
+    _SHIPPING_WORDS = ["運費", "含運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
+    if not any(w in text for w in _SHIPPING_WORDS):
+        for kw in _CONFIRMATION_KEYWORDS:
+            if text.strip() == kw or text.strip().startswith(kw):
+                return Intent.CONFIRMATION
 
     # 到店預告（放 UNKNOWN 前，關鍵字較具體）
     from handlers.visit import is_visit_message

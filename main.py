@@ -56,6 +56,8 @@ from handlers.internal import (
     handle_internal_upload_text, handle_internal_upload_finish,
     handle_ambiguous_resolve, handle_name_order_confirm,
     handle_internal_new_product,
+    _split_new_product_entries,
+    handle_internal_add_customer,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
@@ -468,6 +470,15 @@ def _txt_buf_flush(user_id: str) -> None:
             # 訂單 state：per-group（任何人都能接下「客戶名 N個」）
             group_order_state = state_manager.get(group_id)
 
+            # ── 新增品項：完整訊息 → 優先立即處理（不論是否在 session 中）──
+            if _NEW_PROD_TRIGGER_RE.match(combined.strip()) and _split_new_product_entries(combined):
+                _new_prod_timer_cancel(user_id)
+                state_manager.clear(user_id)
+                ack = handle_internal_new_product(combined)
+                if ack:
+                    _send_group_ack(ack)
+                return
+
             # ── 新增品項 Session 進行中 ──────────────────────────────────
             if upload_state and upload_state.get("action") == "new_product_session":
                 if _INTERNAL_UPLOAD_FINISH_RE.match(combined.strip()):   # 「完成」
@@ -604,12 +615,16 @@ def _txt_buf_flush(user_id: str) -> None:
                 if ack is None:
                     # ── 新增品項觸發 ──
                     if _NEW_PROD_TRIGGER_RE.match(combined.strip()):
-                        state_manager.set(user_id, {
-                            "action": "new_product_session",
-                            "lines":  [combined],
-                        })
-                        _new_prod_timer_reset(user_id, group_id, reply_token)
-                        ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
+                        # 訊息已含品項資料 → 直接處理，不開 session
+                        if _split_new_product_entries(combined):
+                            ack = handle_internal_new_product(combined)
+                        else:
+                            state_manager.set(user_id, {
+                                "action": "new_product_session",
+                                "lines":  [combined],
+                            })
+                            _new_prod_timer_reset(user_id, group_id, reply_token)
+                            ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
                         ack = (
                             _handle_pending_list_command(combined)
@@ -619,6 +634,7 @@ def _txt_buf_flush(user_id: str) -> None:
                             or _handle_spec_rebuild_command(combined)
                             or _handle_bot_notify_command(combined)
                             or handle_internal_tag_push(combined, line_api)
+                            or handle_internal_add_customer(combined)
                             or handle_internal_notify_register(combined)
                             or handle_internal_arrival(combined, line_api)
                             or handle_ambiguous_resolve(group_id, combined)
@@ -632,12 +648,16 @@ def _txt_buf_flush(user_id: str) -> None:
                 try:
                     # ── 新增品項觸發 ──
                     if _NEW_PROD_TRIGGER_RE.match(combined.strip()):
-                        state_manager.set(user_id, {
-                            "action": "new_product_session",
-                            "lines":  [combined],
-                        })
-                        _new_prod_timer_reset(user_id, group_id, reply_token)
-                        ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
+                        # 訊息已含品項資料 → 直接處理，不開 session
+                        if _split_new_product_entries(combined):
+                            ack = handle_internal_new_product(combined)
+                        else:
+                            state_manager.set(user_id, {
+                                "action": "new_product_session",
+                                "lines":  [combined],
+                            })
+                            _new_prod_timer_reset(user_id, group_id, reply_token)
+                            ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
                         ack = (
                             _handle_pending_list_command(combined)
@@ -2051,10 +2071,109 @@ async def admin_delete_new_product(item_id: int):
     return {"ok": ok}
 
 
+# ── 接手面板 API ──────────────────────────────────────────────────────────
+_TAKEOVER_EXPIRE_MINUTES = 60  # 60 分鐘後自動恢復
+
+@app.post("/admin/takeover")
+async def admin_takeover(user_id: str, display_name: str = ""):
+    """員工接手客戶對話，bot 靜默 60 分鐘"""
+    import time as _time
+    state_manager.set(user_id, {
+        "action":       "human_takeover",
+        "taken_at":     _time.time(),
+        "display_name": display_name,
+    })
+    print(f"[takeover] 接手: {display_name}（{user_id[:10]}...）")
+    return {"status": "ok", "user_id": user_id}
+
+@app.post("/admin/release")
+async def admin_release(user_id: str):
+    """釋放客戶，bot 恢復回覆"""
+    st = state_manager.get(user_id) or {}
+    if st.get("action") == "human_takeover":
+        state_manager.clear(user_id)
+        print(f"[takeover] 釋放: {user_id[:10]}...")
+    return {"status": "ok", "user_id": user_id}
+
+@app.get("/admin/takeovers")
+async def admin_list_takeovers():
+    """列出目前所有接手中的客戶"""
+    import time as _time
+    now = _time.time()
+    results = []
+    for uid, st in state_manager.all_states().items():
+        if st.get("action") == "human_takeover":
+            taken_at  = st.get("taken_at", now)
+            elapsed   = int((now - taken_at) / 60)
+            remaining = max(0, _TAKEOVER_EXPIRE_MINUTES - elapsed)
+            if remaining == 0:
+                state_manager.clear(uid)
+                continue
+            cust = customer_store.get_by_line_id(uid)
+            results.append({
+                "user_id":       uid,
+                "display_name":  st.get("display_name") or (cust.get("real_name") or cust.get("display_name") if cust else uid[:10]),
+                "elapsed_min":   elapsed,
+                "remaining_min": remaining,
+            })
+    return results
+
+@app.get("/admin/recent-customers")
+async def admin_recent_customers():
+    """取得最近 30 位互動的客戶（供接手面板使用）"""
+    import sqlite3 as _sq, os as _os
+    db_path = _os.path.join(_os.path.dirname(__file__), "data", "customers.db")
+    try:
+        with _sq.connect(db_path) as conn:
+            rows = conn.execute("""
+                SELECT line_user_id, real_name, display_name, chat_label
+                FROM customers
+                WHERE line_user_id IS NOT NULL
+                ORDER BY last_seen DESC
+                LIMIT 30
+            """).fetchall()
+        takeover_uids = {uid for uid, st in state_manager.all_states().items()
+                         if st.get("action") == "human_takeover"}
+        return [
+            {
+                "user_id":      r[0],
+                "name":         r[1] or r[3] or r[2] or r[0][:10],
+                "is_takeover":  r[0] in takeover_uids,
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        return []
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
     body = await request.body()
+
+    # ── chat_mode_changed 事件（員工點「使用手動聊天」）────────────────────
+    try:
+        import json as _json
+        _payload = _json.loads(body)
+        for _ev in _payload.get("events", []):
+            _ev_type = _ev.get("type", "")
+            # 記錄所有非 message 事件，方便除錯
+            if _ev_type != "message":
+                print(f"[webhook] 非message事件: type={_ev_type} ev={_json.dumps(_ev, ensure_ascii=False)[:300]}", flush=True)
+            if _ev_type == "chat_mode_changed":
+                _uid  = (_ev.get("source") or {}).get("userId", "")
+                _mode = _ev.get("mode", "")
+                if _uid:
+                    if _mode == "standby":
+                        state_manager.set(_uid, {"action": "human_takeover"})
+                        print(f"[chat_mode] 員工接手 {_uid[:10]}... → bot 靜默")
+                    elif _mode == "active":
+                        if (state_manager.get(_uid) or {}).get("action") == "human_takeover":
+                            state_manager.clear(_uid)
+                        print(f"[chat_mode] bot 恢復 {_uid[:10]}...")
+    except Exception as _e:
+        print(f"[webhook] chat_mode parse 錯誤: {_e}")
+
     try:
         _webhook_handler.handle(body.decode("utf-8"), signature)
     except InvalidSignatureError:
@@ -2129,6 +2248,15 @@ def on_message(event: MessageEvent):
                 return
             # 新增品項觸發
             if _NEW_PROD_TRIGGER_RE.match(text.strip()):
+                # 訊息已含品項資料 → 直接處理，不開 session
+                if _split_new_product_entries(text):
+                    ack = handle_internal_new_product(text)
+                    if ack:
+                        line_api.reply_message(ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[TextMessage(text=ack)],
+                        ))
+                    return
                 state_manager.set(user_id, {
                     "action": "new_product_session",
                     "lines":  [text],
@@ -2205,7 +2333,8 @@ def on_message(event: MessageEvent):
 
         # ── 真人介入中 → 凍結 bot，不進緩衝 ────────────────────────
         if source_type == "user" and (
-            issue_store.has_pending_issue(user_id)
+            (state_manager.get(user_id) or {}).get("action") == "human_takeover"
+            or issue_store.has_pending_issue(user_id)
             or delivery_store.has_pending(user_id)
             or pending_store.has_pending(user_id)
         ):

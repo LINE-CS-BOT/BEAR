@@ -87,6 +87,12 @@ def _handle_available(request: dict, line_api: MessagingApi) -> str | None:
     prod_cd = request["prod_cd"]
     qty = request["qty"]
 
+    # 箱/件換算
+    from handlers.ordering import resolve_order_qty
+    actual_qty = resolve_order_qty(prod_cd, qty)
+    if actual_qty != qty:
+        print(f"[restock] 箱件換算: {prod_cd} {qty} → {actual_qty} 個")
+
     restock_store.update_status(request["id"], "available")
 
     cust_code = customer_store.get_ecount_cust_code(
@@ -96,18 +102,18 @@ def _handle_available(request: dict, line_api: MessagingApi) -> str | None:
     _phone = (customer_store.get_by_line_id(user_id) or {}).get("phone", "") or ""
     slip_no = ecount_client.save_order(
         cust_code=cust_code,
-        items=[{"prod_cd": prod_cd, "qty": qty}],
+        items=[{"prod_cd": prod_cd, "qty": actual_qty}],
         phone=_phone,
     )
 
     if slip_no:
         restock_store.update_status(request["id"], "confirmed")
-        print(f"[restock] 訂單建立成功: {slip_no} | {cust_code} | {prod_name} x{qty}")
-        _push_to_customer(user_id, tone.restock_order_confirmed(prod_name, qty, slip_no), line_api)
+        print(f"[restock] 訂單建立成功: {slip_no} | {cust_code} | {prod_name} x{actual_qty}")
+        _push_to_customer(user_id, tone.restock_order_confirmed(prod_name, actual_qty, slip_no), line_api)
     else:
-        print(f"[restock] 訂單建立失敗: {cust_code} | {prod_name} x{qty}")
+        print(f"[restock] 訂單建立失敗: {cust_code} | {prod_name} x{actual_qty}")
         from storage.issues import issue_store
-        issue_store.add(user_id, "order_failed", f"{prod_name} × {qty} 個（調貨）")
+        issue_store.add(user_id, "order_failed", f"{prod_name} × {actual_qty} 個（調貨）")
 
     return "好的"
 
