@@ -231,8 +231,8 @@ async def _enable_include_zero(page) -> bool:
     return False
 
 
-async def _fill_and_extract(page) -> dict[str, int]:
-    """填倉庫=101 → 啟用包含0 → 點查詢 → 提取可售庫存（欄9）"""
+async def _fill_and_extract(page) -> dict[str, dict]:
+    """填倉庫=101 → 啟用包含0 → 點查詢 → 提取庫存數量（含出庫單價，若有）"""
 
     # 填倉庫代碼（noneEvent class，用 JS 設值）
     try:
@@ -322,28 +322,89 @@ async def _fill_and_extract(page) -> dict[str, int]:
         print(f"[sync] 切換每頁筆數略過: {e}")
 
     # ── 提取（支援虛擬滾動：一頁到底但 DOM 只渲染可見行）────────────────
-    _EXTRACT_JS = """
+    # ── 先偵測欄位標題，找出各欄的索引位置 ────────────────────────────
+    _HEADER_JS = """
         () => {
+            // 嘗試從 #grid-head 或 #grid-main 第一行讀取欄位標題
+            const headTable = document.getElementById('grid-head')
+                           || document.getElementById('grid-main');
+            if (!headTable) return [];
+            const headerRow = headTable.rows[0];
+            if (!headerRow) return [];
+            return Array.from(headerRow.cells).map((c, i) => ({
+                index: i,
+                text: c.textContent.trim().replace(/\s+/g, ' ')
+            }));
+        }
+    """
+    headers_raw = await page.evaluate(_HEADER_JS)
+    # 印出欄位清單（方便除錯與確認出庫單價位置）
+    if headers_raw:
+        header_list = "  ".join(f"[{h['index']}]{h['text']}" for h in headers_raw)
+        print(f"[sync] 欄位清單: {header_list}")
+
+    # 建立 欄位名稱 → 索引 的對照表
+    col_idx: dict[str, int] = {}
+    _COL_ALIASES = {
+        "code":      ["品號", "貨號", "Prod. Code", "제품코드"],
+        "incoming":  ["入庫量", "入庫", "Incoming", "입고"],
+        "unfilled":  ["未出量", "未出庫", "Unfilled", "미출"],
+        "balance":   ["結存量", "結存", "Balance", "재고"],
+        "available": ["可售量", "可售", "Available", "가용"],
+        "preorder":  ["預購量", "預購", "Pre-order", "예약"],
+        "unit_price":["出庫單價", "單價", "Unit Price", "단가"],
+    }
+    for key, aliases in _COL_ALIASES.items():
+        for h in headers_raw:
+            if any(a in h["text"] for a in aliases):
+                col_idx[key] = h["index"]
+                break
+
+    # 欄位未偵測到時用原始固定索引作為後備
+    _FALLBACK = {
+        "code": 1, "incoming": 6, "unfilled": 7,
+        "balance": 8, "available": 9, "preorder": 10,
+        # unit_price 沒有 fallback（沒偵測到就不抓）
+    }
+    for key, fb in _FALLBACK.items():
+        if key not in col_idx:
+            col_idx[key] = fb
+
+    has_unit_price = "unit_price" in col_idx
+    if has_unit_price:
+        print(f"[sync] ✓ 找到「出庫單價」欄（索引 {col_idx['unit_price']}）")
+    else:
+        print("[sync] ⚠️ 未找到「出庫單價」欄，只抓庫存數量")
+
+    _EXTRACT_JS = f"""
+        () => {{
             const table = document.getElementById('grid-main');
-            if (!table) return {error: 'no #grid-main'};
-            const available = {};
+            if (!table) return {{error: 'no #grid-main'}};
+            const available = {{}};
             let totalRows = 0;
-            const n = s => Math.round(parseFloat((s || '').replace(/,/g,'')) || 0);
-            for (let i = 1; i < table.rows.length; i++) {
+            const n  = s => Math.round(parseFloat((s || '').replace(/,/g,'')) || 0);
+            const f  = s => parseFloat((s || '').replace(/,/g,'')) || 0;
+            const CI = {json.dumps(col_idx)};
+            const HAS_PRICE = {str(has_unit_price).lower()};
+            for (let i = 1; i < table.rows.length; i++) {{
                 const row  = table.rows[i];
-                const code = row.cells[1]?.textContent?.trim();
+                const code = row.cells[CI.code]?.textContent?.trim();
                 if (!code || !/^[A-Za-z0-9\\-]+$/.test(code)) continue;
                 totalRows++;
-                available[code.toUpperCase()] = {
-                    incoming: n(row.cells[6]?.textContent?.trim()),
-                    unfilled: n(row.cells[7]?.textContent?.trim()),
-                    balance:  n(row.cells[8]?.textContent?.trim()),
-                    available: n(row.cells[9]?.textContent?.trim()),
-                    preorder:  n(row.cells[10]?.textContent?.trim()),
-                };
-            }
-            return {totalRows, available};
-        }
+                const entry = {{
+                    incoming:  n(row.cells[CI.incoming]?.textContent?.trim()),
+                    unfilled:  n(row.cells[CI.unfilled]?.textContent?.trim()),
+                    balance:   n(row.cells[CI.balance]?.textContent?.trim()),
+                    available: n(row.cells[CI.available]?.textContent?.trim()),
+                    preorder:  n(row.cells[CI.preorder]?.textContent?.trim()),
+                }};
+                if (HAS_PRICE) {{
+                    entry.unit_price = f(row.cells[CI.unit_price]?.textContent?.trim());
+                }}
+                available[code.toUpperCase()] = entry;
+            }}
+            return {{totalRows, available}};
+        }}
     """
     _SCROLL_JS = """
         (amount) => {
@@ -477,8 +538,10 @@ def main():
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[sync] {now}  更新 {len(result)} 筆 → {OUTPUT_PATH.name}")
     top = sorted(result.items(), key=lambda x: x[1].get("available", 0), reverse=True)[:5]
+    has_price = any("unit_price" in d for d in result.values())
     for code, d in top:
-        print(f"  {code:<15} 可售:{d.get('available',0):>5}  可預購:{d.get('preorder',0):>5}")
+        price_str = f"  出庫單價:{d.get('unit_price',0):>8.2f}" if has_price else ""
+        print(f"  {code:<15} 可售:{d.get('available',0):>5}  可預購:{d.get('preorder',0):>5}{price_str}")
 
 
 if __name__ == "__main__":

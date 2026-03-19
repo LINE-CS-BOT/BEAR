@@ -49,14 +49,14 @@ _COLOR_WORDS = [
 
 def _has_color_query(text: str) -> bool:
     """偵測「產品編號 + 顏色詞」的組合詢問（顏色變體）"""
-    has_code = bool(re.search(r"[A-Za-z]\d{3,}", text))
+    has_code = bool(re.search(r"[A-Za-z]\d{3,}(?:-\d+)?", text))
     has_color = any(c in text for c in _COLOR_WORDS)
     return has_code and has_color
 
 
 def _extract_all_codes(text: str) -> list[str]:
     """從複合詢問中提取所有產品編號（最多 3 款）"""
-    found = re.findall(r"[A-Za-z]\d{4,}", text.upper())
+    found = re.findall(r"[A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?", text.upper())
     seen, result = set(), []
     for code in found:
         if code not in seen:

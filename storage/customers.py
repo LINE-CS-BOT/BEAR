@@ -245,36 +245,53 @@ class CustomerStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def search_by_name(self, name: str) -> list[dict]:
+    def search_by_name(self, name: str, real_name_only: bool = False) -> list[dict]:
         """
-        用姓名找客戶（real_name / chat_label / display_name）。
-        內部群組使用 Ecount 姓名呼叫，三個欄位都要搜。
-        完全比對優先；找不到再模糊比對。
+        用姓名找客戶。
+        real_name_only=True：只精確比對 real_name / chat_label，不做模糊搜尋（內部群組用）
+        real_name_only=False：real_name / chat_label / display_name 三欄都查，完全比對優先再模糊比對
         回傳 list（可能多筆）。
         """
+        # 去除括號（如「陳怡如(彥鈞)」→「陳怡如」）後再搜尋
+        name_clean = re.sub(r'[\(（][^\)）]*[\)）]', '', name).strip() or name
+
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
-            # 完全比對（real_name 優先，再 chat_label，再 display_name）
-            rows = conn.execute(
-                """SELECT * FROM customers
-                   WHERE real_name=? OR chat_label=? OR display_name=?
-                   ORDER BY
-                     CASE WHEN real_name=? THEN 0
-                          WHEN chat_label=? THEN 1
-                          ELSE 2 END,
-                     last_seen DESC""",
-                (name, name, name, name, name)
-            ).fetchall()
-            if rows:
-                return [dict(r) for r in rows]
-            # 模糊比對
-            q = f"%{name}%"
-            rows = conn.execute(
-                """SELECT * FROM customers
-                   WHERE real_name LIKE ? OR chat_label LIKE ? OR display_name LIKE ?
-                   ORDER BY last_seen DESC LIMIT 5""",
-                (q, q, q)
-            ).fetchall()
+            if real_name_only:
+                # 完全比對 real_name / chat_label（不含 display_name LINE 暱稱）；不做模糊搜尋
+                for n in dict.fromkeys([name, name_clean]):  # 原始名優先，再試去括號版
+                    rows = conn.execute(
+                        """SELECT * FROM customers
+                           WHERE real_name=? OR chat_label=?
+                           ORDER BY CASE WHEN real_name=? THEN 0 ELSE 1 END,
+                                    last_seen DESC""",
+                        (n, n, n)
+                    ).fetchall()
+                    if rows:
+                        return [dict(r) for r in rows]
+                rows = []  # 找不到
+            else:
+                # 完全比對（real_name 優先，再 chat_label，再 display_name）
+                rows = conn.execute(
+                    """SELECT * FROM customers
+                       WHERE real_name=? OR chat_label=? OR display_name=?
+                       ORDER BY
+                         CASE WHEN real_name=? THEN 0
+                              WHEN chat_label=? THEN 1
+                              ELSE 2 END,
+                         last_seen DESC""",
+                    (name, name, name, name, name)
+                ).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+                # 模糊比對
+                q = f"%{name}%"
+                rows = conn.execute(
+                    """SELECT * FROM customers
+                       WHERE real_name LIKE ? OR chat_label LIKE ? OR display_name LIKE ?
+                       ORDER BY last_seen DESC LIMIT 5""",
+                    (q, q, q)
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def all(self, limit: int = 500) -> list[dict]:

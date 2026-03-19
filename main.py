@@ -57,6 +57,8 @@ from handlers.internal import (
     handle_ambiguous_resolve, handle_name_order_confirm,
     handle_internal_new_product,
     _split_new_product_entries,
+    handle_internal_spec_inquiry, handle_spec_inquiry_reply, handle_spec_inquiry_qty,
+    handle_internal_price_query,
     handle_internal_add_customer,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
@@ -64,6 +66,7 @@ from handlers.internal import (
     _UPLOAD_TRIGGERS as _INTERNAL_UPLOAD_TRIGGERS,
     _UPLOAD_FINISH_RE as _INTERNAL_UPLOAD_FINISH_RE,
 )
+from handlers.ad_maker import handle_ad_update_trigger
 from handlers.payment import is_payment_message, handle_payment
 from handlers.price import handle_price
 from handlers.summary import send_pending_summary, send_full_report, build_full_report, build_pending_text
@@ -627,7 +630,10 @@ def _txt_buf_flush(user_id: str) -> None:
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
                         ack = (
-                            _handle_pending_list_command(combined)
+                            handle_spec_inquiry_reply(group_id, combined, line_api)
+                            or handle_spec_inquiry_qty(group_id, combined, line_api)
+                            or handle_ad_update_trigger(combined, group_id, line_api)
+                            or _handle_pending_list_command(combined)
                             or _handle_staff_resolve(combined)
                             or _handle_visit_resolve(combined)
                             or _handle_visit_query_command(combined)
@@ -635,14 +641,16 @@ def _txt_buf_flush(user_id: str) -> None:
                             or _handle_bot_notify_command(combined)
                             or handle_internal_tag_push(combined, line_api)
                             or handle_internal_add_customer(combined)
-                            or handle_internal_notify_register(combined)
+                            or handle_internal_notify_register(combined, line_api)
                             or handle_internal_arrival(combined, line_api)
                             or handle_ambiguous_resolve(group_id, combined)
                             or handle_name_order_confirm(group_id, combined)
                             or handle_internal_order(combined, line_api, group_id=group_id)
                             or handle_internal_spec_query(combined)
                             or handle_internal_product_info(combined, group_id)
+                            or handle_internal_price_query(combined)
                             or handle_internal_inventory(combined, group_id)
+                            or handle_internal_spec_inquiry(combined, group_id)
                         )
             else:
                 try:
@@ -660,22 +668,27 @@ def _txt_buf_flush(user_id: str) -> None:
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
                         ack = (
-                            _handle_pending_list_command(combined)
+                            handle_spec_inquiry_reply(group_id, combined, line_api)
+                            or handle_spec_inquiry_qty(group_id, combined, line_api)
+                            or handle_ad_update_trigger(combined, group_id, line_api)
+                            or _handle_pending_list_command(combined)
                             or _handle_staff_resolve(combined)
                             or _handle_visit_resolve(combined)
                             or _handle_visit_query_command(combined)
                             or _handle_spec_rebuild_command(combined)
                             or _handle_bot_notify_command(combined)
                             or handle_internal_tag_push(combined, line_api)
-                            or handle_internal_notify_register(combined)
+                            or handle_internal_notify_register(combined, line_api)
                             or handle_internal_arrival(combined, line_api)
                             or handle_ambiguous_resolve(group_id, combined)
                             or handle_name_order_confirm(group_id, combined)
                             or handle_internal_order(combined, line_api, group_id=group_id)
                             or handle_internal_spec_query(combined)
                             or handle_internal_product_info(combined, group_id)
-                        or handle_internal_inventory(combined, group_id)
-                    )
+                            or handle_internal_price_query(combined)
+                            or handle_internal_inventory(combined, group_id)
+                            or handle_internal_spec_inquiry(combined, group_id)
+                        )
                 except Exception as _ge:
                     print(f"[txt-buf] 內部群處理例外: {_ge}", flush=True)
                     import traceback; traceback.print_exc()
@@ -1279,7 +1292,7 @@ def _handle_bot_notify_command(text: str) -> str | None:
     prod_name = result.get("name") or prod_code_raw
 
     # ── 查客戶 DB ─────────────────────────────────────
-    matches = customer_store.search_by_name(cust_name)
+    matches = customer_store.search_by_name(cust_name, real_name_only=True)
     if not matches:
         return (
             f"找不到「{cust_name}」的資料\n"
@@ -1318,15 +1331,12 @@ async def push_summary():
     return {"status": "ok"}
 
 
-@app.post("/admin/restart")
-async def admin_restart():
-    """重啟 uvicorn server（以相同參數重新啟動）"""
-    import sys, os, threading
-    def _do_restart():
-        import time; time.sleep(0.5)
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    threading.Thread(target=_do_restart, daemon=True).start()
-    return {"status": "restarting"}
+@app.post("/admin/generate-ad")
+async def admin_generate_ad():
+    """觸發廣告圖更新（同內部群 `廣告圖更新` 指令）"""
+    from handlers.ad_maker import handle_ad_update_trigger
+    result = handle_ad_update_trigger("廣告圖更新", settings.LINE_GROUP_ID)
+    return {"status": "ok", "message": result or "已啟動"}
 
 
 @app.post("/admin/process-queue")
@@ -1785,6 +1795,13 @@ async def set_customer_preferred_address(
     }
 
 
+# ── 根路徑導向 admin ────────────────────────────────────
+from fastapi.responses import RedirectResponse
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/admin")
+
 # ── 管理介面 HTML ────────────────────────────────────
 @app.get("/admin")
 async def admin_ui():
@@ -2161,7 +2178,8 @@ async def webhook(request: Request):
             if _ev_type != "message":
                 print(f"[webhook] 非message事件: type={_ev_type} ev={_json.dumps(_ev, ensure_ascii=False)[:300]}", flush=True)
             if _ev_type == "chat_mode_changed":
-                _uid  = (_ev.get("source") or {}).get("userId", "")
+                _src  = _ev.get("source") or {}
+                _uid  = _src.get("userId", "") or _src.get("groupId", "") or _src.get("roomId", "")
                 _mode = _ev.get("mode", "")
                 if _uid:
                     if _mode == "standby":
@@ -2191,11 +2209,21 @@ def on_message(event: MessageEvent):
         if group_id not in _seen_group_ids:
             _seen_group_ids.append(group_id)
         print(f"[GROUP] {group_id}", flush=True)
-        # 寫檔備份
+        # 寫檔備份（含 user_id + display_name）
         try:
+            _uid = event.source.user_id
+            # 嘗試取得顯示名稱
+            _display = ""
+            try:
+                with ApiClient(_configuration) as _api:
+                    _profile = MessagingApi(_api).get_group_member_profile(group_id, _uid)
+                    _display = _profile.display_name or ""
+            except Exception:
+                pass
             log_path = _BASE_DIR / "data" / "group_ids.txt"
             with open(str(log_path), "a", encoding="utf-8") as f:
-                f.write(f"{group_id}\n")
+                from datetime import datetime as _dt
+                f.write(f"{_dt.now().strftime('%m-%d %H:%M')} | {group_id} | {_uid} | {_display}\n")
         except Exception as e:
             print(f"[GROUP] 寫檔失敗: {e}", flush=True)
 
@@ -2212,7 +2240,8 @@ def on_message(event: MessageEvent):
         except Exception:
             display_name = ""
         try:
-            customer_store.upsert_from_line(user_id, display_name)
+            if display_name:  # display_name 空白時不建立空記錄
+                customer_store.upsert_from_line(user_id, display_name)
         except Exception as e:
             print(f"[customers] upsert 失敗: {e}")
 
@@ -2332,9 +2361,12 @@ def on_message(event: MessageEvent):
                     return
 
         # ── 真人介入中 → 凍結 bot，不進緩衝 ────────────────────────
+        _check_id = group_id if source_type == "group" else user_id
+        if (state_manager.get(_check_id) or {}).get("action") == "human_takeover":
+            print(f"[escalate] 真人介入中（群組），靜默 | {_check_id[:10]}...: {text!r}")
+            return
         if source_type == "user" and (
-            (state_manager.get(user_id) or {}).get("action") == "human_takeover"
-            or issue_store.has_pending_issue(user_id)
+            issue_store.has_pending_issue(user_id)
             or delivery_store.has_pending(user_id)
             or pending_store.has_pending(user_id)
         ):
@@ -2386,7 +2418,8 @@ def on_image_message(event: MessageEvent):
         line_api = MessagingApi(api_client)
         try:
             profile = line_api.get_profile(user_id)
-            customer_store.upsert_from_line(user_id, profile.display_name)
+            if profile.display_name:  # display_name 空白時不建立空記錄
+                customer_store.upsert_from_line(user_id, profile.display_name)
         except Exception:
             pass
 
@@ -2821,6 +2854,12 @@ def _handle_stateful(
 
     # ── 等待產品名稱 ───────────────────────────────
     elif action == "awaiting_product":
+        # 長訊息且不含貨號 → 使用者已換話題，清除狀態並轉真人
+        _has_prod_code = bool(re.search(r'[A-Za-z]{1,3}-?\d{3,6}', text))
+        if len(text) > 20 and not _has_prod_code:
+            state_manager.clear(user_id)
+            from handlers.escalate import handle_unknown
+            return handle_unknown(user_id, text, line_api)
         state_manager.clear(user_id)
         from handlers.inventory import query_product
         return query_product(user_id, text, line_api)
@@ -2905,7 +2944,8 @@ def _handle_stateful(
 
     else:
         state_manager.clear(user_id)
-        return f"{tone.sorry()}，我不太明白您的意思，可以再說一次嗎{tone.suffix_light()}"
+        from handlers.escalate import handle_unknown
+        return handle_unknown(user_id, text, line_api)
 
 
 def _dispatch(
