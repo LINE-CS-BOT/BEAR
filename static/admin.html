@@ -423,6 +423,7 @@
       <button class="btn btn-start" id="btn-on"  onclick="setBotState(true)"  style="display:none">▶ 啟動機器人</button>
       <button class="btn btn-stop"  id="btn-off" onclick="setBotState(false)" style="display:none">⏹ 關閉機器人</button>
       <button class="btn" onclick="restartServer()" style="margin-left:12px;background:#f57c00;color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.88rem;">🔄 重啟 Server</button>
+      <button class="btn" onclick="generateAd()" style="margin-left:12px;background:#7b1fa2;color:#fff;border:none;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:0.88rem;">🖼️ 廣告圖更新</button>
     </div>
   </div>
 
@@ -680,6 +681,24 @@
     }
   }
 
+  // ── 廣告圖更新 ───────────────────────────────────
+  async function generateAd() {
+    if (!confirm('啟動廣告圖更新？\nGemini 瀏覽器將自動開啟並生成圖片。')) return;
+    const btn = event.target;
+    btn.textContent = '啟動中...';
+    btn.disabled = true;
+    try {
+      const res  = await fetch('/admin/generate-ad', { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || '廣告圖生成已啟動，完成後會通知內部群。');
+    } catch(e) {
+      alert('啟動失敗：' + e);
+    } finally {
+      btn.textContent = '🖼️ 廣告圖更新';
+      btn.disabled = false;
+    }
+  }
+
   // ── Bot 開關 ─────────────────────────────────────
   async function setBotState(on) {
     const btnOn  = document.getElementById('btn-on');
@@ -820,7 +839,7 @@
         return;
       }
 
-      const CLASS_LABEL = { '00001':'原裝', '00002':'盒', '00004':'定裝' };
+      const CLASS_LABEL = { '00001':'原裝', '00002':'改裝', '00004':'定裝' };
 
       let html = `<div style="overflow-x:auto"><table class="np-table">
         <thead><tr>

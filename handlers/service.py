@@ -223,7 +223,7 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
         issue_store.add(user_id, "image_query", "（傳來一張圖片，無法辨識）")
         now = datetime.now(pytz.timezone(_settings.BUSINESS_TZ))
         if _is_open_now(now):
-            return "稍等一下我看看喔"
+            return tone.checking()
         else:
             return "上班時處理嘿"
 
