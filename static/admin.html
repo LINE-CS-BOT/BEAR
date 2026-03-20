@@ -1546,8 +1546,22 @@
         　總回饋：$${(rebate.summary?.total_rebate || 0).toLocaleString()}
       </div>`;
 
-      // Approaching customers
-      if (approaching.length > 0) {
+      // Approaching / Last month achievers (API 根據日期自動切換)
+      const isFirstHalf = new Date().getDate() < 15;
+      if (isFirstHalf && approaching.achievers) {
+        // 1~14日：顯示上月確定達標
+        if (approaching.achievers.length > 0) {
+          html += `<div style="margin-bottom:12px;padding:10px;background:#e8f5e9;border-radius:8px">
+            <strong>✅ ${approaching.month} 確定達標（${approaching.achievers.length} 組，共 $${approaching.total_rebate.toLocaleString()}）：</strong>`;
+          for (const g of approaching.achievers) {
+            html += `<div style="margin-top:4px">
+              ${g.group_name}　$${g.total.toLocaleString()}　${g.tier}　→ $${g.rebate.toLocaleString()}
+            </div>`;
+          }
+          html += '</div>';
+        }
+      } else if (approaching.length > 0) {
+        // 15日起：顯示快接近達成
         html += `<div style="margin-bottom:12px;padding:10px;background:#fff8e1;border-radius:8px">
           <strong>⚡ 快接近達成：</strong>`;
         for (const a of approaching) {
@@ -1558,8 +1572,8 @@
         html += '</div>';
       }
 
-      // Rebate table
-      if (rebate.groups && rebate.groups.length) {
+      // Rebate table（15日前不顯示當月明細）
+      if (!isFirstHalf && rebate.groups && rebate.groups.length) {
         html += `<table class="cust-table">
           <thead><tr>
             <th>客戶</th>
@@ -1569,7 +1583,7 @@
           </tr></thead><tbody>`;
 
         for (const g of rebate.groups) {
-          if (g.members.length === 1) {
+          if (g.members.length === 1 && !g.members[0].stores) {
             const m = g.members[0];
             const tierColor = g.tier === '未達' ? '#999' : g.tier === '10萬' ? '#c62828' : g.tier === '6萬' ? '#e65100' : '#2e7d32';
             html += `<tr>
@@ -1587,7 +1601,7 @@
               <td><span style="color:${tierColor};font-weight:700">${g.tier}</span></td>
               <td style="text-align:right;font-family:monospace;font-weight:700;color:${g.rebate > 0 ? '#c62828' : '#ccc'}">$${g.rebate.toLocaleString()}</td>
             </tr>`;
-            // Members
+            // Members（合併組按人+各店；一般組按店）
             for (const m of g.members) {
               html += `<tr style="color:#666">
                 <td style="padding-left:24px">└ ${m.name}</td>
@@ -1595,6 +1609,16 @@
                 <td></td>
                 <td style="text-align:right;font-family:monospace;color:${m.rebate > 0 ? '#c62828' : '#ccc'}">$${m.rebate.toLocaleString()}</td>
               </tr>`;
+              // 合併組：顯示各店明細
+              if (m.stores && m.stores.length > 1) {
+                for (const s of m.stores) {
+                  html += `<tr style="color:#aaa;font-size:0.88em">
+                    <td style="padding-left:48px">${s.name}</td>
+                    <td style="text-align:right;font-family:monospace">$${s.amount.toLocaleString()}</td>
+                    <td></td><td></td>
+                  </tr>`;
+                }
+              }
             }
           }
         }

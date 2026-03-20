@@ -26,6 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 ROOT = Path(__file__).parent.parent
 OUTPUT_PATH = ROOT / "data" / "rebate_sales.json"
+LAST_MONTH_PATH = ROOT / "data" / "rebate_sales_lastmonth.json"
 
 sys.path.insert(0, str(ROOT))
 from scripts._chrome_helper import (
@@ -300,13 +301,14 @@ async def sync_rebate(last_month: bool = False):
 
     if data:
         month_label = "上月" if last_month else "本月"
-        OUTPUT_PATH.write_text(
+        target_path = LAST_MONTH_PATH if last_month else OUTPUT_PATH
+        target_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         total = sum(d["amount"] for d in data)
         print(f"[rebate] ✓ {month_label}回饋金資料已存：{len(data)} 筆客戶，合計 ${total:,.0f}")
-        print(f"[rebate]   → {OUTPUT_PATH}")
+        print(f"[rebate]   → {target_path}")
 
         for d in sorted(data, key=lambda x: -x["amount"])[:5]:
             print(f"  {d['customer']:20s} ${d['amount']:>10,.0f}")

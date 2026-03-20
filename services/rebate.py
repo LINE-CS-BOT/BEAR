@@ -84,8 +84,9 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
     if not sales:
         return {"month": datetime.now().strftime("%Y-%m"), "groups": [], "summary": {"total_sales": 0, "total_rebate": 0}}
 
-    # Step 1: Group by merged name
+    # Step 1: Group by merged name,記錄是否為特殊合併組
     groups: dict[str, list[dict]] = {}
+    is_merge_group: dict[str, bool] = {}
     for item in sales:
         name = item.get("customer", "").strip()
         amount = float(item.get("amount", 0))
@@ -96,6 +97,7 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
         merge_group = _get_merge_group(name)
         if merge_group:
             group_key = merge_group
+            is_merge_group[group_key] = True
         else:
             group_key = _get_base_name(name)
 
@@ -124,30 +126,39 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
         else:
             tier = "未達"
 
-        # Distribute rebate to individuals
+        # Distribute rebate
         distributed = []
-        if rebate > 0 and len(members) > 1:
+        if is_merge_group.get(group_name) and len(members) > 1:
+            # 特殊合併組（如 WEI+丞）：按人合計，保留各店明細
+            person_totals: dict[str, float] = {}
+            person_stores: dict[str, list[dict]] = {}
+            for m in members:
+                base = _get_base_name(m["name"])
+                person_totals[base] = person_totals.get(base, 0) + m["amount"]
+                person_stores.setdefault(base, []).append(
+                    {"name": m["name"], "amount": m["amount"]}
+                )
+
             if group_total >= 100000:
-                # 10萬以上：按金額比例分配 5%
-                for m in members:
-                    m_rebate = round(rebate * m["amount"] / group_total)
-                    distributed.append({**m, "rebate": m_rebate})
+                # 合計 ≥ 10萬：合計的 5%，按各人比例分
+                for person, p_total in person_totals.items():
+                    p_rebate = round(rebate * p_total / group_total)
+                    stores = sorted(person_stores[person], key=lambda x: -x["amount"])
+                    distributed.append({"name": person, "amount": p_total, "rebate": p_rebate, "stores": stores})
             else:
-                # 3萬/6萬：誰達到門檻就給誰，都沒達到就平均
-                threshold = 60000 if rebate == 2000 else 30000
-                achievers = [m for m in members if m["amount"] >= threshold]
-                if achievers:
-                    per_rebate = round(rebate / len(achievers))
-                    for m in members:
-                        m_rebate = per_rebate if m["amount"] >= threshold else 0
-                        distributed.append({**m, "rebate": m_rebate})
-                else:
-                    # 沒人個別達標 → 平均分
-                    per_rebate = round(rebate / len(members))
-                    for m in members:
-                        distributed.append({**m, "rebate": per_rebate})
+                # 合計 < 10萬：各人獨立看是否達標
+                total_rebate_actual = 0
+                for person, p_total in person_totals.items():
+                    p_rebate = _calc_rebate(p_total)
+                    stores = sorted(person_stores[person], key=lambda x: -x["amount"])
+                    distributed.append({"name": person, "amount": p_total, "rebate": p_rebate, "stores": stores})
+                    total_rebate_actual += p_rebate
+                # 修正 group 層級的回饋金為各人實際合計
+                rebate = total_rebate_actual
+                total_rebate += rebate - _calc_rebate(group_total)
         elif rebate > 0:
-            distributed = [{**members[0], "rebate": rebate}]
+            # 同名各店（如 林子翔-基隆/樹林）：回饋金整筆歸本人，不拆分
+            distributed = [{**m, "rebate": 0} for m in members]
         else:
             distributed = [{**m, "rebate": 0} for m in members]
 
@@ -156,6 +167,7 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
             "total": group_total,
             "rebate": rebate,
             "tier": tier,
+            "is_merge": is_merge_group.get(group_name, False),
             "members": sorted(distributed, key=lambda x: -x["amount"]),
         })
 
@@ -168,25 +180,58 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
 
 def get_approaching_customers(sales: list[dict] | None = None) -> list[dict]:
     """
-    找出「快接近達成」的客戶（離下一級距差 20% 以內）。
-    用於每月 20 號後每日提醒。
+    找出「快接近達成」的客戶。
+    門檻：3萬→17000起算、6萬→45000起算、10萬→75000起算
     """
     result = calculate_rebates(sales)
     approaching = []
-    thresholds = [30000, 60000, 100000]
+    # (目標, 起算門檻)
+    thresholds = [(30000, 17000), (60000, 45000), (100000, 75000)]
 
     for g in result["groups"]:
         total = g["total"]
-        for t in thresholds:
-            if total < t and total >= t * 0.8:  # 差 20% 以內
+        for target, floor in thresholds:
+            if total < target and total >= floor:
                 approaching.append({
                     "group_name": g["group_name"],
                     "total": total,
-                    "target": t,
-                    "gap": t - total,
+                    "target": target,
+                    "gap": target - total,
                     "current_tier": g["tier"],
-                    "next_tier": f"{t // 10000}萬",
+                    "next_tier": f"{target // 10000}萬",
                 })
                 break
 
-    return sorted(approaching, key=lambda x: x["gap"])
+    return sorted(approaching, key=lambda x: -x["total"])
+
+
+def get_last_month_achievers() -> dict:
+    """
+    取得上個月確定達標的客戶。
+    每月 1~14 日顯示用。
+    """
+    # 讀取上月資料
+    last_month_path = _BASE / "data" / "rebate_sales_lastmonth.json"
+    if not last_month_path.exists():
+        return {"month": "", "achievers": [], "total_rebate": 0}
+
+    try:
+        sales = json.loads(last_month_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"month": "", "achievers": [], "total_rebate": 0}
+
+    result = calculate_rebates(sales)
+    achievers = [g for g in result["groups"] if g["rebate"] > 0]
+
+    # 上個月的月份
+    now = datetime.now()
+    if now.month == 1:
+        month_str = f"{now.year - 1}-12"
+    else:
+        month_str = f"{now.year}-{now.month - 1:02d}"
+
+    return {
+        "month": month_str,
+        "achievers": achievers,
+        "total_rebate": sum(g["rebate"] for g in achievers),
+    }
