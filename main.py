@@ -63,6 +63,7 @@ from handlers.internal import (
     handle_internal_product_info_by_name,
     handle_internal_consumable,
     handle_internal_rebate,
+    handle_internal_unfulfilled,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
@@ -468,6 +469,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or handle_name_order_confirm(group_id, combined)
         or handle_internal_order(combined, line_api, group_id=group_id)
         or handle_internal_rebate(combined, group_id)
+        or handle_internal_unfulfilled(combined, group_id)
         or handle_internal_consumable(combined, group_id)
         or handle_internal_spec_query(combined)
         or handle_internal_product_info(combined, group_id)
@@ -906,6 +908,30 @@ async def _process_queued_messages():
     print(f"[queue] 補處理完成，共 {len(msgs)} 則")
 
 
+async def _rebate_sync_loop():
+    """每日凌晨 1:00 自動同步回饋金資料"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=1, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            from scripts.sync_rebate import sync_rebate
+            print("[rebate] 凌晨自動同步本月資料...")
+            await sync_rebate(last_month=False)
+            # 每月 1~3 日額外同步上月資料（確保上月資料完整）
+            if now.day <= 3:
+                print("[rebate] 月初，額外同步上月資料...")
+                await sync_rebate(last_month=True)
+            # 同步未處理訂單
+            from scripts.sync_unfulfilled import sync_unfulfilled
+            print("[unfulfilled] 凌晨自動同步未處理訂單...")
+            await sync_unfulfilled()
+        except Exception as e:
+            print(f"[rebate/unfulfilled] 自動同步失敗: {e}")
+
+
 async def _queue_processor_loop():
     """每日 10:00 處理離峰佇列"""
     while True:
@@ -1041,6 +1067,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_restock_notify_loop())
     asyncio.create_task(_followup_loop())
     asyncio.create_task(_midnight_inventory_check_loop())
+    asyncio.create_task(_rebate_sync_loop())
     # 啟動時若已過 10:00 且佇列有待處理訊息，立刻補發（防止 server 重啟後錯過 10:00 觸發）
     if datetime.now().hour >= 10 and queue_store.count_unprocessed() > 0:
         print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")
