@@ -22,7 +22,7 @@ import secrets
 import sqlite3
 import uvicorn
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -60,6 +60,8 @@ from handlers.internal import (
     handle_internal_spec_inquiry, handle_spec_inquiry_reply, handle_spec_inquiry_qty,
     handle_internal_price_query,
     handle_internal_add_customer,
+    handle_internal_product_info_by_name,
+    handle_internal_consumable,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
@@ -115,7 +117,31 @@ import time as _time_module
 _server_start_time: float = _time_module.time()
 
 # ── 最近看到的群組 ID（in-memory，重啟後清空）──────────
-_seen_group_ids: list[str] = []
+_seen_group_ids: set[str] = set()
+
+# ── 未知群組追蹤（group_id -> last_seen timestamp）──────
+_unknown_groups: dict[str, str] = {}
+
+# ── Webhook 訊息去重（防止重複處理同一則訊息）──────────
+_processed_msg_ids: dict[str, float] = {}  # message_id -> timestamp
+
+# ── LINE profile 快取 ─────────────────────────────────
+_profile_cache: dict[str, tuple[object, float]] = {}  # user_id -> (profile, timestamp)
+_PROFILE_CACHE_TTL = 3600  # 1 hour
+
+def _get_profile_cached(line_api, user_id: str):
+    now = _time_module.time()
+    cached = _profile_cache.get(user_id)
+    if cached and now - cached[1] < _PROFILE_CACHE_TTL:
+        return cached[0]
+    try:
+        profile = line_api.get_profile(user_id)
+        _profile_cache[user_id] = (profile, now)
+        return profile
+    except Exception:
+        if cached:
+            return cached[0]
+        return None
 
 # ── 圖片訊息合併緩衝（等待後續文字，最多 N 秒）──────────
 import threading as _threading
@@ -159,28 +185,27 @@ def _img_buf_flush(user_id: str) -> None:
     if not entry:
         return   # 已被文字訊息消費
 
-    with ApiClient(_configuration) as api_client:
-        line_api = MessagingApi(api_client)
-        reply_token = entry.get("reply_token")
+    line_api = _line_api
+    reply_token = entry.get("reply_token")
 
-        if entry["context"] == "group":
-            # flush 時再次確認是否有 upload session（可能在 3 秒後才建立）
-            _up_state = state_manager.get(user_id)
-            if _up_state and _up_state.get("action") == "uploading":
-                # 補進上架 session，不走圖片識別
-                handle_internal_upload_add_media(user_id, entry["msg_id"], "image")
-                _upload_timer_reset(user_id, entry["group_id"], reply_token)
-                return
-            # 內部群 → handle_internal_image
-            reply_text = handle_internal_image(entry["group_id"], entry["msg_id"], line_api)
-            _send_reply(reply_token, entry["group_id"], reply_text, line_api)
-        else:
-            # 1:1 客戶
-            if _in_quiet_hours():
-                queue_store.add(user_id, "image", msg_id=entry["msg_id"])
-                return
-            reply_text = handle_image_product(user_id, entry["msg_id"], line_api)
-            _send_reply(reply_token, user_id, reply_text, line_api)
+    if entry["context"] == "group":
+        # flush 時再次確認是否有 upload session（可能在 3 秒後才建立）
+        _up_state = state_manager.get(user_id)
+        if _up_state and _up_state.get("action") == "uploading":
+            # 補進上架 session，不走圖片識別
+            handle_internal_upload_add_media(user_id, entry["msg_id"], "image")
+            _upload_timer_reset(user_id, entry["group_id"], reply_token)
+            return
+        # 內部群 → handle_internal_image
+        reply_text = handle_internal_image(entry["group_id"], entry["msg_id"], line_api)
+        _send_reply(reply_token, entry["group_id"], reply_text, line_api)
+    else:
+        # 1:1 客戶
+        if _in_quiet_hours():
+            queue_store.add(user_id, "image", msg_id=entry["msg_id"])
+            return
+        reply_text = handle_image_product(user_id, entry["msg_id"], line_api)
+        _send_reply(reply_token, user_id, reply_text, line_api)
 
 
 def _img_buf_set(user_id: str, msg_id: str, context: str, group_id: str | None,
@@ -241,9 +266,7 @@ def _new_prod_auto_finish(user_id: str, group_id: str, reply_token: str | None) 
         return
     ack = handle_internal_new_product("\n".join(lines))
     if ack:
-        with ApiClient(_configuration) as api_client:
-            _la = MessagingApi(api_client)
-            _send_reply(reply_token, group_id, ack, _la)
+        _send_reply(reply_token, group_id, ack, _line_api)
 
 
 def _new_prod_timer_reset(user_id: str, group_id: str, reply_token: str | None) -> None:
@@ -286,9 +309,7 @@ def _upload_auto_finish(user_id: str, group_id: str, reply_token: str | None) ->
         return
     ack = handle_internal_upload_finish(user_id)
     if ack:
-        with ApiClient(_configuration) as api_client:
-            line_api = MessagingApi(api_client)
-            _send_reply(reply_token, group_id, ack, line_api)
+        _send_reply(reply_token, group_id, ack, _line_api)
 
 
 def _upload_timer_reset(user_id: str, group_id: str, reply_token: str | None) -> None:
@@ -355,20 +376,19 @@ def _media_buf_flush(user_id: str) -> None:
     media    = entry["media"]
     group_id = entry["group_id"]
 
-    with ApiClient(_configuration) as api_client:
-        line_api = MessagingApi(api_client)
-        reply_token = entry.get("reply_token")
-        if len(media) == 1 and media[0]["type"] == "image":
-            # 單張圖片，無文字 → 既有商品識別
-            reply_text = handle_internal_image(user_id, media[0]["msg_id"], line_api)
-        else:
-            n = len(media)
-            reply_text = (
-                f"收到 {n} 個檔案，請補上指令：\n"
-                f"• 上架（圖片 + PO文一起存）\n"
-                f"• 存圖 Z3432（只存圖片）"
-            )
-        _send_reply(reply_token, group_id, reply_text, line_api)
+    line_api = _line_api
+    reply_token = entry.get("reply_token")
+    if len(media) == 1 and media[0]["type"] == "image":
+        # 單張圖片，無文字 → 既有商品識別
+        reply_text = handle_internal_image(user_id, media[0]["msg_id"], line_api)
+    else:
+        n = len(media)
+        reply_text = (
+            f"收到 {n} 個檔案，請補上指令：\n"
+            f"• 上架（圖片 + PO文一起存）\n"
+            f"• 存圖 Z3432（只存圖片）"
+        )
+    _send_reply(reply_token, group_id, reply_text, line_api)
 
 
 # ── 文字訊息合併緩衝（等待連續訊息，5 秒無新訊息才統一處理）────────
@@ -427,6 +447,35 @@ def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
     timer.start()
 
 
+def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str | None:
+    """內部群組 fallback dispatch chain"""
+    return (
+        handle_spec_inquiry_reply(group_id, combined, line_api)
+        or handle_spec_inquiry_qty(group_id, combined, line_api)
+        or handle_ad_update_trigger(combined, group_id, line_api)
+        or _handle_pending_list_command(combined)
+        or _handle_staff_resolve(combined)
+        or _handle_visit_resolve(combined)
+        or _handle_visit_query_command(combined)
+        or _handle_spec_rebuild_command(combined)
+        or _handle_bot_notify_command(combined)
+        or handle_internal_tag_push(combined, line_api)
+        or handle_internal_add_customer(combined)
+        or handle_internal_notify_register(combined, line_api)
+        or handle_internal_arrival(combined, line_api)
+        or handle_ambiguous_resolve(group_id, combined)
+        or handle_name_order_confirm(group_id, combined)
+        or handle_internal_order(combined, line_api, group_id=group_id)
+        or handle_internal_consumable(combined, group_id)
+        or handle_internal_spec_query(combined)
+        or handle_internal_product_info(combined, group_id)
+        or handle_internal_price_query(combined)
+        or handle_internal_inventory(combined, group_id)
+        or handle_internal_spec_inquiry(combined, group_id)
+        or handle_internal_product_info_by_name(combined, group_id)
+    )
+
+
 def _txt_buf_flush(user_id: str) -> None:
     """
     5 秒後觸發：合併所有緩衝文字（+ 圖片若有），統一處理並 push_message 回覆。
@@ -445,9 +494,9 @@ def _txt_buf_flush(user_id: str) -> None:
     img_e   = _img_buf_pop(user_id)
     media_e = _media_buf_pop(user_id)
 
-    with ApiClient(_configuration) as api_client:
-        line_api = MessagingApi(api_client)
+    line_api = _line_api
 
+    if True:  # preserve indentation block
         # ── 回覆輔助：優先 reply_message，失敗才 push（共用 _send_reply）──
         _reply_token_used = [False]
 
@@ -629,29 +678,7 @@ def _txt_buf_flush(user_id: str) -> None:
                             _new_prod_timer_reset(user_id, group_id, reply_token)
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
-                        ack = (
-                            handle_spec_inquiry_reply(group_id, combined, line_api)
-                            or handle_spec_inquiry_qty(group_id, combined, line_api)
-                            or handle_ad_update_trigger(combined, group_id, line_api)
-                            or _handle_pending_list_command(combined)
-                            or _handle_staff_resolve(combined)
-                            or _handle_visit_resolve(combined)
-                            or _handle_visit_query_command(combined)
-                            or _handle_spec_rebuild_command(combined)
-                            or _handle_bot_notify_command(combined)
-                            or handle_internal_tag_push(combined, line_api)
-                            or handle_internal_add_customer(combined)
-                            or handle_internal_notify_register(combined, line_api)
-                            or handle_internal_arrival(combined, line_api)
-                            or handle_ambiguous_resolve(group_id, combined)
-                            or handle_name_order_confirm(group_id, combined)
-                            or handle_internal_order(combined, line_api, group_id=group_id)
-                            or handle_internal_spec_query(combined)
-                            or handle_internal_product_info(combined, group_id)
-                            or handle_internal_price_query(combined)
-                            or handle_internal_inventory(combined, group_id)
-                            or handle_internal_spec_inquiry(combined, group_id)
-                        )
+                        ack = _dispatch_internal_fallback(combined, group_id, line_api)
             else:
                 try:
                     # ── 新增品項觸發 ──
@@ -667,30 +694,11 @@ def _txt_buf_flush(user_id: str) -> None:
                             _new_prod_timer_reset(user_id, group_id, reply_token)
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
-                        ack = (
-                            handle_spec_inquiry_reply(group_id, combined, line_api)
-                            or handle_spec_inquiry_qty(group_id, combined, line_api)
-                            or handle_ad_update_trigger(combined, group_id, line_api)
-                            or _handle_pending_list_command(combined)
-                            or _handle_staff_resolve(combined)
-                            or _handle_visit_resolve(combined)
-                            or _handle_visit_query_command(combined)
-                            or _handle_spec_rebuild_command(combined)
-                            or _handle_bot_notify_command(combined)
-                            or handle_internal_tag_push(combined, line_api)
-                            or handle_internal_notify_register(combined, line_api)
-                            or handle_internal_arrival(combined, line_api)
-                            or handle_ambiguous_resolve(group_id, combined)
-                            or handle_name_order_confirm(group_id, combined)
-                            or handle_internal_order(combined, line_api, group_id=group_id)
-                            or handle_internal_spec_query(combined)
-                            or handle_internal_product_info(combined, group_id)
-                            or handle_internal_price_query(combined)
-                            or handle_internal_inventory(combined, group_id)
-                            or handle_internal_spec_inquiry(combined, group_id)
-                        )
+                        print(f"[txt-buf] dispatch_internal_fallback 開始: {combined!r}", flush=True)
+                        ack = _dispatch_internal_fallback(combined, group_id, line_api)
+                        print(f"[txt-buf] dispatch_internal_fallback 結果: {ack!r}", flush=True)
                 except Exception as _ge:
-                    print(f"[txt-buf] 內部群處理例外: {_ge}", flush=True)
+                    print(f"[txt-buf] 內部群處理例外: {type(_ge).__name__}: {_ge}", flush=True)
                     import traceback; traceback.print_exc()
                     ack = f"❌ 處理時發生錯誤：{_ge}"
             if ack:
@@ -698,95 +706,99 @@ def _txt_buf_flush(user_id: str) -> None:
 
         # ════ 1:1 客戶 ════
         else:
-            current_state = state_manager.get(user_id)
+            try:
+                current_state = state_manager.get(user_id)
 
-            # 1:1 圖片識別（img_e 是從 _img_buf_pop 取得的緩衝圖片）
-            img_pc = _img_identify_from_buf(img_e["msg_id"]) if img_e else None
+                # 1:1 圖片識別（img_e 是從 _img_buf_pop 取得的緩衝圖片）
+                img_pc = _img_identify_from_buf(img_e["msg_id"]) if img_e else None
 
-            # ── 圖片 + 文字：規則判斷意圖，再決定處理方式 ──────────────
-            if img_pc and not current_state:
-                from services.ecount import ecount_client as _ec
-                _ui   = _ec.lookup(img_pc)
-                _uqty = _ui.get("qty") if _ui else None
-                _un   = (_ui.get("name") if _ui else None) or img_pc
+                # ── 圖片 + 文字：規則判斷意圖，再決定處理方式 ──────────────
+                if img_pc and not current_state:
+                    from services.ecount import ecount_client as _ec
+                    _ui   = _ec.lookup(img_pc)
+                    _uqty = _ui.get("qty") if _ui else None
+                    _un   = (_ui.get("name") if _ui else None) or img_pc
 
-                # 從文字判斷客戶意圖
-                _txt_lower = combined.lower()
-                _inv_kw  = any(k in combined for k in ["有嗎", "有沒有", "庫存", "缺貨", "還有", "有貨", "剩幾"])
-                _price_kw = any(k in combined for k in ["多少", "幾元", "幾錢", "價格", "價錢", "多少錢", "售價"])
-                _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組)', combined)
+                    # 從文字判斷客戶意圖
+                    _txt_lower = combined.lower()
+                    _inv_kw  = any(k in combined for k in ["有嗎", "有沒有", "庫存", "缺貨", "還有", "有貨", "剩幾"])
+                    _price_kw = any(k in combined for k in ["多少", "幾元", "幾錢", "價格", "價錢", "多少錢", "售價"])
+                    _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組)', combined)
 
-                if _inv_kw:
-                    # 問庫存 → 直接回答，不進購物車流程
-                    print(f"[txt-buf] 圖片+文字 → 問庫存 {img_pc}", flush=True)
-                    _inv_reply = None
-                    if _uqty and _uqty > 0:
-                        _inv_reply = handle_inventory(user_id, img_pc, line_api)
-                    else:
-                        # 沒貨 → 進缺貨詢問流程
-                        state_manager.set(user_id, {
-                            "action":    "awaiting_restock_qty",
-                            "prod_cd":   img_pc,
-                            "prod_name": _un,
-                        })
-                        current_state = state_manager.get(user_id)
-                    if _inv_reply:
-                        _send_reply(reply_token, user_id, _inv_reply, line_api)
-                    reply_text = None  # 已處理，後面跳過
-                elif _price_kw:
-                    # 問價格 → 走 price handler
-                    print(f"[txt-buf] 圖片+文字 → 問價格 {img_pc}", flush=True)
-                    reply_text = handle_price(user_id, img_pc)
-                    if reply_text:
-                        _send_reply(reply_token, user_id, reply_text, line_api)
-                    reply_text = None
-                elif _qty_m and (_uqty and _uqty > 0):
-                    # 直接說要幾個 + 有貨 → 設 awaiting_quantity，讓 combined text 觸發結帳
-                    _direct_qty = int(_qty_m.group(1))
-                    print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty}", flush=True)
-                    state_manager.set(user_id, {
-                        "action":    "awaiting_quantity",
-                        "prod_cd":   img_pc,
-                        "prod_name": _un,
-                    })
-                    current_state = state_manager.get(user_id)
-                else:
-                    # 意圖不明 → 依庫存決定走購物車或缺貨流程
-                    if _uqty and _uqty > 0:
+                    if _inv_kw:
+                        # 問庫存 → 直接回答，不進購物車流程
+                        print(f"[txt-buf] 圖片+文字 → 問庫存 {img_pc}", flush=True)
+                        _inv_reply = None
+                        if _uqty and _uqty > 0:
+                            _inv_reply = handle_inventory(user_id, img_pc, line_api)
+                        else:
+                            # 沒貨 → 進缺貨詢問流程
+                            state_manager.set(user_id, {
+                                "action":    "awaiting_restock_qty",
+                                "prod_cd":   img_pc,
+                                "prod_name": _un,
+                            })
+                            current_state = state_manager.get(user_id)
+                        if _inv_reply:
+                            _send_reply(reply_token, user_id, _inv_reply, line_api)
+                        reply_text = None  # 已處理，後面跳過
+                    elif _price_kw:
+                        # 問價格 → 走 price handler
+                        print(f"[txt-buf] 圖片+文字 → 問價格 {img_pc}", flush=True)
+                        reply_text = handle_price(user_id, img_pc)
+                        if reply_text:
+                            _send_reply(reply_token, user_id, reply_text, line_api)
+                        reply_text = None
+                    elif _qty_m and (_uqty and _uqty > 0):
+                        # 直接說要幾個 + 有貨 → 設 awaiting_quantity，讓 combined text 觸發結帳
+                        _direct_qty = int(_qty_m.group(1))
+                        print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty}", flush=True)
                         state_manager.set(user_id, {
                             "action":    "awaiting_quantity",
                             "prod_cd":   img_pc,
                             "prod_name": _un,
                         })
-                        print(f"[txt-buf] 圖片+文字 → 有貨 {img_pc}，等待數量", flush=True)
+                        current_state = state_manager.get(user_id)
                     else:
-                        state_manager.set(user_id, {
-                            "action":    "awaiting_restock_qty",
-                            "prod_cd":   img_pc,
-                            "prod_name": _un,
-                        })
-                        print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}", flush=True)
-                    current_state = state_manager.get(user_id)
+                        # 意圖不明 → 依庫存決定走購物車或缺貨流程
+                        if _uqty and _uqty > 0:
+                            state_manager.set(user_id, {
+                                "action":    "awaiting_quantity",
+                                "prod_cd":   img_pc,
+                                "prod_name": _un,
+                            })
+                            print(f"[txt-buf] 圖片+文字 → 有貨 {img_pc}，等待數量", flush=True)
+                        else:
+                            state_manager.set(user_id, {
+                                "action":    "awaiting_restock_qty",
+                                "prod_cd":   img_pc,
+                                "prod_name": _un,
+                            })
+                            print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}", flush=True)
+                        current_state = state_manager.get(user_id)
 
-            elif img_e and not current_state:
-                issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
-                print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗", flush=True)
+                elif img_e and not current_state:
+                    issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
+                    print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗", flush=True)
 
-            # ── 凍結判斷：有待處理問題 → 完全靜默，等真人標記完成 ──────
-            if not current_state and issue_store.has_pending_issue(user_id):
-                print(f"[frozen] {user_id[:10]}... 有待處理問題，靜默", flush=True)
-                return
+                # ── 凍結判斷：有待處理問題 → 完全靜默，等真人標記完成 ──────
+                if not current_state and issue_store.has_pending_issue(user_id):
+                    print(f"[frozen] {user_id[:10]}... 有待處理問題，靜默", flush=True)
+                    return
 
-            if is_payment_message(combined):
-                reply_text = handle_payment(user_id, combined)
-            elif current_state:
-                reply_text = _handle_stateful(user_id, combined, current_state, line_api)
-            else:
-                intent     = detect_intent(combined)
-                reply_text = _dispatch(user_id, combined, intent, line_api)
+                if is_payment_message(combined):
+                    reply_text = handle_payment(user_id, combined)
+                elif current_state:
+                    reply_text = _handle_stateful(user_id, combined, current_state, line_api)
+                else:
+                    intent     = detect_intent(combined)
+                    reply_text = _dispatch(user_id, combined, intent, line_api)
 
-            if reply_text:
-                _send_reply(reply_token, user_id, reply_text, line_api)
+                if reply_text:
+                    _send_reply(reply_token, user_id, reply_text, line_api)
+            except Exception as _ce:
+                print(f"[txt-buf] 1:1 客戶處理例外: {_ce}", flush=True)
+                import traceback; traceback.print_exc()
 
 
 def _img_identify_from_buf(msg_id: str) -> str | None:
@@ -828,18 +840,12 @@ _QUIET_HOURS_DIRECT_INTENTS = {
 }
 
 
-async def _hourly_summary_loop():
-    """已停用自動推送（改為內部群輸入「清單」主動查詢）"""
-    while True:
-        await asyncio.sleep(3600)  # 閒置等待，不做任何事
-
-
 async def _refresh_data_loop():
     """每 2 小時檢查一次資料庫是否需要刷新"""
     while True:
         await asyncio.sleep(2 * 3600)
         try:
-            check_and_refresh()
+            await asyncio.to_thread(check_and_refresh)
         except Exception as e:
             print(f"[scheduler] 資料庫刷新失敗: {e}")
 
@@ -853,9 +859,9 @@ async def _process_queued_messages():
 
     print(f"[queue] 開始補處理 {len(msgs)} 則離峰訊息...")
 
-    with ApiClient(_configuration) as api_client:
-        line_api = MessagingApi(api_client)
+    line_api = _line_api
 
+    if True:  # preserve indentation block
         for msg in msgs:
             try:
                 uid = msg["user_id"]
@@ -888,20 +894,17 @@ async def _process_queued_messages():
 
 
 async def _queue_processor_loop():
-    """每分鐘檢查，10:00 自動觸發離峰補處理"""
-    last_fired_date = None
+    """每日 10:00 處理離峰佇列"""
     while True:
-        await asyncio.sleep(60)
         now = datetime.now()
-        if now.hour == 10 and now.minute == 0:
-            today = now.date()
-            if last_fired_date != today:
-                last_fired_date = today
-                print("[queue] 10:00 觸發離峰佇列補處理...")
-                try:
-                    await _process_queued_messages()
-                except Exception as e:
-                    print(f"[queue] 補處理失敗: {e}")
+        target = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            await _process_queued_messages()
+        except Exception as e:
+            print(f"[queue] 處理失敗: {e}")
 
 
 async def _check_restock_notifications():
@@ -919,9 +922,9 @@ async def _check_restock_notifications():
     print(f"[notify] 開始檢查 {len(pending)} 筆到貨通知...")
     notified_count = 0
 
-    with ApiClient(_configuration) as api_client:
-        line_api = MessagingApi(api_client)
+    line_api = _line_api
 
+    if True:  # preserve indentation block
         for record in pending:
             try:
                 result = ecount_client.lookup(record["prod_code"])
@@ -954,20 +957,17 @@ async def _check_restock_notifications():
 
 
 async def _restock_notify_loop():
-    """每分鐘檢查，每天 20:00 執行到貨通知"""
-    last_fired_date = None
+    """每日 20:00 執行到貨通知"""
     while True:
-        await asyncio.sleep(60)
         now = datetime.now()
-        if now.hour == 20 and now.minute == 0:
-            today = now.date()
-            if last_fired_date != today:
-                last_fired_date = today
-                print("[notify] 20:00 觸發到貨通知檢查...")
-                try:
-                    await _check_restock_notifications()
-                except Exception as e:
-                    print(f"[notify] 排程執行失敗: {e}")
+        target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            await _check_restock_notifications()
+        except Exception as e:
+            print(f"[notify] 排程執行失敗: {e}")
 
 
 async def _followup_loop():
@@ -976,7 +976,7 @@ async def _followup_loop():
     while True:
         try:
             from handlers.followup import check_and_followup
-            result = check_and_followup(line_api)
+            result = await asyncio.to_thread(check_and_followup, _line_api)
             if result["reminded"] or result["expired"]:
                 print(f"[followup] 提醒 {result['reminded']} 人，清除 {result['expired']} 筆過期狀態")
         except Exception as e:
@@ -1022,7 +1022,7 @@ async def lifespan(app: FastAPI):
     visit_store.init()              # 建立客戶到店記錄 table
     check_and_refresh()             # 啟動時檢查並刷新規格/圖片資料庫
     state_manager.restore_from_db() # 從 SQLite 恢復對話狀態
-    asyncio.create_task(_hourly_summary_loop())
+    _restore_txt_buffer()           # 恢復 reload 前未處理的文字 buffer
     asyncio.create_task(_refresh_data_loop())
     asyncio.create_task(_queue_processor_loop())
     asyncio.create_task(_restock_notify_loop())
@@ -1033,6 +1033,67 @@ async def lifespan(app: FastAPI):
         print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")
         asyncio.create_task(_process_queued_messages())
     yield
+    # ── shutdown：持久化未處理的文字 buffer ──
+    _persist_txt_buffer()
+
+
+# ── 文字 buffer 持久化（防 reload 丟訊息）────────────────────────
+_TXT_BUF_PERSIST_PATH = _BASE_DIR / "data" / "txt_buffer_pending.json"
+
+
+def _persist_txt_buffer():
+    """shutdown 時把未處理的 _txt_buffer 存到 JSON"""
+    import json as _json
+    with _txt_buffer_lock:
+        pending = {}
+        for uid, entry in _txt_buffer.items():
+            try:
+                entry["timer"].cancel()
+            except Exception:
+                pass
+            pending[uid] = {
+                "lines":       entry["lines"],
+                "context":     entry["context"],
+                "group_id":    entry.get("group_id"),
+            }
+    if pending:
+        try:
+            _TXT_BUF_PERSIST_PATH.write_text(
+                _json.dumps(pending, ensure_ascii=False), encoding="utf-8")
+            print(f"[shutdown] 已保存 {len(pending)} 筆未處理的文字 buffer", flush=True)
+        except Exception as e:
+            print(f"[shutdown] buffer 保存失敗: {e}", flush=True)
+
+
+def _restore_txt_buffer():
+    """startup 時恢復未處理的 _txt_buffer 並立即 flush"""
+    import json as _json
+    if not _TXT_BUF_PERSIST_PATH.exists():
+        return
+    try:
+        pending = _json.loads(_TXT_BUF_PERSIST_PATH.read_text(encoding="utf-8"))
+        _TXT_BUF_PERSIST_PATH.unlink()  # 讀完就刪
+        if not pending:
+            return
+        print(f"[startup] 恢復 {len(pending)} 筆未處理的文字 buffer", flush=True)
+        for uid, entry in pending.items():
+            # 直接 flush，不再等 5 秒
+            combined = "\n".join(entry["lines"])
+            context = entry["context"]
+            group_id = entry.get("group_id")
+            # 塞回 buffer 然後立即 flush
+            with _txt_buffer_lock:
+                _txt_buffer[uid] = {
+                    "lines":       entry["lines"],
+                    "context":     context,
+                    "group_id":    group_id,
+                    "reply_token": None,  # reload 後 token 已過期
+                }
+                # 不設 timer，直接啟動 flush
+                _txt_buffer[uid]["timer"] = _threading.Timer(0, lambda: None)
+            _threading.Thread(target=_txt_buf_flush, args=(uid,), daemon=True).start()
+    except Exception as e:
+        print(f"[startup] buffer 恢復失敗: {e}", flush=True)
 
 
 app = FastAPI(title="LINE Customer Service Bot", lifespan=lifespan)
@@ -1102,7 +1163,12 @@ def _auto_save_contact_info(user_id: str, text: str) -> None:
     if addr:
         customer_store.update_address(user_id, addr.group(0).strip())
 
+_YES_KW = {"好", "是", "對", "ok", "OK", "yes", "YES", "好的", "是的", "對的", "確認", "沒問題", "可以", "沒錯", "正確", "確定", "下單"}
+_NO_KW = {"不", "否", "no", "NO", "不要", "不用", "取消", "算了", "不訂", "不對", "錯了", "不是", "不行", "等不了", "太久", "換一個", "其他"}
+
 _configuration = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
+_api_client = ApiClient(_configuration)
+_line_api = MessagingApi(_api_client)
 _webhook_handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 
 
@@ -1327,7 +1393,7 @@ def _handle_bot_notify_command(text: str) -> str | None:
 @app.post("/admin/push-summary")
 async def push_summary():
     """手動觸發待處理清單推送"""
-    send_pending_summary()
+    await asyncio.to_thread(send_pending_summary)
     return {"status": "ok"}
 
 
@@ -1335,7 +1401,7 @@ async def push_summary():
 async def admin_generate_ad():
     """觸發廣告圖更新（同內部群 `廣告圖更新` 指令）"""
     from handlers.ad_maker import handle_ad_update_trigger
-    result = handle_ad_update_trigger("廣告圖更新", settings.LINE_GROUP_ID)
+    result = await asyncio.to_thread(handle_ad_update_trigger, "廣告圖更新", settings.LINE_GROUP_ID)
     return {"status": "ok", "message": result or "已啟動"}
 
 
@@ -1350,14 +1416,14 @@ async def process_queue():
 @app.post("/admin/full-report")
 async def push_full_report(days: int = 3):
     """推送完整報表（已處理 + 未處理）到內部群組，預設顯示 3 天內已處理記錄"""
-    send_full_report(days=days)
+    await asyncio.to_thread(send_full_report, days=days)
     return {"status": "ok", "days": days}
 
 
 @app.get("/admin/full-report")
 async def get_full_report(days: int = 3):
     """直接回傳完整報表文字（不推送到 LINE，方便瀏覽器查看）"""
-    report = build_full_report(days=days)
+    report = await asyncio.to_thread(build_full_report, days=days)
     return {"report": report, "days": days}
 
 
@@ -1520,6 +1586,10 @@ async def serve_product_media(file_path: str):
         except Exception:
             pass
     media_file = Path(settings.PRODUCT_MEDIA_PATH) / file_path
+    media_file = media_file.resolve()
+    media_root = Path(settings.PRODUCT_MEDIA_PATH).resolve()
+    if not str(media_file).startswith(str(media_root)):
+        raise HTTPException(status_code=403, detail="Forbidden")
     try:
         if not media_file.exists() or not media_file.is_file():
             raise HTTPException(status_code=404, detail=f"找不到檔案: {file_path}")
@@ -1726,7 +1796,7 @@ async def sync_customer_names():
     ecount_list = json.loads(json_path.read_text(encoding="utf-8"))
     if not ecount_list:
         return {"status": "error", "message": "ecount_customers.json 內容為空"}
-    result = customer_store.sync_ecount_names_full(ecount_list)
+    result = await asyncio.to_thread(customer_store.sync_ecount_names_full, ecount_list)
     total = result["by_code"] + result["by_phone"]
     print(f"[admin] Ecount 姓名同步：{len(ecount_list)} 筆 → 更新 {total} 筆 "
           f"(ecount_cust_cd:{result['by_code']}, 電話:{result['by_phone']}, 跳過:{result['skipped']})")
@@ -1845,7 +1915,7 @@ async def admin_visit_resolve(visit_id: int):
 async def admin_seen_groups():
     """列出這次伺服器啟動後收到訊息的所有群組 ID"""
     return {
-        "groups": _seen_group_ids,
+        "groups": list(_seen_group_ids),
         "configured": {
             "LINE_GROUP_ID": settings.LINE_GROUP_ID or "(未設定)",
             "LINE_GROUP_ID_HQ": settings.LINE_GROUP_ID_HQ or "(未設定)",
@@ -1854,26 +1924,123 @@ async def admin_seen_groups():
     }
 
 
+# ── 群組管理 ─────────────────────────────────────────
+@app.get("/admin/groups")
+async def admin_groups():
+    """列出所有群組（已知+未知）"""
+    known = {
+        settings.LINE_GROUP_ID: "內部群",
+        settings.LINE_GROUP_ID_HQ: "總公司群",
+        settings.LINE_GROUP_ID_SHOWCASE: "看貨群",
+    }
+    registered = customer_store.list_group_addresses()
+    reg_map = {r["group_id"]: r for r in registered}
+
+    groups = []
+    # Known groups
+    for gid, name in known.items():
+        if gid:
+            groups.append({
+                "group_id": gid,
+                "type": "system",
+                "label": name,
+                "ecount_cust_cd": reg_map.get(gid, {}).get("ecount_cust_cd", ""),
+            })
+    # Registered customer groups
+    for r in registered:
+        if r["group_id"] not in known:
+            groups.append({
+                "group_id": r["group_id"],
+                "type": "customer",
+                "label": r.get("label", ""),
+                "ecount_cust_cd": r.get("ecount_cust_cd", ""),
+            })
+    # Unknown groups (seen but not registered)
+    for gid, last_seen in _unknown_groups.items():
+        if gid not in known and gid not in reg_map:
+            groups.append({
+                "group_id": gid,
+                "type": "unknown",
+                "label": "",
+                "ecount_cust_cd": "",
+                "last_seen": last_seen,
+            })
+    return groups
+
+
+@app.post("/admin/set-group")
+async def admin_set_group(group_id: str, ecount_cust_cd: str = "", label: str = ""):
+    """設定群組的客戶代碼和標籤"""
+    customer_store.set_group_address(group_id, ecount_cust_cd, label)
+    # Remove from unknown if it was there
+    _unknown_groups.pop(group_id, None)
+    return {"ok": True}
+
+
 # ── Server 重啟 ──────────────────────────────────────
 @app.post("/admin/restart")
 async def admin_restart():
-    """重啟 server（背景執行，不顯示視窗）"""
-    import threading, os, subprocess
+    """重啟 server（背景執行，不顯示視窗）
+    - tray.py 環境：殺掉整個 process tree，watchdog 會自動重啟
+    - 獨立執行：用 VBS 先啟動新 server 再退出
+    """
+    import threading, os, subprocess, signal
 
     _vbs = _BASE_DIR / "start_server_bg.vbs"
+    _lock = _BASE_DIR / "data" / "tray.lock"
+    _under_tray = _lock.exists()
 
     def _do_restart():
         import time
         time.sleep(0.8)  # 等本次 HTTP 回應送出
-        subprocess.Popen(
-            ["wscript.exe", str(_vbs)],
-            creationflags=0x08000000,  # CREATE_NO_WINDOW
-        )
-        time.sleep(1.5)  # 等 VBS 殺掉舊 port 後再自我退出
+
+        if not _under_tray:
+            # 獨立模式：先啟動新 server 再退出
+            subprocess.Popen(
+                ["wscript.exe", str(_vbs)],
+                creationflags=0x08000000,
+            )
+            time.sleep(1.5)
+
+        # 用 taskkill /T 殺掉整個 process tree（包括 reloader + worker + shell）
+        # 這樣 port 才會被正確釋放
+        my_pid = os.getpid()
+        try:
+            # 先找到 reloader 的 PID（父進程）
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            # 嘗試殺掉佔用 8000 port 的所有 process
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True, text=True,
+                creationflags=0x08000000,
+            )
+            pids_to_kill = set()
+            for line in result.stdout.splitlines():
+                if ":8000 " in line and "LISTENING" in line:
+                    pid = line.strip().split()[-1]
+                    if pid.isdigit():
+                        pids_to_kill.add(int(pid))
+
+            for pid in pids_to_kill:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        creationflags=0x08000000,
+                        capture_output=True,
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 確保自己也退出
         os._exit(0)
 
     threading.Thread(target=_do_restart, daemon=True).start()
-    print("[admin] 重啟指令收到，2 秒後重啟...")
+    mode = "tray watchdog" if _under_tray else "VBS"
+    print(f"[admin] 重啟指令收到，模式：{mode}，即將重啟...", flush=True)
     return {"ok": True}
 
 
@@ -1909,17 +2076,14 @@ async def admin_api_status():
     """
     # LINE API
     try:
-        _cfg = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
-        with ApiClient(_cfg) as _cli:
-            MessagingApi(_cli).get_bot_info()
-        line_ok = True
+        line_ok = await asyncio.to_thread(lambda: bool(_line_api.get_bot_info()))
     except Exception:
         line_ok = False
 
     # Ecount API
     try:
         from services.ecount import ecount_client as _ec
-        sid = _ec._ensure_session()
+        sid = await asyncio.to_thread(_ec._ensure_session)
         ecount_ok = bool(sid)
     except Exception:
         ecount_ok = False
@@ -2035,7 +2199,6 @@ async def _midnight_inventory_check_loop():
     while True:
         now = datetime.now()
         # 計算距明天 00:00 的秒數
-        from datetime import timedelta
         nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         wait_sec = (nxt - now).total_seconds()
         await asyncio.sleep(wait_sec)
@@ -2193,7 +2356,7 @@ async def webhook(request: Request):
         print(f"[webhook] chat_mode parse 錯誤: {_e}")
 
     try:
-        _webhook_handler.handle(body.decode("utf-8"), signature)
+        await asyncio.to_thread(_webhook_handler.handle, body.decode("utf-8"), signature)
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
@@ -2201,13 +2364,25 @@ async def webhook(request: Request):
 
 @_webhook_handler.add(MessageEvent, message=TextMessageContent)
 def on_message(event: MessageEvent):
+    # ── 訊息去重 ─────────────────────────────────────────
+    msg_id = event.message.id
+    now = _time_module.time()
+    if msg_id in _processed_msg_ids:
+        return  # Already processed
+    _processed_msg_ids[msg_id] = now
+    # Clean entries older than 60s periodically
+    if len(_processed_msg_ids) > 500:
+        cutoff = now - 60
+        for k in [k for k, v in _processed_msg_ids.items() if v < cutoff]:
+            _processed_msg_ids.pop(k, None)
+
     # 印出來源 ID，方便取得兩個 Group ID
     source_type = event.source.type
     if source_type == "group":
         group_id = event.source.group_id
         # in-memory 記錄所有見過的群組 ID
         if group_id not in _seen_group_ids:
-            _seen_group_ids.append(group_id)
+            _seen_group_ids.add(group_id)
         print(f"[GROUP] {group_id}", flush=True)
         # 寫檔備份（含 user_id + display_name）
         try:
@@ -2234,11 +2409,8 @@ def on_message(event: MessageEvent):
         line_api = MessagingApi(api_client)
 
         # 自動記錄客戶 LINE ID + 顯示名稱
-        try:
-            profile = line_api.get_profile(user_id)
-            display_name = profile.display_name
-        except Exception:
-            display_name = ""
+        profile = _get_profile_cached(line_api, user_id)
+        display_name = profile.display_name if profile else ""
         try:
             if display_name:  # display_name 空白時不建立空記錄
                 customer_store.upsert_from_line(user_id, display_name)
@@ -2297,6 +2469,33 @@ def on_message(event: MessageEvent):
                     messages=[TextMessage(text=ack)],
                 ))
                 return
+            # ── 批次上架 Session 進行中 ──
+            _hq_upload_state = state_manager.get(user_id)
+            if _hq_upload_state and _hq_upload_state.get("action") == "uploading":
+                if _INTERNAL_UPLOAD_FINISH_RE.match(text.strip()):
+                    _upload_timer_cancel(user_id)
+                    ack = handle_internal_upload_finish(user_id)
+                else:
+                    _upload_timer_reset(user_id, hq_group_id, event.reply_token)
+                    ack = handle_internal_upload_text(user_id, text)
+                if ack:
+                    line_api.reply_message(ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=ack)],
+                    ))
+                return
+
+            # ── 觸發批次上架 Session ──
+            if text.strip() in _INTERNAL_UPLOAD_TRIGGERS:
+                ack = handle_internal_upload_start(user_id)
+                if ack:
+                    line_api.reply_message(ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=ack)],
+                    ))
+                _upload_timer_reset(user_id, hq_group_id, event.reply_token)
+                return
+
             # 其他 HQ 訊息
             ack = handle_hq_reply(text, line_api)
             if ack:
@@ -2350,6 +2549,7 @@ def on_message(event: MessageEvent):
                 print(f"[group] 群組預設地址: {grp['ecount_cust_cd']} ({grp.get('label', '')})")
             else:
                 print(f"[group] 未知客戶群組: {gid}")
+                _unknown_groups[gid] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         # ── 離峰時段（00:00 ~ 10:00）→ 靜默收集，不進緩衝 ────────────
         if _in_quiet_hours() and source_type == "user":
@@ -2395,14 +2595,26 @@ def on_image_message(event: MessageEvent):
             and settings.LINE_GROUP_ID
             and event.source.group_id == settings.LINE_GROUP_ID):
         # 批次上架 Session 進行中 → 直接追加到 state（不走緩衝）
-        if state_manager.get(user_id) and \
-                state_manager.get(user_id).get("action") == "uploading":
+        _st = state_manager.get(user_id)
+        if _st and _st.get("action") == "uploading":
             handle_internal_upload_add_media(user_id, message_id, "image")
             _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
         # 一般模式 → 存媒體緩衝，等文字跟上；15s timer 到期再單獨處理
         _media_buf_add(user_id, message_id, "image", event.source.group_id,
                        reply_token=event.reply_token)
+        return
+
+    # ── 總公司群圖片：上架 Session 進行中 → 追加到 state ──
+    if (source_type == "group"
+            and settings.LINE_GROUP_ID_HQ
+            and event.source.group_id == settings.LINE_GROUP_ID_HQ):
+        _st = state_manager.get(user_id)
+        if _st and _st.get("action") == "uploading":
+            handle_internal_upload_add_media(user_id, message_id, "image")
+            _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+            return
+        # 非上架 session → 靜默
         return
 
     # 其他群組靜默
@@ -2416,12 +2628,9 @@ def on_image_message(event: MessageEvent):
     # 自動記錄客戶資料（不影響緩衝邏輯）
     with ApiClient(_configuration) as api_client:
         line_api = MessagingApi(api_client)
-        try:
-            profile = line_api.get_profile(user_id)
-            if profile.display_name:  # display_name 空白時不建立空記錄
-                customer_store.upsert_from_line(user_id, profile.display_name)
-        except Exception:
-            pass
+        profile = _get_profile_cached(line_api, user_id)
+        if profile and profile.display_name:  # display_name 空白時不建立空記錄
+            customer_store.upsert_from_line(user_id, profile.display_name)
 
     # ── 離峰時段 → 直接收集，不走緩衝 ──
     if _in_quiet_hours():
@@ -2445,13 +2654,24 @@ def on_video_message(event: MessageEvent):
             and settings.LINE_GROUP_ID
             and event.source.group_id == settings.LINE_GROUP_ID):
         # 批次上架 Session 進行中 → 直接追加到 state
-        if state_manager.get(user_id) and \
-                state_manager.get(user_id).get("action") == "uploading":
+        _st = state_manager.get(user_id)
+        if _st and _st.get("action") == "uploading":
             handle_internal_upload_add_media(user_id, event.message.id, "video")
             _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
         _media_buf_add(user_id, event.message.id, "video", event.source.group_id,
                        reply_token=event.reply_token)
+        return
+
+    # ── 總公司群影片：上架 Session 進行中 → 追加到 state ──
+    if (source_type == "group"
+            and settings.LINE_GROUP_ID_HQ
+            and event.source.group_id == settings.LINE_GROUP_ID_HQ):
+        _st = state_manager.get(user_id)
+        if _st and _st.get("action") == "uploading":
+            handle_internal_upload_add_media(user_id, event.message.id, "video")
+            _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+            return
 
 
 def _handle_stateful(
@@ -2521,15 +2741,14 @@ def _handle_stateful(
         prod_cd   = state.get("prod_cd", "")
         prod_name = state.get("prod_name", "此商品")
         qty       = state.get("qty", 1)
-        yes_kw = ["對", "是", "對的", "是的", "確認", "好", "yes", "YES", "ok", "OK", "確定", "下單", "好的", "沒錯"]
-        no_kw  = ["取消", "不要", "算了", "不訂", "不用", "不對", "錯了", "不是"]
-        if any(kw in text for kw in yes_kw):
+        if any(kw in text for kw in _YES_KW):
             state_manager.clear(user_id)
             # 加入購物車後立即結帳
             from handlers.ordering import handle_checkout
+            from storage import cart as cart_store
             cart_store.add_item(user_id, prod_cd, prod_name, qty)
             return handle_checkout(user_id, line_api)
-        elif any(kw in text for kw in no_kw):
+        elif any(kw in text for kw in _NO_KW):
             state_manager.clear(user_id)
             return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
         else:
@@ -2565,10 +2784,7 @@ def _handle_stateful(
         wait_time = state.get("wait_time", "")
         restock_id = state.get("restock_id")
 
-        yes_kw = ["可以", "好", "等", "OK", "ok", "沒問題", "可", "願意", "行", "好的"]
-        no_kw = ["不行", "不要", "算了", "取消", "等不了", "太久", "不用", "不"]
-
-        if any(kw in text for kw in yes_kw):
+        if any(kw in text for kw in _YES_KW):
             from storage.restock import restock_store
             from storage.customers import customer_store as _cs
             from services.ecount import ecount_client
@@ -2621,7 +2837,7 @@ def _handle_stateful(
                 print(f"[ordering] 訂單建立失敗（wait_confirm）: {cust_code} | {prod_name} x{qty}")
                 issue_store.add(user_id, "order_failed", f"{prod_name} × {qty} 個（等待確認後）")
                 return None
-        elif any(kw in text for kw in no_kw):
+        elif any(kw in text for kw in _NO_KW):
             state_manager.clear(user_id)
             from storage.restock import restock_store
             if restock_id:
@@ -2646,9 +2862,7 @@ def _handle_stateful(
 
         # 群組預設地址確認流程：接受「是/否」
         if preferred_cust_cd:
-            yes_kw = ["是", "對", "沒錯", "好", "OK", "ok", "是的", "正確", "確認", "對的", "沒問題"]
-            no_kw  = ["不是", "否", "不對", "不", "no", "NO", "換一個", "其他", "不要"]
-            if any(kw in text for kw in yes_kw):
+            if any(kw in text for kw in _YES_KW):
                 cust_code = preferred_cust_cd
                 addr_label = next(
                     (c.get("address_label") or "" for c in codes if c["ecount_cust_cd"] == preferred_cust_cd), ""
@@ -2673,7 +2887,7 @@ def _handle_stateful(
                 else:
                     issue_store.add(user_id, "order_failed", f"{prod_name} × {qty} 個（群組地址後）")
                     return None
-            elif any(kw in text for kw in no_kw):
+            elif any(kw in text for kw in _NO_KW):
                 # 移除 preferred，改為一般地址選擇
                 state_manager.set(user_id, {
                     "action":     "awaiting_address_selection",
@@ -2909,10 +3123,7 @@ def _handle_stateful(
             state_manager.set(user_id, {"action": "awaiting_address_selection_checkout"})
             return tone.ask_address_selection(codes)
 
-        yes_kw = ["是", "對", "沒錯", "好", "OK", "ok", "是的", "正確", "確認", "對的", "沒問題"]
-        no_kw  = ["不是", "否", "不對", "不", "no", "NO", "換一個", "其他", "不要"]
-
-        if any(kw in text for kw in yes_kw):
+        if any(kw in text for kw in _YES_KW):
             state_manager.clear(user_id)
             state_manager.clear_group_cust_cd(user_id)
             cart = cart_store.get_cart(user_id)
@@ -2927,7 +3138,7 @@ def _handle_stateful(
                 desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart)
                 issue_store.add(user_id, "order_failed", desc)
                 return None
-        elif any(kw in text for kw in no_kw):
+        elif any(kw in text for kw in _NO_KW):
             # 改選其他地址
             codes = customer_store.get_ecount_codes_by_line_id(user_id)
             state_manager.set(user_id, {"action": "awaiting_address_selection_checkout"})
@@ -3004,10 +3215,8 @@ def _dispatch(
         _cust = customer_store.get_by_line_id(user_id)
         _display = (_cust.get("real_name") if _cust else None) or ""
         if not _display:
-            try:
-                _display = line_api.get_profile(user_id).display_name
-            except Exception:
-                pass
+            _prof = _get_profile_cached(line_api, user_id)
+            _display = _prof.display_name if _prof else ""
         return handle_visit(user_id, text, _display)
     elif intent == Intent.CHECKOUT:
         from storage import cart as cart_store

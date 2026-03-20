@@ -148,14 +148,14 @@ _CONFIRMATION_KEYWORDS = [
     "好的", "好喔", "好哦", "好👌", "好！", "謝謝", "感謝", "感恩",
     "了解", "收到", "辛苦了", "沒問題", "可以", "要了",
     "OK", "ok", "Ok", "對", "是的", "是哦", "嗯嗯",
-    "👌", "哈哈", "哦哦", "好",
+    "👌", "哈哈", "哦哦",
 ]
 
 
 def detect_intent(text: str) -> Intent:
     # 忽略 LINE 收回訊息
     if "此內容已收回" in text:
-        return Intent.CONFIRMATION  # 靜默處理
+        return None  # 靜默處理，不回覆
 
     # 娃娃機尺寸詢問（靜默記錄）
     for kw in _MACHINE_SIZE_KEYWORDS:
@@ -241,8 +241,9 @@ def detect_intent(text: str) -> Intent:
     # 若同時含有運費相關詞（如「好，謝謝，含運多少？」）→ 轉真人，不走確認
     _SHIPPING_WORDS = ["運費", "含運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
     if not any(w in text for w in _SHIPPING_WORDS):
+        stripped = text.strip()
         for kw in _CONFIRMATION_KEYWORDS:
-            if text.strip() == kw or text.strip().startswith(kw):
+            if stripped == kw or (len(kw) >= 2 and stripped.startswith(kw)):
                 return Intent.CONFIRMATION
 
     # 到店預告（放 UNKNOWN 前，關鍵字較具體）

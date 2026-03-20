@@ -38,3 +38,13 @@ caddy.exe
 # 系統
 .DS_Store
 Thumbs.db
+data/tray.lock
+data/*.db
+data/*.json
+server.log
+server.err
+__pycache__/
+data/chrome_ecount_session/
+data/txt_buffer_pending.json
+data/ad_prompts/
+data/ad_gemini.log

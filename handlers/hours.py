@@ -42,10 +42,10 @@ def _parse_date(text: str, now: datetime) -> datetime | None:
     # 明天、後天、大後天
     if '明天' in text or '明日' in text:
         return now + timedelta(days=1)
-    if '後天' in text:
-        return now + timedelta(days=2)
     if '大後天' in text:
         return now + timedelta(days=3)
+    if '後天' in text:
+        return now + timedelta(days=2)
 
     # 下週X
     m = re.search(r'下[週周]([一二三四五六日天])', text)

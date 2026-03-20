@@ -116,7 +116,7 @@ def handle_machine_query(
     import threading
     from services.ecount import ecount_client
     from config import settings as _cfg
-    from handlers.internal import _format_po, _get_media_files, _build_media_messages, _push_messages_chunked
+    from handlers.internal import _format_po, _match_product_media_files, _get_media_dir, _build_media_messages, _push_messages_chunked
     from linebot.v3.messaging import PushMessageRequest, TextMessage
 
     # 查規格庫
@@ -150,7 +150,8 @@ def handle_machine_query(
                 f"價格：{sp.get('price','')}\n"
                 f"庫存：{qty} 個"
             )
-            media_files = _get_media_files(code) if base_url else []
+            media_dir = _get_media_dir()
+            media_files = _match_product_media_files(code, media_dir) if base_url and media_dir else []
             media_msgs  = _build_media_messages(code, media_files, base_url) if media_files else []
             text_msg    = TextMessage(text=po_text)
             try:

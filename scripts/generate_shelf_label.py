@@ -52,7 +52,10 @@ _TEXT_X      = 190.0
 _TEXT_MAX_W  = 260   # 超過自動縮小字型
 
 
-# ── 佇列管理 ──────────────────────────────────────────────────
+# ── 佇列管理（檔案鎖保護，防止並發覆蓋）─────────────────────
+import threading
+_queue_lock = threading.Lock()
+
 
 def _load_queue() -> list[dict]:
     if QUEUE_FILE.exists():
@@ -242,32 +245,42 @@ def generate_labels(codes: list[str]) -> list[Path]:
         print("[label] 本次上架無法取得規格資料，不更新佇列")
         return []
 
-    # 合併至佇列
-    queue = _load_queue()
-    queue.extend(new_products)
-    print(f"[label] 佇列現有 {len(queue)} 個（本次新增 {len(new_products)} 個）")
+    with _queue_lock:
+        # 合併至佇列（佇列內同貨號 → 取代為最新資料；已印過的不影響）
+        queue = _load_queue()
+        existing_idx = {p["商品編號"]: i for i, p in enumerate(queue)}
+        replaced = 0
+        for p in new_products:
+            code = p["商品編號"]
+            if code in existing_idx:
+                queue[existing_idx[code]] = p
+                replaced += 1
+            else:
+                queue.append(p)
+                existing_idx[code] = len(queue) - 1
+        added = len(new_products) - replaced
+        print(f"[label] 佇列現有 {len(queue)} 個（新增 {added} 個，更新 {replaced} 個）")
 
-    if len(queue) < 3:
+        if len(queue) < 3:
+            _save_queue(queue)
+            print(f"[label] 尚不足 3 個，暫存等候下次上架")
+            return []
+
+        # 每 3 個生成一張 PDF
+        ts = datetime.now().strftime("%Y%m%d")
+        generated = []
+        while len(queue) >= 3:
+            batch = queue[:3]
+            queue = queue[3:]
+            codes_str = "_".join(p["商品編號"] for p in batch)
+            out_path = OUTPUT_DIR / f"架上標_{ts}_{codes_str}.pdf"
+            _generate_one_pdf(batch, out_path)
+            generated.append(out_path)
+
+        # 剩餘存回佇列
         _save_queue(queue)
-        print(f"[label] 尚不足 3 個，暫存等候下次上架")
-        return []
-
-    # 每 3 個生成一張 PDF
-    ts = datetime.now().strftime("%Y%m%d")
-    generated = []
-    while len(queue) >= 3:
-        batch = queue[:3]
-        queue = queue[3:]
-        codes_str = "_".join(p["商品編號"] for p in batch)
-        out_path = OUTPUT_DIR / f"架上標_{ts}_{codes_str}.pdf"
-        _generate_one_pdf(batch, out_path)
-        generated.append(out_path)
-
-
-    # 剩餘存回佇列
-    _save_queue(queue)
-    if queue:
-        print(f"[label] 剩餘 {len(queue)} 個暫存至佇列，下次上架再湊")
+        if queue:
+            print(f"[label] 剩餘 {len(queue)} 個暫存至佇列，下次上架再湊")
 
     return generated
 

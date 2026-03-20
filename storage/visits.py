@@ -7,7 +7,7 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("data/visits.db")
+DB_PATH = Path(__file__).parent.parent / "data" / "visits.db"
 
 
 def _conn():
@@ -19,6 +19,7 @@ def _conn():
 
 def init():
     with _conn() as c:
+        c.execute("PRAGMA journal_mode=WAL")
         c.execute("""
             CREATE TABLE IF NOT EXISTS customer_visits (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,11 +61,11 @@ def get_pending() -> list[dict]:
 
 def mark_visited(visit_id: int) -> bool:
     with _conn() as c:
-        c.execute(
+        cur = c.execute(
             "UPDATE customer_visits SET status='visited' WHERE id=?",
             (visit_id,)
         )
-        return c.total_changes > 0
+        return cur.rowcount > 0
 
 
 def get_recent_visited(days: int = 7) -> list[dict]:

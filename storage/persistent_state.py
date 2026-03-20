@@ -37,6 +37,7 @@ class PersistentStateStore:
 
     def _init_db(self):
         with self._conn() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS conv_states (
                     user_id         TEXT PRIMARY KEY,

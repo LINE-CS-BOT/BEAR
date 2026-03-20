@@ -70,7 +70,7 @@ CREATE_NO_WINDOW = 0x08000000
 
 def _start_uvicorn():
     _kill_port_8000()   # 啟動前先清掉殘留 process
-    time.sleep(0.5)
+    _wait_port_free(8000, timeout=10)  # 等 port 真正釋放
     log_path = os.path.join(BASE_DIR, "server.log")
     # 用 shell 重導向，讓 uvicorn 程序自己持有 fd，tray 重啟不影響
     cmd_str = " ".join(f'"{c}"' if " " in c else c for c in UVICORN_CMD)
@@ -94,7 +94,7 @@ def _start_caddy():
     _procs["caddy"] = p
 
 def _kill_port_8000():
-    """強制釋放 port 8000（殺掉佔用的 process）"""
+    """強制釋放 port 8000（殺掉佔用的 process tree）"""
     try:
         import subprocess as _sp
         result = _sp.run(
@@ -102,17 +102,36 @@ def _kill_port_8000():
             capture_output=True, text=True,
             creationflags=CREATE_NO_WINDOW,
         )
+        killed = set()
         for line in result.stdout.splitlines():
             if ":8000 " in line and "LISTENING" in line:
                 pid = line.strip().split()[-1]
-                if pid.isdigit():
+                if pid.isdigit() and pid not in killed:
+                    killed.add(pid)
+                    # /T 殺掉整個 process tree
                     _sp.run(
-                        ["taskkill", "/F", "/PID", pid],
+                        ["taskkill", "/F", "/T", "/PID", pid],
                         creationflags=CREATE_NO_WINDOW,
                         capture_output=True,
+                        timeout=5,
                     )
     except Exception:
         pass
+
+
+def _wait_port_free(port=8000, timeout=10):
+    """等待 port 完全釋放，最多等 timeout 秒"""
+    import subprocess as _sp
+    for _ in range(timeout * 2):
+        result = _sp.run(
+            ["netstat", "-ano"],
+            capture_output=True, text=True,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        if not any(f":{port} " in l and "LISTENING" in l for l in result.stdout.splitlines()):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 _watchdog_running = False
@@ -127,8 +146,17 @@ def _watchdog_loop():
         p = _procs.get("uvicorn")
         if p is not None and p.poll() is not None:
             _kill_port_8000()
-            time.sleep(1)
+            _wait_port_free(8000, timeout=10)
             _start_uvicorn()
+            # 等待 server 健康
+            for _ in range(20):
+                time.sleep(1)
+                try:
+                    r = urllib.request.urlopen("http://localhost:8000/health", timeout=2)
+                    if r.status == 200:
+                        break
+                except Exception:
+                    pass
         c = _procs.get("caddy")
         if c is not None and c.poll() is not None:
             time.sleep(1)

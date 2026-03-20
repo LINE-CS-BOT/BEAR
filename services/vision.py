@@ -40,6 +40,7 @@ HASH_DB_PATH = Path("data/image_hashes.json")
 try:
     from PIL import Image, ImageFilter, ImageOps
     import imagehash as _imagehash
+    import numpy as np
     _VISION_OK = True
 except ImportError:
     _VISION_OK = False
@@ -128,13 +129,13 @@ def is_transfer_screenshot(image_bytes: bytes) -> bool:
         #    判斷方式：max(R,G,B) - min(R,G,B) > 50（色彩飽和）
         #    且亮度不能太暗（避免黑色截圖誤判）
         top = img.crop((0, 0, w, h // 4))
-        top_pixels = list(top.getdata())
-        colorful = sum(
-            1 for r, g, b in top_pixels
-            if (max(r, g, b) - min(r, g, b) > 50)  # 高飽和彩色
-            and max(r, g, b) > 80                    # 非純黑
-        )
-        if colorful / max(len(top_pixels), 1) < 0.25:
+        top_arr = np.array(top)  # shape: (h, w, 3)
+        max_rgb = top_arr.max(axis=2)
+        min_rgb = top_arr.min(axis=2)
+        diff = max_rgb - min_rgb
+        colorful = int(np.sum((diff > 50) & (max_rgb > 80)))
+        total_pixels = top_arr.shape[0] * top_arr.shape[1]
+        if colorful / max(total_pixels, 1) < 0.25:
             return False
 
         # 3. 中段有大面積白/淺色區（銀行 UI 交易明細區）
@@ -290,9 +291,16 @@ def ocr_extract_text(image_bytes: bytes) -> str:
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-        # 1. 放大 2x（提升小字 OCR 準確度）
+        # 1. 條件放大（僅小圖放大，且限制最大尺寸避免記憶體浪費）
+        MAX_OCR_DIM = 2000
         w, h = img.size
-        img = img.resize((w * 2, h * 2), Image.LANCZOS)
+        scale = 1
+        if max(w, h) < 800:
+            scale = 2
+        if max(w * scale, h * scale) > MAX_OCR_DIM:
+            scale = MAX_OCR_DIM / max(w, h)
+        if scale != 1:
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
         # 2. 灰階 + 二值化（讓文字更清晰）
         gray = ImageOps.grayscale(img)

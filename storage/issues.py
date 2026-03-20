@@ -17,7 +17,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path("data/issues.db")
+DB_PATH = Path(__file__).parent.parent / "data" / "issues.db"
 
 
 class IssueStore:
@@ -27,6 +27,7 @@ class IssueStore:
 
     def _init_db(self):
         with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS issues (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,

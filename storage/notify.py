@@ -25,6 +25,7 @@ class NotifyStore:
 
     def _init_db(self):
         with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS notify (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
