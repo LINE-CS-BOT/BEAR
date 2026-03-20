@@ -370,6 +370,11 @@
     "hash": "cb1ab421d9c6cf1a"
   },
   {
+    "code": "T1152",
+    "file": "T1152A.jpg",
+    "hash": "f6c24e16580bc9eb"
+  },
+  {
     "code": "T1164",
     "file": "T1164.jpg",
     "hash": "b2e89ea2840fea6b"
@@ -413,6 +418,21 @@
     "code": "T1179",
     "file": "T1179.jpg",
     "hash": "afd603eaa1d15651"
+  },
+  {
+    "code": "T1179",
+    "file": "T1179A.jpg",
+    "hash": "bbf86cc2c20f8d2c"
+  },
+  {
+    "code": "T1179",
+    "file": "T1179C.jpg",
+    "hash": "90696f1e72d2c1b5"
+  },
+  {
+    "code": "T1179",
+    "file": "T1179D.jpg",
+    "hash": "c49c3b276e689197"
   },
   {
     "code": "T1181",
@@ -508,6 +528,11 @@
     "code": "T1220",
     "file": "T1220B.jpg",
     "hash": "bc78c72297c55386"
+  },
+  {
+    "code": "U0332",
+    "file": "U0332A.jpg",
+    "hash": "ebc7947ee1201ed0"
   },
   {
     "code": "U0335",
@@ -693,6 +718,16 @@
     "code": "Z3252",
     "file": "Z3252.jpg",
     "hash": "fdd7972d4b526080"
+  },
+  {
+    "code": "Z3252",
+    "file": "Z3252B.jpg",
+    "hash": "aad5d022cf309fca"
+  },
+  {
+    "code": "Z3252",
+    "file": "Z3252C.jpg",
+    "hash": "84b731d5fa4c466a"
   },
   {
     "code": "Z3257",
