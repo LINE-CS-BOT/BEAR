@@ -89,7 +89,7 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
     for item in sales:
         name = item.get("customer", "").strip()
         amount = float(item.get("amount", 0))
-        if not name or amount <= 0:
+        if not name or amount == 0:
             continue
 
         # Check special merge group first

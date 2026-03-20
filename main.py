@@ -62,6 +62,7 @@ from handlers.internal import (
     handle_internal_add_customer,
     handle_internal_product_info_by_name,
     handle_internal_consumable,
+    handle_internal_rebate,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
@@ -466,6 +467,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or handle_ambiguous_resolve(group_id, combined)
         or handle_name_order_confirm(group_id, combined)
         or handle_internal_order(combined, line_api, group_id=group_id)
+        or handle_internal_rebate(combined, group_id)
         or handle_internal_consumable(combined, group_id)
         or handle_internal_spec_query(combined)
         or handle_internal_product_info(combined, group_id)
