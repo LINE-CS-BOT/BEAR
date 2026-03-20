@@ -37,12 +37,16 @@ from scripts._chrome_helper import (
     ERP_URL,
 )
 
-# 銷貨單明細的候選 prgId
-_SALE_DETAIL_PRGIDS = [
-    "E020602",          # 常見的銷貨單明細 prgId
-    "SA006", "SA006B", "SL002", "SL006",
-    "BA006", "BA006B",
-]
+# 銷貨單明細的正確 hash（含 menuSeq/groupSeq）
+_SALE_DETAIL_HASH = (
+    "#menuType=MENUTREE_000004"
+    "&menuSeq=MENUTREE_000494"
+    "&groupSeq=MENUTREE_000030"
+    "&prgId=E040207&depth=4"
+)
+
+# 頁面載入成功的判斷元素（查詢(F8) 按鈕）
+_PAGE_LOADED_SEL = "#header_search"
 
 _SALE_DETAIL_MENU_TEXTS = ["銷貨單明細"]
 
@@ -52,27 +56,21 @@ _SALE_DETAIL_MENU_TEXTS = ["銷貨單明細"]
 # ---------------------------------------------------------------------------
 
 async def _click_sale_detail_menu(page) -> bool:
-    """點頂部導航列「銷貨單明細」"""
+    """點頂部導航列「銷貨單明細」書籤"""
     for menu_text in _SALE_DETAIL_MENU_TEXTS:
         selectors = [
-            f'text="{menu_text}"',
-            f':text("{menu_text}")',
             f'a:has-text("{menu_text}")',
+            f'text="{menu_text}"',
         ]
         for sel in selectors:
             try:
-                locs = await page.locator(sel).all()
-                for loc in locs:
-                    try:
-                        if not await loc.is_visible():
-                            continue
-                        await loc.click(timeout=5000)
-                        print(f"[rebate] 點擊「{menu_text}」，等待頁面...")
-                        await page.wait_for_selector("#searchGroup", timeout=15000)
-                        print("[rebate] ✓ 銷貨單明細頁面已開啟")
-                        return True
-                    except Exception:
-                        continue
+                loc = page.locator(sel).first
+                if await loc.is_visible(timeout=3000):
+                    await loc.click(timeout=5000)
+                    print(f"[rebate] 點擊「{menu_text}」，等待頁面...")
+                    await page.wait_for_selector(_PAGE_LOADED_SEL, timeout=15000)
+                    print("[rebate] ✓ 銷貨單明細頁面已開啟")
+                    return True
             except Exception:
                 continue
     return False
@@ -80,26 +78,23 @@ async def _click_sale_detail_menu(page) -> bool:
 
 async def _navigate_to_sale_detail(page, ec_sid: str) -> bool:
     """導向銷貨單明細頁面"""
-    # 策略 1：已儲存的 hash
-    cfg = load_web_config()
-    saved_hash = cfg.get("sale_detail_hash", "")
-    if saved_hash:
-        url = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}{saved_hash}"
-        print("[rebate] 使用已儲存 hash 導航銷貨單明細...")
-        try:
-            await page.goto("about:blank", timeout=5000)
-            await page.goto(url, timeout=20000)
-            await page.wait_for_load_state("networkidle", timeout=12000)
-            await page.wait_for_timeout(2000)
-            if await page.query_selector("#searchGroup"):
-                print("[rebate] ✓ 已儲存 hash 導航成功")
-                return True
-            print("[rebate] 已儲存 hash 失效，改用其他策略...")
-        except Exception as e:
-            print(f"[rebate] 已儲存 hash 失敗: {e}")
+    # 策略 1：直接用已知的正確 hash
+    url = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}{_SALE_DETAIL_HASH}"
+    print("[rebate] 導航銷貨單明細 (prgId=E040207)...")
+    try:
+        await page.goto("about:blank", timeout=5000)
+        await page.goto(url, timeout=20000)
+        await page.wait_for_load_state("networkidle", timeout=12000)
+        await page.wait_for_timeout(3000)
+        if await page.query_selector(_PAGE_LOADED_SEL):
+            print("[rebate] ✓ 銷貨單明細頁面已開啟")
+            return True
+        print("[rebate] 直接導航未偵測到頁面，嘗試其他策略...")
+    except Exception as e:
+        print(f"[rebate] 直接導航失敗: {e}")
 
-    # 策略 2：回首頁點選單
-    print("[rebate] 回 ERP 首頁再點「銷貨單明細」...")
+    # 策略 2：回首頁點書籤選單
+    print("[rebate] 回 ERP 首頁再點「銷貨單明細」書籤...")
     try:
         url_home = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}"
         await page.goto(url_home, timeout=25000)
@@ -109,36 +104,9 @@ async def _navigate_to_sale_detail(page, ec_sid: str) -> bool:
         print(f"[rebate] ERP 首頁導向失敗: {e}")
 
     if await _click_sale_detail_menu(page):
-        # 儲存 hash
-        url = page.url
-        if "#" in url:
-            h = "#" + url.split("#", 1)[1]
-            save_web_config({"sale_detail_hash": h})
-            print(f"[rebate] 已儲存 hash: {h[:60]}")
         return True
 
-    # 策略 3：候選 prgId
-    print("[rebate] 嘗試候選 prgId 清單...")
-    for prgid in _SALE_DETAIL_PRGIDS:
-        url = (
-            f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}"
-            f"#menuType=MENUTREE_000002&prgId={prgid}&depth=3"
-        )
-        print(f"[rebate]   嘗試 prgId={prgid}...")
-        try:
-            await page.goto("about:blank", timeout=5000)
-            await page.goto(url, timeout=20000)
-            await page.wait_for_load_state("networkidle", timeout=12000)
-            await page.wait_for_timeout(3000)
-            if await page.query_selector("#searchGroup"):
-                h = f"#menuType=MENUTREE_000002&prgId={prgid}&depth=3"
-                save_web_config({"sale_detail_hash": h})
-                print(f"[rebate] ✓ prgId={prgid} 成功，已儲存")
-                return True
-        except Exception:
-            continue
-
-    print("[rebate] ✗ 無法導航到銷貨單明細，請手動開一次")
+    print("[rebate] ✗ 無法導航到銷貨單明細")
     return False
 
 
@@ -147,22 +115,19 @@ async def _navigate_to_sale_detail(page, ec_sid: str) -> bool:
 # ---------------------------------------------------------------------------
 
 async def _click_rebate_tab(page) -> bool:
-    """點擊「回饋金總計」tab"""
+    """點擊「回饋金總計」tab（li.preset id="1"）"""
     try:
-        # 找 tab 文字
         for sel in [
-            'text="回饋金總計"',
-            ':text("回饋金總計")',
-            'a:has-text("回饋金總計")',
+            'li.preset:has-text("回饋金總計")',
             'li:has-text("回饋金總計")',
-            '[class*="tab"]:has-text("回饋金總計")',
+            'a:has-text("回饋金總計")',
         ]:
             try:
                 loc = page.locator(sel).first
                 if await loc.is_visible(timeout=3000):
                     await loc.click()
                     print("[rebate] ✓ 已點擊「回饋金總計」tab")
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(2000)
                     return True
             except Exception:
                 continue
@@ -176,73 +141,48 @@ async def _click_rebate_tab(page) -> bool:
 async def _click_this_month(page) -> bool:
     """點擊「本月(~今天)」快速日期選擇"""
     try:
-        for sel in [
-            'text="本月(~今天)"',
-            ':text("本月(~今天)")',
-            'a:has-text("本月")',
-            'button:has-text("本月")',
-        ]:
-            try:
-                locs = await page.locator(sel).all()
-                for loc in locs:
-                    if await loc.is_visible():
-                        await loc.click()
-                        print("[rebate] ✓ 已點擊「本月(~今天)」")
-                        await page.wait_for_timeout(1000)
-                        return True
-            except Exception:
-                continue
-        print("[rebate] ✗ 找不到「本月(~今天)」按鈕")
-        return False
-    except Exception as e:
-        print(f"[rebate] 點擊本月失敗: {e}")
-        return False
+        loc = page.locator('button:has-text("本月(~今天)")').first
+        if await loc.is_visible(timeout=3000):
+            await loc.click()
+            print("[rebate] ✓ 已點擊「本月(~今天)」")
+            await page.wait_for_timeout(1000)
+            return True
+    except Exception:
+        pass
+    print("[rebate] ✗ 找不到「本月(~今天)」按鈕")
+    return False
 
 
 async def _click_last_month(page) -> bool:
     """點擊「上個月」快速日期選擇"""
     try:
-        for sel in [
-            'text="上個月"',
-            ':text("上個月")',
-            'a:has-text("上個月")',
-            'button:has-text("上個月")',
-        ]:
-            try:
-                locs = await page.locator(sel).all()
-                for loc in locs:
-                    if await loc.is_visible():
-                        await loc.click()
-                        print("[rebate] ✓ 已點擊「上個月」")
-                        await page.wait_for_timeout(1000)
-                        return True
-            except Exception:
-                continue
-        print("[rebate] ✗ 找不到「上個月」按鈕")
-        return False
-    except Exception as e:
-        print(f"[rebate] 點擊上個月失敗: {e}")
-        return False
+        # 精確匹配「上個月」，排除「上個月+本月」
+        locs = await page.locator('button:has-text("上個月")').all()
+        for loc in locs:
+            text = (await loc.text_content() or "").strip()
+            if text == "上個月" and await loc.is_visible():
+                await loc.click()
+                print("[rebate] ✓ 已點擊「上個月」")
+                await page.wait_for_timeout(1000)
+                return True
+    except Exception:
+        pass
+    print("[rebate] ✗ 找不到「上個月」按鈕")
+    return False
 
 
 async def _click_query(page) -> bool:
     """點擊查詢(F8)"""
     try:
-        for sel in [
-            'text="查詢(F8)"',
-            ':text("查詢")',
-            'button:has-text("查詢")',
-            '#btnSearch',
-        ]:
-            try:
-                loc = page.locator(sel).first
-                if await loc.is_visible(timeout=3000):
-                    await loc.click()
-                    print("[rebate] ✓ 點擊查詢(F8)")
-                    return True
-            except Exception:
-                continue
-        # Fallback: F8 鍵
+        loc = page.locator("#header_search")
+        if await loc.is_visible(timeout=3000):
+            await loc.click()
+            print("[rebate] ✓ 點擊查詢(F8)")
+            return True
+    except Exception:
+        pass
+    # Fallback: F8 鍵
+    try:
         await page.keyboard.press("F8")
         print("[rebate] ✓ 按 F8 查詢")
         return True
@@ -292,7 +232,7 @@ async def _parse_results(page) -> list[dict]:
                     const lastCell = cells[cells.length - 1]?.textContent?.trim() || '0';
                     const amount = parseFloat(lastCell.replace(/,/g, '')) || 0;
 
-                    if (amount > 0) {
+                    if (amount !== 0) {
                         results.push({ customer, amount });
                     }
                 }
@@ -422,7 +362,7 @@ def _parse_excel(path: Path) -> list[dict]:
             for cell in reversed(row):
                 try:
                     val = float(str(cell).replace(",", ""))
-                    if val > 0:
+                    if val != 0:
                         amount = val
                         break
                 except (ValueError, TypeError):

@@ -3308,3 +3308,90 @@ def handle_internal_new_product(text: str) -> str | None:
     footer = "📋 已記錄至 admin 待審核清單"
     parts  = ([header] if header else []) + result_lines + [footer]
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# 回饋金查詢
+# ---------------------------------------------------------------------------
+
+_REBATE_KW = ["回饋金資料", "回饋金"]
+
+def handle_internal_rebate(text: str, state_key: str | None = None) -> str | None:
+    """
+    內部群回饋金查詢：
+      「回饋金」「查回饋」  → 顯示當月回饋金總表
+      「XXX 回饋金」       → 查詢特定客戶的回饋金
+    """
+    t = text.strip()
+    if not any(kw in t for kw in _REBATE_KW):
+        return None
+
+    from services.rebate import calculate_rebates, get_approaching_customers
+
+    result = calculate_rebates()
+    groups = result.get("groups", [])
+    summary = result.get("summary", {})
+    month = result.get("month", "")
+
+    if not groups:
+        return f"📊 {month} 回饋金\n目前無銷貨資料"
+
+    # 檢查是否查詢特定客戶
+    query_name = t
+    for kw in _REBATE_KW + ["查", "查詢", "多少", "？", "?", " "]:
+        query_name = query_name.replace(kw, "")
+    query_name = query_name.strip()
+
+    if query_name:
+        # 特定客戶查詢
+        matched = [g for g in groups
+                   if query_name in g["group_name"]
+                   or any(query_name in m["name"] for m in g["members"])]
+        if not matched:
+            return f"📊 找不到「{query_name}」的回饋金資料"
+
+        lines = [f"📊 {month} 「{query_name}」回饋金"]
+        for g in matched:
+            lines.append(f"\n👤 {g['group_name']}　合計 ${g['total']:,.0f}")
+            lines.append(f"   級距：{g['tier']}　回饋金：${g['rebate']:,.0f}")
+            if len(g["members"]) > 1:
+                for m in g["members"]:
+                    rebate_str = f" → ${m['rebate']:,.0f}" if m["rebate"] > 0 else ""
+                    lines.append(f"   　{m['name']}　${m['amount']:,.0f}{rebate_str}")
+        return "\n".join(lines)
+
+    # 總表：列出有達標的 + 快接近的
+    lines = [f"📊 {month} 回饋金總表"]
+    lines.append(f"總銷售：${summary['total_sales']:,.0f}　總回饋：${summary['total_rebate']:,.0f}")
+
+    # 有回饋金的
+    with_rebate = [g for g in groups if g["rebate"] > 0]
+    if with_rebate:
+        lines.append(f"\n✅ 已達標（{len(with_rebate)} 組）：")
+        for g in with_rebate:
+            if len(g["members"]) > 1:
+                member_detail = "、".join(
+                    f"{m['name']}${m['amount']:,.0f}" for m in g["members"]
+                )
+                lines.append(
+                    f"  {g['group_name']}　${g['total']:,.0f}　"
+                    f"{g['tier']}　→${g['rebate']:,.0f}"
+                )
+                lines.append(f"    ({member_detail})")
+            else:
+                lines.append(
+                    f"  {g['group_name']}　${g['total']:,.0f}　"
+                    f"{g['tier']}　→${g['rebate']:,.0f}"
+                )
+
+    # 快接近的
+    approaching = get_approaching_customers()
+    if approaching:
+        lines.append(f"\n⚡ 快達標（差20%以內）：")
+        for a in approaching:
+            lines.append(
+                f"  {a['group_name']}　${a['total']:,.0f}　"
+                f"差 ${a['gap']:,.0f} 達 {a['next_tier']}"
+            )
+
+    return "\n".join(lines)
