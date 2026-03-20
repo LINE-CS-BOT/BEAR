@@ -2348,9 +2348,15 @@ async def admin_rebate():
 
 @app.get("/admin/rebate/approaching")
 async def admin_rebate_approaching():
-    """取得快接近達成的客戶"""
-    from services.rebate import get_approaching_customers
-    return await asyncio.to_thread(get_approaching_customers)
+    """1~14日：上月達標客戶；15日起：當月快接近達成"""
+    from datetime import datetime as _dt
+    day = _dt.now().day
+    if day < 15:
+        from services.rebate import get_last_month_achievers
+        return await asyncio.to_thread(get_last_month_achievers)
+    else:
+        from services.rebate import get_approaching_customers
+        return await asyncio.to_thread(get_approaching_customers)
 
 
 @app.post("/webhook")

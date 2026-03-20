@@ -3370,28 +3370,46 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
         lines.append(f"\n✅ 已達標（{len(with_rebate)} 組）：")
         for g in with_rebate:
             if len(g["members"]) > 1:
-                member_detail = "、".join(
-                    f"{m['name']}${m['amount']:,.0f}" for m in g["members"]
-                )
                 lines.append(
                     f"  {g['group_name']}　${g['total']:,.0f}　"
                     f"{g['tier']}　→${g['rebate']:,.0f}"
                 )
-                lines.append(f"    ({member_detail})")
+                for m in g["members"]:
+                    rebate_str = f" →${m['rebate']:,.0f}" if m["rebate"] > 0 else ""
+                    lines.append(f"    {m['name']}　${m['amount']:,.0f}{rebate_str}")
+                    # 合併組顯示各店
+                    if m.get("stores") and len(m["stores"]) > 1:
+                        for s in m["stores"]:
+                            lines.append(f"      {s['name']}　${s['amount']:,.0f}")
             else:
                 lines.append(
                     f"  {g['group_name']}　${g['total']:,.0f}　"
                     f"{g['tier']}　→${g['rebate']:,.0f}"
                 )
 
-    # 快接近的
-    approaching = get_approaching_customers()
-    if approaching:
-        lines.append(f"\n⚡ 快達標（差20%以內）：")
-        for a in approaching:
-            lines.append(
-                f"  {a['group_name']}　${a['total']:,.0f}　"
-                f"差 ${a['gap']:,.0f} 達 {a['next_tier']}"
-            )
+    # 根據日期決定顯示內容
+    from datetime import datetime as _dt
+    day = _dt.now().day
+    if day < 15:
+        # 1~14日：顯示上月達標
+        from services.rebate import get_last_month_achievers
+        last = get_last_month_achievers()
+        if last["achievers"]:
+            lines.append(f"\n✅ {last['month']} 確定達標（{len(last['achievers'])} 組）：")
+            for g in last["achievers"]:
+                lines.append(
+                    f"  {g['group_name']}　${g['total']:,.0f}　"
+                    f"{g['tier']}　→${g['rebate']:,.0f}"
+                )
+    else:
+        # 15日起：顯示快接近達成
+        approaching = get_approaching_customers()
+        if approaching:
+            lines.append(f"\n⚡ 快達標：")
+            for a in approaching:
+                lines.append(
+                    f"  {a['group_name']}　${a['total']:,.0f}　"
+                    f"差 ${a['gap']:,.0f} 達 {a['next_tier']}"
+                )
 
     return "\n".join(lines)
