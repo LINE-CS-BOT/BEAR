@@ -3358,6 +3358,12 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
                 for m in g["members"]:
                     rebate_str = f" → ${m['rebate']:,.0f}" if m["rebate"] > 0 else ""
                     lines.append(f"   　{m['name']}　${m['amount']:,.0f}{rebate_str}")
+            # 快達標提示
+            thresholds = [(30000, 17000, "3萬"), (60000, 45000, "6萬"), (100000, 75000, "10萬")]
+            for target, floor, label in thresholds:
+                if g["total"] < target and g["total"] >= floor:
+                    lines.append(f"   ⚡ 差 ${target - g['total']:,.0f} 達 {label}")
+                    break
         return "\n".join(lines)
 
     # 總表：列出有達標的 + 快接近的
@@ -3412,4 +3418,97 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
                     f"差 ${a['gap']:,.0f} 達 {a['next_tier']}"
                 )
 
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 未處理訂單查詢
+# ---------------------------------------------------------------------------
+
+_UNFULFILLED_PATH = Path(__file__).parent.parent / "data" / "unfulfilled_orders.json"
+
+_UNFULFILLED_KW = ["未處理"]
+
+
+def _load_unfulfilled() -> list[dict]:
+    """載入未處理訂單資料"""
+    if not _UNFULFILLED_PATH.exists():
+        return []
+    try:
+        return _json.loads(_UNFULFILLED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _unfulfilled_needs_refresh() -> bool:
+    """檔案超過 30 分鐘需要更新"""
+    if not _UNFULFILLED_PATH.exists():
+        return True
+    import time
+    age = time.time() - _UNFULFILLED_PATH.stat().st_mtime
+    return age > 30 * 60
+
+
+def _refresh_unfulfilled():
+    """同步未處理訂單（同步執行）"""
+    try:
+        import asyncio
+        from scripts.sync_unfulfilled import sync_unfulfilled
+        asyncio.run(sync_unfulfilled())
+    except Exception as e:
+        print(f"[unfulfilled] 自動更新失敗: {e}")
+
+
+def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str | None:
+    """
+    內部群未處理訂單查詢：
+      「XXX 未處理」  → 查特定產品或客戶的未處理訂單
+    需要有關鍵字才觸發，單純「未處理」不觸發。
+    """
+    t = text.strip()
+    if not any(kw in t for kw in _UNFULFILLED_KW):
+        return None
+
+    # 提取查詢關鍵字
+    query = t
+    for kw in _UNFULFILLED_KW + ["查", "查詢", "訂單", "？", "?", " "]:
+        query = query.replace(kw, "")
+    query = query.strip()
+
+    # 需要有查詢對象，單純「未處理」不觸發
+    if not query:
+        return None
+
+    # 檔案超過 30 分鐘自動更新
+    if _unfulfilled_needs_refresh():
+        print("[unfulfilled] 資料超過 30 分鐘，自動更新...")
+        _refresh_unfulfilled()
+
+    orders = _load_unfulfilled()
+    if not orders:
+        return "📋 目前沒有未處理訂單資料"
+
+    # 搜尋產品或客戶
+    matched = [o for o in orders
+               if query.upper() in o["code"].upper()
+               or query in o["name"]
+               or query in o["customer"]]
+    if not matched:
+        return f"📋 找不到「{query}」的未處理訂單"
+
+    # 判斷是否為產品查詢（所有結果同一產品）
+    codes = set(o["code"] for o in matched)
+    if len(codes) == 1:
+        # 產品查詢：標題顯示編碼+品名
+        first = matched[0]
+        lines = [f"{first['code']} {first['name']} 未處理訂單({len(matched)}筆)"]
+        for o in matched:
+            note_str = f" {o['note']}" if o.get("note") else ""
+            lines.append(f"{o['customer']} *{o['qty']:g}{note_str}")
+    else:
+        # 客戶或混合查詢
+        lines = [f"「{query}」未處理訂單({len(matched)}筆)"]
+        for o in matched:
+            note_str = f" {o['note']}" if o.get("note") else ""
+            lines.append(f"{o['code']} {o['name'][:18]} *{o['qty']:g}{note_str}")
     return "\n".join(lines)
