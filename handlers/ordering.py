@@ -185,7 +185,7 @@ def _create_ecount_customer(user_id: str) -> str | None:
     prefix = f"M{today}"
     # 每日流水號從 1000 起，查 DB 已有同前綴最大號 +1
     try:
-        _db_path = str(_Path(__file__).parent.parent / "data" / "customers.db")
+        _db_path = str(Path(__file__).parent.parent / "data" / "customers.db")
         with _sqlite3.connect(_db_path) as _conn:
             _rows = _conn.execute(
                 "SELECT ecount_cust_cd FROM customers WHERE ecount_cust_cd LIKE ?",
@@ -411,7 +411,7 @@ def handle_checkout(
         from storage.issues import issue_store
         desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart)
         issue_store.add(user_id, "order_failed", desc)
-        return None
+        return "⚠️ 訂單處理時發生問題，請稍後再試或聯繫客服。"
 
 
 def _notify_staff(

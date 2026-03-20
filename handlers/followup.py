@@ -6,8 +6,11 @@
 - 48小時沒回應 → 清除狀態
 """
 
+from linebot.v3.messaging import PushMessageRequest, TextMessage
+
 from storage.persistent_state import persistent_state_store, EXPIRE_AFTER_HOURS, REMIND_AFTER_HOURS
 from storage.state import state_manager
+from storage import cart as cart_store
 
 # 各狀態的提醒文字
 _REMIND_TEXT = {
@@ -34,6 +37,7 @@ def check_and_followup(line_api) -> dict:
     for user_id in persistent_state_store.get_expired():
         persistent_state_store.delete(user_id)
         state_manager.clear(user_id)
+        cart_store.clear_cart(user_id)
         expired += 1
         print(f"[followup] 清除過期狀態: {user_id}")
 
@@ -43,10 +47,10 @@ def check_and_followup(line_api) -> dict:
         action  = entry["action"]
         text    = _REMIND_TEXT.get(action, _DEFAULT_REMIND)
         try:
-            line_api.push_message(
-                user_id,
-                {"type": "text", "content": text},
-            )
+            line_api.push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text=text)],
+            ))
             persistent_state_store.mark_reminded(user_id)
             reminded += 1
             print(f"[followup] 提醒送出: {user_id} ({action})")

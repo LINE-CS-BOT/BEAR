@@ -15,6 +15,26 @@
 
 import random
 
+from config import settings as _settings
+
+# ── 營業日字串（從 settings 動態產生）─────────────────
+_WEEKDAY_NAMES = {1: '一', 2: '二', 3: '三', 4: '四', 5: '五', 6: '六', 7: '日'}
+
+def _biz_days_label() -> str:
+    """產生如 '週二～週日（週一公休）' 的營業日標示"""
+    biz = _settings.business_days_list()
+    all_days = set(range(1, 8))
+    off = sorted(all_days - set(biz))
+    if not off:
+        return "每日營業"
+    off_label = "、".join(f"週{_WEEKDAY_NAMES[d]}" for d in off)
+    biz_names = [f"週{_WEEKDAY_NAMES[d]}" for d in sorted(biz)]
+    if len(biz) >= 2:
+        biz_label = f"{biz_names[0]}～{biz_names[-1]}"
+    else:
+        biz_label = "、".join(biz_names)
+    return f"{biz_label}（{off_label}公休）"
+
 
 # ── 稱呼 ─────────────────────────────────────────
 def boss() -> str:
@@ -153,7 +173,7 @@ def business_hours_open(hours_start: str, hours_end: str, address: str) -> str:
     return (
         f"有開哦！歡迎老闆來\n"
         f"🕐 {hours_start} 開門，{hours_end} 休息\n"
-        f"📅 週二～週日（週一公休）\n"
+        f"📅 {_biz_days_label()}\n"
         f"📍 {address}"
     )
 
@@ -172,15 +192,15 @@ def business_hours_specific_open(date_label: str, hours_start: str, hours_end: s
 
 def business_hours_specific_closed(date_label: str, hours_start: str, hours_end: str) -> str:
     return random.choice([
-        f"不好意思，{date_label} 我們休息唷\n📅 週二～週日 {hours_start}～{hours_end} 營業（週一公休）",
-        f"{date_label} 是公休日嘿，歡迎其他時間來\n📅 週二～週日 {hours_start}～{hours_end}（週一公休）",
+        f"不好意思，{date_label} 我們休息唷\n📅 {_biz_days_label()} {hours_start}～{hours_end} 營業",
+        f"{date_label} 是公休日嘿，歡迎其他時間來\n📅 {_biz_days_label()} {hours_start}～{hours_end}",
     ])
 
 
 def business_hours_holiday(hours_start: str, hours_end: str, address: str) -> str:
     return random.choice([
-        f"不好意思，今天休息哦\n📅 我們週二～週日 {hours_start} ～ {hours_end} 營業\n（週一公休）",
-        f"今天休息唷，{boss()}明天再來找我們哦\n🕐 {hours_start} ～ {hours_end}（週二～週日）",
+        f"不好意思，今天休息哦\n📅 我們{_biz_days_label()} {hours_start} ～ {hours_end} 營業",
+        f"今天休息唷，{boss()}明天再來找我們哦\n🕐 {hours_start} ～ {hours_end}（{_biz_days_label()}）",
     ])
 
 

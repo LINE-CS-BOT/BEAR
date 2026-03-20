@@ -125,6 +125,25 @@ def query_product(user_id: str, product: str, line_api: MessagingApi = None) -> 
     return tone.ask_product_clarify(product, in_stock)
 
 
+def _find_case_variant(prod_cd: str) -> dict | None:
+    """查找箱裝版本：U0192-1(個) → U0192(箱)，或 Z3432 → Z3432-1(箱)
+    注意：箱裝和個裝共用同一個庫存代表號，箱裝本身可能沒有獨立庫存紀錄。
+    優先用 product cache（本地，不打 API），避免 session 過期導致找不到。
+    """
+    code = prod_cd.upper()
+    candidates = []
+    if "-" in code:
+        candidates.append(code.rsplit("-", 1)[0])  # 去後綴
+    candidates.append(code + "-1")                   # 加 -1
+
+    for c in candidates:
+        # 先查本地快取（不需 API）
+        cache = ecount_client.get_product_cache_item(c)
+        if cache and ("箱" in cache.get("name", "") or "條" in cache.get("name", "")):
+            return {"code": cache["code"], "name": cache["name"], "price": cache.get("price")}
+    return None
+
+
 def _query_single_product(user_id: str, prod_cd: str, line_api: MessagingApi = None) -> str:
     """以確定的 PROD_CD 查庫存並回覆"""
     item = ecount_client.lookup(prod_cd)
@@ -135,6 +154,17 @@ def _query_single_product(user_id: str, prod_cd: str, line_api: MessagingApi = N
     name = item["name"] or prod_cd
     qty  = item["qty"]
 
+    # 箱裝推薦（箱裝和個裝共用庫存，從品項快取拿價格）
+    case_tip = ""
+    case_item = _find_case_variant(prod_cd)
+    if case_item and case_item["code"].upper() != prod_cd.upper():
+        # 價格優先從 product cache 拿（出庫單價），lookup 的 available.json 可能沒有箱裝
+        case_cache = ecount_client.get_product_cache_item(case_item["code"])
+        case_price = (case_cache or {}).get("price") or case_item.get("price")
+        case_unit = (case_cache or {}).get("unit") or "箱"
+        if case_price:
+            case_tip = f"\n\n💡 整{case_unit}購買更划算唷！\n📦 {case_item['name']} ${int(float(case_price))}/{case_unit}"
+
     if qty > 0:
         state_manager.set(user_id, {
             "action":    "awaiting_quantity",
@@ -142,8 +172,8 @@ def _query_single_product(user_id: str, prod_cd: str, line_api: MessagingApi = N
             "prod_name": name,
         })
         if qty <= 5:
-            return tone.in_stock_low(name)
-        return tone.in_stock(name)
+            return tone.in_stock_low(name) + case_tip
+        return tone.in_stock(name) + case_tip
     else:
         state_manager.set(user_id, {
             "action":    "awaiting_restock_qty",

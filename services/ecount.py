@@ -55,9 +55,16 @@ class EcountClient:
     def __init__(self):
         self._session_id: str | None = None
         self._session_expires: float = 0.0
+        self._session_lock = threading.Lock()
+        self._avail_lock = threading.Lock()
         # 品項快取：list of {"code": str, "name": str}
         self._product_cache: list[dict] = []
         self._cache_expires: float = 0.0
+        # O(1) 查找索引（由 _ensure_product_cache 建立）
+        self._product_by_code: dict[str, dict] = {}  # uppercase code -> item
+        self._product_by_name: dict[str, dict] = {}  # uppercase name -> item
+        # 持久 HTTP 連線池
+        self._http = httpx.Client(timeout=15)
 
     # ------------------------------------------------------------------
     # 公開方法
@@ -128,13 +135,12 @@ class EcountClient:
             return None
 
         try:
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/InventoryBasic/ViewBasicProduct",
                 params={"SESSION_ID": session_id},
                 json={"PROD_CD": prod_cd, "PROD_TYPE": "0"},
                 timeout=10,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 r = data.get("Data", {}).get("Result", {})
                 if r:
@@ -166,14 +172,14 @@ class EcountClient:
             return None
 
         _uc = prod_cd.upper()
-        for item in self._product_cache:
-            if item["code"].upper() == _uc:
-                return {
-                    "code":  item["code"],
-                    "name":  item["name"],
-                    "price": item["price"],
-                    "unit":  item["unit"],
-                }
+        item = self._product_by_code.get(_uc)
+        if item:
+            return {
+                "code":  item["code"],
+                "name":  item["name"],
+                "price": item["price"],
+                "unit":  item["unit"],
+            }
         return None
 
     def get_customers_list(self) -> list[dict]:
@@ -196,13 +202,12 @@ class EcountClient:
             return []
 
         try:
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/AccountBasic/GetBasicCustList",
                 params={"SESSION_ID": session_id},
                 json={},
                 timeout=20,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 results = data.get("Data", {}).get("Result", [])
                 customers = []
@@ -256,13 +261,12 @@ class EcountClient:
                 "ADDR":        kwargs.get("addr", ""),
                 "REMARKS":     kwargs.get("remarks", ""),
             }
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/AccountBasic/SaveBasicCust",
                 params={"SESSION_ID": session_id},
                 json={"CustList": [{"BulkDatas": bulk}]},
                 timeout=10,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 success = int(data.get("Data", {}).get("SuccessCnt", 0))
                 if success > 0:
@@ -272,26 +276,24 @@ class EcountClient:
                 session_id = self._ensure_session()
                 if not session_id:
                     return False
-                resp2 = httpx.post(
+                data2 = self._checked_post(
                     f"{settings.ECOUNT_BASE_URL}/OAPI/V2/AccountBasic/SaveBasicCust",
                     params={"SESSION_ID": session_id},
                     json={"CustList": [{"BulkDatas": bulk}]},
                     timeout=10,
                 )
-                data2 = self._safe_json(resp2)
                 return int(data2.get("Data", {}).get("SuccessCnt", 0)) > 0
             # session 失效 → 重新取得並重試
             self._session_id = None
             session_id = self._ensure_session()
             if not session_id:
                 return False
-            resp2 = httpx.post(
+            data2 = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/AccountBasic/SaveBasicCust",
                 params={"SESSION_ID": session_id},
                 json={"CustList": [{"BulkDatas": bulk}]},
                 timeout=10,
             )
-            data2 = self._safe_json(resp2)
             return int(data2.get("Data", {}).get("SuccessCnt", 0)) > 0
         except Exception as e:
             print(f"[Ecount] save_customer 錯誤: {e}")
@@ -328,13 +330,12 @@ class EcountClient:
         if extra:     bulk.update(extra)
 
         try:
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/InventoryBasic/SaveBasicProduct",
                 params={"SESSION_ID": session_id},
                 json={"ProductList": [{"BulkDatas": bulk}]},
                 timeout=15,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200" and not data.get("Errors"):
                 slip = (data.get("Data", {}).get("SlipNos") or [""])[0]
                 print(f"[Ecount] save_product 成功: {prod_cd} → {slip}")
@@ -377,13 +378,12 @@ class EcountClient:
                 price = str(item.get("price", "")).strip()
                 if not price:
                     _pcd = item["prod_cd"].upper()
-                    for p in self._product_cache:
-                        if p["code"].upper() == _pcd:
-                            price = str(int(p["price"])) if p.get("price") else ""
-                            break
+                    p = self._product_by_code.get(_pcd)
+                    if p and p.get("price"):
+                        price = str(round(float(p["price"])))
                 # SUPPLY_AMT = 單價 × 數量
                 try:
-                    supply_amt = str(int(price) * int(item["qty"])) if price else ""
+                    supply_amt = str(round(float(price) * int(item["qty"]))) if price else ""
                 except (ValueError, TypeError):
                     supply_amt = ""
                 bulk_list.append({"BulkDatas": {
@@ -400,13 +400,12 @@ class EcountClient:
                     "REMARKS":        item.get("note", ""),   # 對應 Ecount 訂貨單行項「摘要」欄
                 }})
 
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/SaleOrder/SaveSaleOrder",
                 params={"SESSION_ID": session_id},
                 json={"SaleOrderList": bulk_list},
                 timeout=10,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 slip_nos = data.get("Data", {}).get("SlipNos", [])
                 slip_no = slip_nos[0] if slip_nos else ""
@@ -440,7 +439,8 @@ class EcountClient:
                         return None
 
             if _AVAILABLE_PATH.exists():
-                data = json.loads(_AVAILABLE_PATH.read_text(encoding="utf-8"))
+                with self._avail_lock:
+                    data = json.loads(_AVAILABLE_PATH.read_text(encoding="utf-8"))
                 if prod_cd in data:
                     entry = data[prod_cd]
                     # 新格式（dict）
@@ -493,13 +493,12 @@ class EcountClient:
             return
 
         try:
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/InventoryBasic/GetBasicProductsList",
                 params={"SESSION_ID": session_id},
                 json={},
                 timeout=20,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 results = data.get("Data", {}).get("Result", [])
                 import re as _re
@@ -515,6 +514,13 @@ class EcountClient:
                     for r in results
                     if r.get("PROD_CD") and not _ZX_RE.match(r.get("PROD_CD", ""))
                 ]
+                # 建立 O(1) 查找索引
+                self._product_by_code = {
+                    item["code"].upper(): item for item in self._product_cache
+                }
+                self._product_by_name = {
+                    item["name"].upper(): item for item in self._product_cache
+                }
                 self._cache_expires = time.time() + 2 * 3600  # 上班時間 2 小時 TTL
                 print(f"[Ecount] 品項快取刷新，共 {len(self._product_cache)} 筆（已排除 Z+英文 開頭貨號）")
         except Exception as e:
@@ -536,27 +542,34 @@ class EcountClient:
         if len(kw) < 2:
             return None
 
+        # O(1) 精確比對：code 完全符合
+        exact = self._product_by_code.get(kw)
+        if exact:
+            return exact["code"]
+
+        # O(1) 精確比對：name 完全符合
+        exact_name = self._product_by_name.get(kw)
+        if exact_name:
+            return exact_name["code"]
+
         # 純英文字母（無數字）且太短 → 不做名稱子字串比對，只允許完全符合
         import re as _re
         _is_short_alpha = bool(_re.fullmatch(r'[A-Z]{1,3}', kw))
 
-        for item in self._product_cache:
-            code = item["code"].upper()
-            name = item["name"].upper()
-            if code == kw:
-                return item["code"]  # 完全符合，直接返回
-            if not _is_short_alpha and (kw in name or kw in code):
-                return item["code"]  # 第一個名稱符合即回傳，不繼續覆寫
+        # Fallback：線性掃描做部分/模糊匹配
+        if not _is_short_alpha:
+            for item in self._product_cache:
+                code = item["code"].upper()
+                name = item["name"].upper()
+                if kw in name or kw in code:
+                    return item["code"]  # 第一個名稱符合即回傳，不繼續覆寫
 
         return None
 
     def _get_product_name(self, prod_cd: str) -> str | None:
-        """從快取中取得產品中文名稱"""
-        uc = prod_cd.upper()
-        for item in self._product_cache:
-            if item["code"].upper() == uc:
-                return item["name"]
-        return None
+        """從快取中取得產品中文名稱（O(1) 索引查找）"""
+        item = self._product_by_code.get(prod_cd.upper())
+        return item["name"] if item else None
 
     def search_products_by_name(self, keyword: str) -> list[str]:
         """以關鍵字模糊搜尋所有符合品名的產品編號清單（最多 20 筆）"""
@@ -571,13 +584,9 @@ class EcountClient:
         return matched[:20]
 
     def get_product_cache_item(self, prod_cd: str) -> dict | None:
-        """從快取取得完整產品資料（含 unit, box_qty）"""
+        """從快取取得完整產品資料（含 unit, box_qty），O(1) 索引查找"""
         self._ensure_product_cache()
-        uc = prod_cd.strip().upper()
-        for item in self._product_cache:
-            if item["code"].upper() == uc:
-                return item
-        return None
+        return self._product_by_code.get(prod_cd.strip().upper())
 
     # ------------------------------------------------------------------
     # 內部：庫存查詢
@@ -592,13 +601,12 @@ class EcountClient:
 
         try:
             today = datetime.now().strftime("%Y%m%d")
-            resp = httpx.post(
+            data = self._checked_post(
                 f"{settings.ECOUNT_BASE_URL}/OAPI/V2/InventoryBalance/ViewInventoryBalanceStatus",
                 params={"SESSION_ID": session_id},
                 json={"PROD_CD": prod_cd, "WH_CD": "101", "BASE_DATE": today, "ZERO_FLAG": "Y"},
                 timeout=10,
             )
-            data = self._safe_json(resp)
             if str(data.get("Status")) == "200":
                 results = data.get("Data", {}).get("Result", [])
                 if results:
@@ -622,7 +630,8 @@ class EcountClient:
         # ── 優先：讀取 available.json ──────────────────────────────────
         if _AVAILABLE_PATH.exists():
             try:
-                raw = json.loads(_AVAILABLE_PATH.read_text(encoding="utf-8"))
+                with self._avail_lock:
+                    raw = json.loads(_AVAILABLE_PATH.read_text(encoding="utf-8"))
                 self._ensure_product_cache()
                 code_to_name = {
                     item["code"].upper(): item["name"]
@@ -647,13 +656,12 @@ class EcountClient:
         if session_id:
             try:
                 today = datetime.now().strftime("%Y%m%d")
-                resp = httpx.post(
+                data = self._checked_post(
                     f"{settings.ECOUNT_BASE_URL}/OAPI/V2/InventoryBalance/ViewInventoryBalanceStatus",
                     params={"SESSION_ID": session_id},
                     json={"WH_CD": "101", "BASE_DATE": today, "ZERO_FLAG": "N"},
                     timeout=30,
                 )
-                data = self._safe_json(resp)
                 if str(data.get("Status")) == "200":
                     results = data.get("Data", {}).get("Result", [])
                     if results:
@@ -709,33 +717,46 @@ class EcountClient:
 
     def _ensure_session(self) -> str | None:
         """取得（或重用）Ecount Session ID"""
-        if self._session_id and time.time() < self._session_expires:
-            return self._session_id
-
-        try:
-            resp = httpx.post(
-                f"{settings.ECOUNT_BASE_URL}/OAPI/V2/OAPILogin",
-                json={
-                    "COM_CODE":     settings.ECOUNT_COMPANY_NO,
-                    "USER_ID":      settings.ECOUNT_USER_ID,
-                    "API_CERT_KEY": settings.ECOUNT_API_CERT_KEY,
-                    "LAN_TYPE":     "zh-TW",
-                    "ZONE":         settings.ECOUNT_ZONE,
-                },
-                timeout=10,
-            )
-            data = self._safe_json(resp)
-            if str(data.get("Status")) == "200" and str(data.get("Data", {}).get("Code")) == "00":
-                self._session_id = data["Data"]["Datas"]["SESSION_ID"]
-                self._session_expires = time.time() + 3600  # 1 小時有效
+        with self._session_lock:
+            if self._session_id and time.time() < self._session_expires:
                 return self._session_id
-        except Exception as e:
-            print(f"[Ecount] 取得 Session 失敗: {e}")
-        return None
+
+            try:
+                resp = self._http.post(
+                    f"{settings.ECOUNT_BASE_URL}/OAPI/V2/OAPILogin",
+                    json={
+                        "COM_CODE":     settings.ECOUNT_COMPANY_NO,
+                        "USER_ID":      settings.ECOUNT_USER_ID,
+                        "API_CERT_KEY": settings.ECOUNT_API_CERT_KEY,
+                        "LAN_TYPE":     "zh-TW",
+                        "ZONE":         settings.ECOUNT_ZONE,
+                    },
+                    timeout=10,
+                )
+                data = self._safe_json(resp)
+                if str(data.get("Status")) == "200" and str(data.get("Data", {}).get("Code")) == "00":
+                    self._session_id = data["Data"]["Datas"]["SESSION_ID"]
+                    self._session_expires = time.time() + 3600  # 1 小時有效
+                    return self._session_id
+            except Exception as e:
+                print(f"[Ecount] 取得 Session 失敗: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # 內部工具
     # ------------------------------------------------------------------
+
+    def close(self):
+        """關閉 HTTP 連線池"""
+        self._http.close()
+
+    def _checked_post(self, url, **kwargs):
+        """POST with HTTP status code validation"""
+        resp = self._http.post(url, **kwargs)
+        if resp.status_code >= 400:
+            print(f"[ecount] HTTP {resp.status_code} for {url}")
+            return {}
+        return self._safe_json(resp)
 
     @staticmethod
     def _safe_json(resp) -> dict:

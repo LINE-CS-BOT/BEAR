@@ -580,6 +580,17 @@
     </div>
   </div>
 
+  <!-- ⑥ 群組管理 -->
+  <div class="card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">🏢 群組管理</div>
+      <button class="btn-refresh" onclick="loadGroups()">🔄 重新整理</button>
+    </div>
+    <div id="grp-table-wrap" style="margin-top:14px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
 </div><!-- /page -->
 
 <script>
@@ -668,17 +679,34 @@
 
   // ── 重啟 Server ──────────────────────────────────
   async function restartServer() {
-    if (!confirm('確定要重啟 Server？重啟期間約 3 秒無法服務。')) return;
+    if (!confirm('確定要重啟 Server？重啟期間約 10-15 秒無法服務。')) return;
+    const btn = event.target;
+    btn.textContent = '⏳ 重啟中...';
+    btn.disabled = true;
     try {
       await fetch('/admin/restart', { method: 'POST' });
-      const btn = event.target;
-      btn.textContent = '重啟中...';
-      btn.disabled = true;
-      setTimeout(() => { location.reload(); }, 4000);
-    } catch(e) {
-      alert('重啟指令已送出，頁面將自動重新整理');
-      setTimeout(() => { location.reload(); }, 4000);
-    }
+    } catch(e) { /* server 關閉時 fetch 會失敗，正常 */ }
+    // 先等 5 秒讓舊 server 完全關閉 + port 釋放
+    await new Promise(r => setTimeout(r, 5000));
+    btn.textContent = '⏳ 等待啟動...';
+    // 再 polling 等新 server 上線
+    const start = Date.now();
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch('/health', { signal: AbortSignal.timeout(3000) });
+        if (r.ok) {
+          clearInterval(poll);
+          btn.textContent = '✅ 重啟成功';
+          setTimeout(() => location.reload(), 1000);
+        }
+      } catch(e) { /* 還沒起來，繼續等 */ }
+      if (Date.now() - start > 45000) {
+        clearInterval(poll);
+        alert('Server 重啟逾時（超過 45 秒），請檢查系統匣圖示或手動重新整理頁面');
+        btn.textContent = '🔄 重啟 Server';
+        btn.disabled = false;
+      }
+    }, 3000);
   }
 
   // ── 廣告圖更新 ───────────────────────────────────
@@ -1395,6 +1423,97 @@
     loadVisits();
   }
 
+  // ── 群組管理 ─────────────────────────────────────
+  function _shortGid(gid) {
+    if (!gid || gid.length <= 14) return gid || '—';
+    return gid.slice(0, 8) + '…' + gid.slice(-4);
+  }
+
+  async function loadGroups() {
+    const wrap = document.getElementById('grp-table-wrap');
+    wrap.innerHTML = '<span class="spinner"></span> 載入中…';
+    try {
+      const r = await fetch('/admin/groups');
+      const groups = await r.json();
+      if (!groups.length) {
+        wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">目前無任何群組記錄</div>';
+        return;
+      }
+      const typeLabel = { system: '系統', customer: '客戶', unknown: '未知' };
+      const typeColor = { system: '#1a73e8', customer: '#2e7d32', unknown: '#f57c00' };
+      let html = `<table class="cust-table">
+        <thead><tr>
+          <th>群組 ID</th>
+          <th>類型</th>
+          <th>標籤</th>
+          <th>Ecount 代碼</th>
+          <th>操作</th>
+        </tr></thead><tbody>`;
+      for (const g of groups) {
+        const shortId = _shortGid(g.group_id);
+        const badge = `<span style="display:inline-block;border-radius:10px;padding:1px 8px;font-size:0.72rem;font-weight:700;color:#fff;background:${typeColor[g.type] || '#999'}">${typeLabel[g.type] || g.type}</span>`;
+        if (g.type === 'system') {
+          html += `<tr>
+            <td style="font-family:monospace;font-size:0.8rem;color:#999" title="${g.group_id}">${shortId}</td>
+            <td>${badge}</td>
+            <td>${g.label || '—'}</td>
+            <td style="font-family:monospace;font-size:0.85rem">${g.ecount_cust_cd || '—'}</td>
+            <td style="color:#bbb;font-size:0.8rem">（系統群組）</td>
+          </tr>`;
+        } else {
+          const lastSeen = g.last_seen ? `<div style="font-size:0.72rem;color:#aaa">最後出現：${g.last_seen}</div>` : '';
+          html += `<tr>
+            <td style="font-family:monospace;font-size:0.8rem;color:#555" title="${g.group_id}">${shortId}${lastSeen}</td>
+            <td>${badge}</td>
+            <td>
+              <input class="label-input" type="text" value="${(g.label || '').replace(/"/g,'&quot;')}"
+                placeholder="（未設定）" id="grp-label-${g.group_id}" style="width:100px">
+            </td>
+            <td>
+              <input class="label-input" type="text" value="${(g.ecount_cust_cd || '').replace(/"/g,'&quot;')}"
+                placeholder="（未設定）" id="grp-ecount-${g.group_id}" style="width:130px">
+            </td>
+            <td>
+              <button class="btn-save-label" onclick="saveGroup('${g.group_id}')">設定</button>
+            </td>
+          </tr>`;
+        }
+      }
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:#c5221f">載入失敗：${e}</div>`;
+    }
+  }
+
+  async function saveGroup(groupId) {
+    const labelEl  = document.getElementById('grp-label-'  + groupId);
+    const ecountEl = document.getElementById('grp-ecount-' + groupId);
+    const label       = labelEl  ? labelEl.value.trim()  : '';
+    const ecountCd    = ecountEl ? ecountEl.value.trim() : '';
+    try {
+      const res = await fetch(
+        '/admin/set-group?group_id=' + encodeURIComponent(groupId) +
+        '&ecount_cust_cd=' + encodeURIComponent(ecountCd) +
+        '&label=' + encodeURIComponent(label),
+        { method: 'POST' }
+      );
+      if (res.ok) {
+        // Brief visual feedback then reload
+        const btn = event.target;
+        btn.textContent = '✅';
+        btn.classList.add('saved');
+        setTimeout(() => { btn.textContent = '設定'; btn.classList.remove('saved'); }, 1200);
+        // Reload to refresh types (unknown -> customer)
+        setTimeout(() => loadGroups(), 1500);
+      } else {
+        alert('設定失敗');
+      }
+    } catch(e) {
+      alert('設定失敗：' + e);
+    }
+  }
+
   // ── 初始化 ────────────────────────────────────────
   loadNgrokUrl();
   refreshAll();
@@ -1404,6 +1523,7 @@
   loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
   scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
   loadNewProducts();               // 載入待審核新品項
+  loadGroups();                    // 載入群組管理
   loadTakeoverPanel();
   setInterval(loadTakeoverPanel, 30000); // 每 30 秒刷新接手面板
 

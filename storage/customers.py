@@ -35,6 +35,7 @@ class CustomerStore:
 
     def _init_db(self):
         with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS customers (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,6 +98,12 @@ class CustomerStore:
                 conn.execute(
                     "ALTER TABLE customers ADD COLUMN tags TEXT DEFAULT NULL"
                 )
+            # 常用查詢欄位索引
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_display_name ON customers(display_name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_real_name ON customers(real_name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_ecount_cust_cd ON customers(ecount_cust_cd)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_phones_phone ON customer_phones(phone)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_customer_ecount_codes_cust_cd ON customer_ecount_codes(ecount_cust_cd)")
             conn.commit()
 
     # ── 內部工具 ──────────────────────────────────────────
@@ -125,6 +132,7 @@ class CustomerStore:
         """
         now = datetime.now().isoformat()
         with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("BEGIN IMMEDIATE")
             # Step 1：用 line_user_id 查
             row = conn.execute(
                 "SELECT id FROM customers WHERE line_user_id = ?",

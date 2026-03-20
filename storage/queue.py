@@ -30,6 +30,7 @@ def _conn():
 def init():
     """建立 table（若不存在）"""
     with _conn() as c:
+        c.execute("PRAGMA journal_mode=WAL")
         c.execute("""
             CREATE TABLE IF NOT EXISTS message_queue (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,

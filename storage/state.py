@@ -21,6 +21,7 @@ class StateManager:
     def __init__(self, ttl_minutes: int = 10):
         self._store: dict[str, dict] = {}
         self._group_pref: dict[str, str] = {}  # user_id → preferred Ecount cust_cd（群組訂單用）
+        self._group_pref_ts: dict[str, datetime] = {}  # user_id → 設定時間
         self.ttl = timedelta(minutes=ttl_minutes)
         self._lock = threading.Lock()
 
@@ -105,6 +106,7 @@ class StateManager:
     def set_group_cust_cd(self, user_id: str, cust_cd: str) -> None:
         """記錄此用戶的群組預設 Ecount 代碼"""
         self._group_pref[user_id] = cust_cd
+        self._group_pref_ts[user_id] = datetime.now()
 
     def get_group_cust_cd(self, user_id: str) -> str | None:
         """取得此用戶的群組預設 Ecount 代碼"""
@@ -113,6 +115,18 @@ class StateManager:
     def clear_group_cust_cd(self, user_id: str) -> None:
         """清除群組預設代碼（訂單完成或取消後呼叫）"""
         self._group_pref.pop(user_id, None)
+        self._group_pref_ts.pop(user_id, None)
+
+    def cleanup_group_prefs(self, max_age_hours: int = 24) -> int:
+        """Remove group preferences older than max_age_hours, return count removed"""
+        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        expired = [
+            uid for uid, ts in self._group_pref_ts.items() if ts < cutoff
+        ]
+        for uid in expired:
+            self._group_pref.pop(uid, None)
+            self._group_pref_ts.pop(uid, None)
+        return len(expired)
 
     def all_states(self) -> dict[str, dict]:
         """回傳所有尚未過期的狀態（供接手面板列舉用）"""
