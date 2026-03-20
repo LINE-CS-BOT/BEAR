@@ -512,8 +512,11 @@ def _txt_buf_flush(user_id: str) -> None:
                     return
                 except Exception:
                     reply_token = None  # 標記 token 已失效
-            line_api.push_message(PushMessageRequest(
-                to=group_id, messages=[TextMessage(text=text)]))
+            try:
+                line_api.push_message(PushMessageRequest(
+                    to=group_id, messages=[TextMessage(text=text)]))
+            except Exception as _push_err:
+                print(f"[txt-buf] push_message 失敗（可能月額度用完）: {_push_err}", flush=True)
 
         # ════ 內部群組 ════
         if context == "group":
@@ -644,27 +647,22 @@ def _txt_buf_flush(user_id: str) -> None:
                 img_pc = _img_identify_from_buf(source_msg_id)
 
             if img_pc:
-                from services.ecount import ecount_client as _ec
-                _gi   = _ec.lookup(img_pc)
-                _gn   = (_gi.get("name") if _gi else None) or img_pc
-                state_manager.set(group_id, {
-                    "action":    "awaiting_internal_order",
-                    "prod_cd":   img_pc,
-                    "prod_name": _gn,
-                    "qty":       _gi.get("qty") if _gi else None,
-                })
-                group_order_state = state_manager.get(group_id)
                 print(f"[txt-buf] 圖片+文字 → 內部群 {img_pc}")
             elif source_msg_id:
                 print("[txt-buf] 媒體+文字 → 內部群，圖片識別失敗")
 
-            if group_order_state and group_order_state.get("action") == "awaiting_internal_order":
-                try:
-                    ack = handle_internal_order_from_state(group_id, combined, group_order_state, line_api)
-                except Exception as _e:
-                    print(f"[txt-buf] handle_internal_order_from_state 例外: {_e}", flush=True)
-                    ack = f"❌ 建單時發生錯誤，請手動處理（{_e}）"
-                if ack is None:
+            # 圖片辨識成功 → 查庫存資訊回覆（不設 state，要下單打完整格式）
+            ack = None
+            if img_pc:
+                from services.ecount import ecount_client as _ec
+                _gi = _ec.lookup(img_pc)
+                if _gi:
+                    from handlers.internal import _format_po, _fmt_stock_lines
+                    _po = _format_po(img_pc)
+                    _stock = _fmt_stock_lines(_gi)
+                    ack = f"{_po}\n{_stock}"
+
+            if not ack:
                     # ── 新增品項觸發 ──
                     if _NEW_PROD_TRIGGER_RE.match(combined.strip()):
                         # 訊息已含品項資料 → 直接處理，不開 session
@@ -721,11 +719,24 @@ def _txt_buf_flush(user_id: str) -> None:
 
                     # 從文字判斷客戶意圖
                     _txt_lower = combined.lower()
+                    _delivery_kw = any(k in combined for k in [
+                        "什麼時候到", "何時到", "到貨了嗎", "到了嗎", "到貨時間",
+                        "什麼時候會到", "幾時到", "到貨沒", "出貨了嗎", "出貨沒",
+                        "寄了嗎", "送到了嗎", "等很久", "到貨", "催貨",
+                    ])
                     _inv_kw  = any(k in combined for k in ["有嗎", "有沒有", "庫存", "缺貨", "還有", "有貨", "剩幾"])
                     _price_kw = any(k in combined for k in ["多少", "幾元", "幾錢", "價格", "價錢", "多少錢", "售價"])
                     _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組)', combined)
 
-                    if _inv_kw:
+                    if _delivery_kw:
+                        # 問到貨/出貨 → 轉真人處理（Bot 無法查訂單進度）
+                        print(f"[txt-buf] 圖片+文字 → 問到貨時間 {img_pc}", flush=True)
+                        issue_store.add(user_id, "delivery_query",
+                                        f"（傳圖詢問到貨）{_un}（{img_pc}）：{combined}")
+                        reply_text = tone.urgent_order_ack()
+                        _send_reply(reply_token, user_id, reply_text, line_api)
+                        reply_text = None
+                    elif _inv_kw:
                         # 問庫存 → 直接回答，不進購物車流程
                         print(f"[txt-buf] 圖片+文字 → 問庫存 {img_pc}", flush=True)
                         _inv_reply = None
@@ -2326,6 +2337,20 @@ async def admin_recent_customers():
         return []
 
 
+# ── 回饋金 ──────────────────────────────────────────────
+@app.get("/admin/rebate")
+async def admin_rebate():
+    """取得當月回饋金計算結果"""
+    from services.rebate import calculate_rebates
+    return await asyncio.to_thread(calculate_rebates)
+
+@app.get("/admin/rebate/approaching")
+async def admin_rebate_approaching():
+    """取得快接近達成的客戶"""
+    from services.rebate import get_approaching_customers
+    return await asyncio.to_thread(get_approaching_customers)
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
@@ -2769,9 +2794,11 @@ def _handle_stateful(
             restock_store.add(user_id, prod_name, prod_cd, qty)
             notify_hq_restock(prod_name, qty, line_api)
             return tone.restock_inquiry_sent(prod_name, qty)
-        elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用"]):
+        elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用",
+                                       "收到", "好", "好的", "知道了", "了解",
+                                       "知道", "ok", "OK", "謝謝", "感謝"]):
             state_manager.clear(user_id)
-            return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
+            return f"好的{tone.suffix_light()} 有需要再找我哦"
         else:
             prod_name = state.get("prod_name", "這款")
             return tone.ask_quantity(prod_name)

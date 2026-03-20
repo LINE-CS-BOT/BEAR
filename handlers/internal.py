@@ -1299,13 +1299,6 @@ def handle_internal_image(state_key: str, message_id: str, line_api: MessagingAp
     po           = _format_po(prod_code)
     stock_detail = _fmt_stock_lines(item)
 
-    # 設定 state，等待「客戶名 N個」指令（以 state_key=group_id 存，任何成員都能接）
-    state_manager.set(state_key, {
-        "action": "awaiting_internal_order",
-        "prod_cd": prod_code,
-        "prod_name": prod_name,
-    })
-
     return f"{po}\n{stock_detail}"
 
 
@@ -1747,13 +1740,6 @@ def handle_internal_product_info(text: str, state_key: str | None = None) -> str
         results.append(f"{po}\n{stock_detail}")
         last_code, last_name = prod_code, prod_name
 
-    if state_key and len(codes) == 1 and last_code:
-        state_manager.set(state_key, {
-            "action":    "awaiting_internal_order",
-            "prod_cd":   last_code,
-            "prod_name": last_name,
-        })
-
     return "\n\n".join(results) if results else None
 
 
@@ -1807,13 +1793,6 @@ def handle_internal_product_info_by_name(text: str, state_key: str | None = None
         stock_detail = _fmt_stock_lines(item)
         results.append(f"{po}\n{stock_detail}")
         last_code, last_name = prod_code, prod_name
-
-    if state_key and len(codes) == 1 and last_code:
-        state_manager.set(state_key, {
-            "action":    "awaiting_internal_order",
-            "prod_cd":   last_code,
-            "prod_name": last_name,
-        })
 
     if len(codes) > 3:
         results.append(f"⋯ 還有 {len(codes) - 3} 筆符合，請用編號查詢更精確")
@@ -1998,19 +1977,6 @@ def handle_internal_inventory(text: str, state_key: str | None = None) -> str | 
         # 優先用有實際庫存（qty>0）的；若全是預購則用 result_codes
         set_codes = stock_codes if stock_codes else result_codes
 
-        # 剛好找到唯一一款有庫存的產品 → 設 state 讓 staff 直接說「客戶名 N個」下單
-        if state_key and len(set_codes) == 1:
-            single_code, single_name = set_codes[0]
-            state_manager.set(state_key, {
-                "action":    "awaiting_internal_order",
-                "prod_cd":   single_code,
-                "prod_name": single_name,
-            })
-            print(f"[internal] 品名搜尋設定 awaiting_internal_order: {single_code} for {state_key}", flush=True)
-            return "\n\n".join(results) + "\n（已記錄，接著說「客戶名 N個」可直接建單）"
-        elif state_key and len(set_codes) > 1:
-            print(f"[internal] 品名搜尋找到 {len(set_codes)} 款有庫存，不設 state", flush=True)
-
         return "\n\n".join(results)
 
     mode = "預購" if (has_preorder and not has_inv) else "完整"
@@ -2041,22 +2007,6 @@ def handle_internal_inventory(text: str, state_key: str | None = None) -> str | 
             results.append(_fmt_inv_block(item, prod_code))
 
         print(f"[internal] 庫存結果: {prod_code} qty={item.get('qty')} preorder={item.get('preorder')}", flush=True)
-
-    # 查到剛好一個產品 → 設 state，等待「客戶名 N個」可直接下單
-    if state_key and len(codes) == 1 and results:
-        single_code = codes[0].upper()
-        try:
-            _item = ecount_client.lookup(single_code)
-            _name = (_item.get("name") if _item else "") or single_code
-        except Exception:
-            _name = single_code
-        state_manager.set(state_key, {
-            "action":    "awaiting_internal_order",
-            "prod_cd":   single_code,
-            "prod_name": _name,
-        })
-        print(f"[internal] 設定 awaiting_internal_order: {single_code} for {state_key}", flush=True)
-        return ("\n\n".join(results) + "\n（已記錄，接著說「客戶名 N個」可直接建單）") if results else None
 
     return "\n\n".join(results) if results else None
 

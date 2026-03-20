@@ -323,7 +323,7 @@ async def _fill_and_extract(page) -> dict[str, dict]:
 
     # ── 提取（支援虛擬滾動：一頁到底但 DOM 只渲染可見行）────────────────
     # ── 先偵測欄位標題，找出各欄的索引位置 ────────────────────────────
-    _HEADER_JS = """
+    _HEADER_JS = r"""
         () => {
             // 嘗試從 #grid-head 或 #grid-main 第一行讀取欄位標題
             const headTable = document.getElementById('grid-head')
