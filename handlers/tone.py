@@ -538,9 +538,9 @@ def complaint_ack() -> str:
 def urgent_order_ack() -> str:
     b = boss()
     return random.choice([
-        f"不好意思讓{b}久等了{suffix_light()} 已通知客服幫您確認出貨狀況，\n確認後馬上回覆您哦",
-        f"收到！已幫{b}請客服確認出貨進度，\n稍後馬上回覆您{suffix_light()}",
-        f"讓{b}久等了，抱歉{suffix_light()} 已通知客服查詢您的貨況，\n有消息馬上告訴您哦",
+        f"不好意思讓{b}久等了，我確認一下等等回您{suffix_light()}",
+        f"抱歉嘿，讓{b}等了，我問一下幫您確認，等等回覆您哦",
+        f"不好意思{suffix_light()} {b}稍等我一下，我去確認看看再跟您說哦",
     ])
 
 

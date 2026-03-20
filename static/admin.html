@@ -580,6 +580,17 @@
     </div>
   </div>
 
+  <!-- ⑦ 回饋金 -->
+  <div class="card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">💰 回饋金</div>
+      <button class="btn-refresh" onclick="loadRebate()">🔄 重新計算</button>
+    </div>
+    <div id="rebate-wrap" style="margin-top:14px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
   <!-- ⑥ 群組管理 -->
   <div class="card">
     <div class="report-toolbar">
@@ -1514,6 +1525,90 @@
     }
   }
 
+  // ── 回饋金 ─────────────────────────────────────
+  async function loadRebate() {
+    const wrap = document.getElementById('rebate-wrap');
+    wrap.innerHTML = '<span class="spinner"></span> 計算中…';
+    try {
+      const [rebateRes, approachRes] = await Promise.all([
+        fetch('/admin/rebate'),
+        fetch('/admin/rebate/approaching'),
+      ]);
+      const rebate = await rebateRes.json();
+      const approaching = await approachRes.json();
+
+      let html = '';
+
+      // Summary
+      html += `<div style="margin-bottom:12px;padding:10px;background:#f0f7ff;border-radius:8px">
+        <strong>${rebate.month} 改盒回饋金</strong>
+        　總銷售：$${(rebate.summary?.total_sales || 0).toLocaleString()}
+        　總回饋：$${(rebate.summary?.total_rebate || 0).toLocaleString()}
+      </div>`;
+
+      // Approaching customers
+      if (approaching.length > 0) {
+        html += `<div style="margin-bottom:12px;padding:10px;background:#fff8e1;border-radius:8px">
+          <strong>⚡ 快接近達成：</strong>`;
+        for (const a of approaching) {
+          html += `<div style="margin-top:4px">
+            ${a.group_name}　$${a.total.toLocaleString()} → 差 $${a.gap.toLocaleString()} 達 ${a.next_tier}
+          </div>`;
+        }
+        html += '</div>';
+      }
+
+      // Rebate table
+      if (rebate.groups && rebate.groups.length) {
+        html += `<table class="cust-table">
+          <thead><tr>
+            <th>客戶</th>
+            <th style="text-align:right">金額</th>
+            <th>級距</th>
+            <th style="text-align:right">回饋金</th>
+          </tr></thead><tbody>`;
+
+        for (const g of rebate.groups) {
+          if (g.members.length === 1) {
+            const m = g.members[0];
+            const tierColor = g.tier === '未達' ? '#999' : g.tier === '10萬' ? '#c62828' : g.tier === '6萬' ? '#e65100' : '#2e7d32';
+            html += `<tr>
+              <td>${m.name}</td>
+              <td style="text-align:right;font-family:monospace">$${m.amount.toLocaleString()}</td>
+              <td><span style="color:${tierColor};font-weight:700">${g.tier}</span></td>
+              <td style="text-align:right;font-family:monospace;font-weight:700;color:${m.rebate > 0 ? '#c62828' : '#ccc'}">$${m.rebate.toLocaleString()}</td>
+            </tr>`;
+          } else {
+            // Group header
+            const tierColor = g.tier === '未達' ? '#999' : g.tier === '10萬' ? '#c62828' : g.tier === '6萬' ? '#e65100' : '#2e7d32';
+            html += `<tr style="background:#f5f5f5">
+              <td><strong>▸ ${g.group_name}（合併）</strong></td>
+              <td style="text-align:right;font-family:monospace"><strong>$${g.total.toLocaleString()}</strong></td>
+              <td><span style="color:${tierColor};font-weight:700">${g.tier}</span></td>
+              <td style="text-align:right;font-family:monospace;font-weight:700;color:${g.rebate > 0 ? '#c62828' : '#ccc'}">$${g.rebate.toLocaleString()}</td>
+            </tr>`;
+            // Members
+            for (const m of g.members) {
+              html += `<tr style="color:#666">
+                <td style="padding-left:24px">└ ${m.name}</td>
+                <td style="text-align:right;font-family:monospace">$${m.amount.toLocaleString()}</td>
+                <td></td>
+                <td style="text-align:right;font-family:monospace;color:${m.rebate > 0 ? '#c62828' : '#ccc'}">$${m.rebate.toLocaleString()}</td>
+              </tr>`;
+            }
+          }
+        }
+        html += '</tbody></table>';
+      } else {
+        html += '<div style="color:#bbb">本月尚無改盒銷貨資料</div>';
+      }
+
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:#c5221f">載入失敗：${e}</div>`;
+    }
+  }
+
   // ── 初始化 ────────────────────────────────────────
   loadNgrokUrl();
   refreshAll();
@@ -1523,6 +1618,7 @@
   loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
   scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
   loadNewProducts();               // 載入待審核新品項
+  loadRebate();                    // 載入回饋金
   loadGroups();                    // 載入群組管理
   loadTakeoverPanel();
   setInterval(loadTakeoverPanel, 30000); // 每 30 秒刷新接手面板

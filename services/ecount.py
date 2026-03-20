@@ -423,20 +423,23 @@ class EcountClient:
         """
         從 data/available.json 讀取庫存明細。
         回傳 dict：{incoming, unfilled, balance, available, preorder}
-        若檔案超過 2 分鐘未更新，先同步再回答。
+        若檔案過期，先嘗試同步；同步失敗就用舊資料（不卡住）。
         """
         try:
             if _AVAILABLE_PATH.exists():
                 age = time.time() - _AVAILABLE_PATH.stat().st_mtime
                 if age > _STALE_SECONDS:
-                    print(f"[Ecount] available.json 已 {int(age/60)} 分鐘未更新，嘗試同步...")
-                    mtime_before = _AVAILABLE_PATH.stat().st_mtime
-                    _sync_and_wait()
-                    # 同步後檔案若仍未更新 → 改用 OAPI 即時查詢
-                    mtime_after = _AVAILABLE_PATH.stat().st_mtime if _AVAILABLE_PATH.exists() else 0
-                    if mtime_after <= mtime_before:
-                        print("[Ecount] 同步未能更新 available.json，改用 OAPI 即時查詢")
-                        return None
+                    age_min = int(age / 60)
+                    # 超過 30 分鐘才同步（2 分鐘太頻繁，同步本身要 30-60 秒）
+                    if age > 30 * 60:
+                        print(f"[Ecount] available.json 已 {age_min} 分鐘未更新，嘗試同步...")
+                        mtime_before = _AVAILABLE_PATH.stat().st_mtime
+                        _sync_and_wait()
+                        mtime_after = _AVAILABLE_PATH.stat().st_mtime if _AVAILABLE_PATH.exists() else 0
+                        if mtime_after <= mtime_before:
+                            print(f"[Ecount] 同步未能更新 available.json，使用 {age_min} 分鐘前的舊資料")
+                    else:
+                        print(f"[Ecount] available.json 已 {age_min} 分鐘未更新，使用既有資料")
 
             if _AVAILABLE_PATH.exists():
                 with self._avail_lock:
