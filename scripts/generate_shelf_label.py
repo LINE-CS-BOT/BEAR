@@ -139,13 +139,28 @@ def _build_product_data(code: str, specs: dict) -> dict | None:
         print(f"[label] 找不到 {code} 的規格資料，跳過")
         return None
 
-    name = _ecount_name(code)
+    # 從 Ecount 取品名和出庫單價
+    try:
+        sys.path.insert(0, str(_ROOT))
+        from services.ecount import ecount_client
+        ecount_client._ensure_product_cache()
+        cache = ecount_client.get_product_cache_item(code.upper())
+    except Exception:
+        cache = None
+
+    name = (cache.get("name") or "").strip() if cache else ""
     if not name:
         print(f"[label] {code} 在 Ecount 無品名，跳過（請先新增品項）")
         return None
 
+    # 價格優先用 Ecount 出庫單價，沒有才用 specs.json
+    ecount_price = cache.get("price") if cache else None
+    if ecount_price and float(ecount_price) > 0:
+        price = f"P{int(float(ecount_price))}"
+    else:
+        price = _parse_price(spec.get("price", ""))
+
     size   = _strip_unit(spec.get("size", ""))
-    price  = _parse_price(spec.get("price", ""))
     weight = _strip_unit(spec.get("weight", ""))
 
     return {
