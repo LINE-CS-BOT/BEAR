@@ -317,7 +317,7 @@ class EcountClient:
         """
         if not self._is_configured():
             print(f"[Ecount Mock] save_product: {prod_cd} {prod_name}")
-            return prod_cd
+            return {"ok": True, "slip": prod_cd}
 
         session_id = self._ensure_session()
         if not session_id:
@@ -339,14 +339,14 @@ class EcountClient:
             if str(data.get("Status")) == "200" and not data.get("Errors"):
                 slip = (data.get("Data", {}).get("SlipNos") or [""])[0]
                 print(f"[Ecount] save_product 成功: {prod_cd} → {slip}")
-                return slip or prod_cd
+                return {"ok": True, "slip": slip or prod_cd}
             errors = data.get("Errors") or []
             msgs = " | ".join(e.get("Message", "") for e in errors)
             print(f"[Ecount] save_product 失敗: {msgs}")
-            return None
+            return {"ok": False, "error": msgs or "未知錯誤"}
         except Exception as e:
             print(f"[Ecount] save_product 錯誤: {e}")
-            return None
+            return {"ok": False, "error": str(e)}
 
     def save_order(self, cust_code: str, items: list[dict], phone: str = "") -> str | None:
         """
