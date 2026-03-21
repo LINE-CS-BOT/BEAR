@@ -3376,7 +3376,10 @@ def _build_one_product(fields: dict) -> str:
         prod_cd=prod_cd, prod_name=prod_name, unit=unit, extra=extra,
     )
 
-    if result:
+    ok = isinstance(result, dict) and result.get("ok")
+    error_msg = result.get("error", "") if isinstance(result, dict) else ""
+
+    if ok:
         from storage.new_products import new_products_store
         new_products_store.add(
             prod_cd=prod_cd,   prod_name=prod_name, unit=unit,
@@ -3384,14 +3387,17 @@ def _build_one_product(fields: dict) -> str:
             in_price=in_price, size_des=size_des,   cust="10003",
         )
 
-    icon = "✅" if result else "⚠️"
+    icon = "✅" if ok else "❌"
     details = []
     details.append(f"售:{out_price}" if out_price else "售:-")
     details.append(f"入:{in_price}" if in_price else "入:-")
     if size_des:  details.append(f"規:{size_des}")
     if class_cd:  details.append(_CLASS_LABEL_NP.get(class_cd, class_cd))
     detail_str = "　" + "　".join(details) if details else ""
-    return f"{icon} {prod_cd} {prod_name}　{unit}{detail_str}"
+    line = f"{icon} {prod_cd} {prod_name}　{unit}{detail_str}"
+    if not ok and error_msg:
+        line += f"\n   ⚠️ 原因：{error_msg}"
+    return line
 
 
 def handle_internal_new_product(text: str) -> str | None:
