@@ -106,13 +106,13 @@ def _resolve_cust_code(user_id: str, do_refresh: bool = True) -> str | None:
     if not cust:
         return None
 
-    name    = (cust.get("real_name") or "").strip()
+    name    = (cust.get("real_name") or cust.get("display_name") or "").strip()
     phone   = (cust.get("phone") or "").strip()
     address = (cust.get("address") or "").strip()
     db_id   = cust.get("id")
 
-    if not phone and not address:
-        print(f"[cust_code] {name} 無手機也無地址，無法比對")
+    if not phone and not address and not name:
+        print(f"[cust_code] 無姓名、手機、地址，無法比對")
         return None
 
     # ── JSON 比對（電話+姓名優先，地址次之）─────────────────
@@ -140,6 +140,7 @@ def _resolve_cust_code(user_id: str, do_refresh: bool = True) -> str | None:
                     matched_code = code
                     matched_addr = ec_adr
 
+        # 電話沒比到 → 用地址比對
         if not matched_code and address:
             for ec in ec_list:
                 code   = ec["code"]
@@ -147,6 +148,16 @@ def _resolve_cust_code(user_id: str, do_refresh: bool = True) -> str | None:
                 if ec_adr and _addr_match(address, ec_adr):
                     matched_code = code
                     matched_addr = ec_adr
+                    break
+
+        # 電話地址都沒比到 → 用名字精確比對
+        if not matched_code and name:
+            for ec in ec_list:
+                ec_nm = (ec.get("name") or "").strip()
+                if ec_nm and ec_nm == name:
+                    matched_code = ec["code"]
+                    matched_addr = (ec.get("addr") or "").strip()
+                    print(f"[cust_code] 名字精確比對: {name} → {matched_code}")
                     break
 
         if matched_code:
