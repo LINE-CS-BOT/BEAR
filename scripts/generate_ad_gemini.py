@@ -451,6 +451,40 @@ async def main(payload: dict) -> None:
 
     Path(output_folder).mkdir(parents=True, exist_ok=True)
 
+    # 預先去背所有產品圖
+    import tempfile
+    try:
+        from rembg import remove as rembg_remove
+        from PIL import Image as PILImage
+        _has_rembg = True
+    except ImportError:
+        _has_rembg = False
+        print("[ad] ⚠️ rembg 未安裝，跳過去背")
+
+    rembg_images: dict[str, list[str]] = {}
+    for code in codes:
+        img_list = images.get(code, [])
+        if not img_list or not _has_rembg:
+            rembg_images[code] = img_list
+            continue
+        rembg_list = []
+        for img_path in img_list:
+            try:
+                p = Path(img_path)
+                if not p.exists():
+                    continue
+                print(f"[ad] {code} 去背中：{p.name}...", flush=True)
+                img = PILImage.open(p)
+                result = rembg_remove(img)
+                tmp = Path(tempfile.gettempdir()) / f"rembg_{p.stem}.png"
+                result.save(tmp)
+                rembg_list.append(str(tmp))
+                print(f"[ad] {code} 去背完成：{tmp.name}")
+            except Exception as e:
+                print(f"[ad] {code} 去背失敗（{e}），使用原圖")
+                rembg_list.append(img_path)
+        rembg_images[code] = rembg_list
+
     # 預先計算所有提示詞
     # 優先讀 data/ad_prompts/{code}_{platform}.txt（由 generate_prompts.py 預先生成）
     # 若不存在則用硬編碼模板
@@ -458,7 +492,7 @@ async def main(payload: dict) -> None:
     PROMPT_DIR = ROOT / "data" / "ad_prompts"
     tasks = []
     for code in codes:
-        img_list = images.get(code, [])
+        img_list = rembg_images.get(code, images.get(code, []))
         for platform in PLATFORMS:
             txt = PROMPT_DIR / f"{code}_{platform}.txt"
             if txt.exists():
@@ -467,7 +501,13 @@ async def main(payload: dict) -> None:
             else:
                 prompt = build_gemini_prompt(code, platform)
                 print(f"[prompt] {code}/{platform} ← 使用預設模板")
-            tasks.append((code, img_list, prompt, platform))
+            # 加入去背指示
+            rembg_note = (
+                "\n\n⚠️ 重要：我上傳的產品照片已經去背（透明背景），"
+                "請直接使用這張去背圖作為產品主圖，不要重新繪製或替換產品外觀。"
+                "可以美化光影、加陰影、調亮度對比，但產品本體必須保留原圖。"
+            ) if _has_rembg else ""
+            tasks.append((code, img_list, prompt + rembg_note, platform))
 
     total   = len(tasks)
     success = 0
