@@ -227,7 +227,14 @@ def detect_intent(text: str) -> Intent:
 
     for kw in _GREETING_KEYWORDS:
         if kw in text.lower():
-            return Intent.GREETING
+            # 短句才判定為打招呼（去掉問候詞後剩餘 < 8 字）
+            stripped = text.lower()
+            for g in _GREETING_KEYWORDS:
+                stripped = stripped.replace(g, "")
+            stripped = stripped.replace("~", "").replace("～", "").replace("!", "").replace("！", "").strip()
+            if len(stripped) < 8:
+                return Intent.GREETING
+            break  # 有問候詞但內容長，跳過不判定為打招呼
 
     # 結帳（在 CONFIRMATION 之前，避免「好了」被誤判成確認）
     # 問句排除：「好了嗎」「有沒有結帳」之類問法不是結帳指令
