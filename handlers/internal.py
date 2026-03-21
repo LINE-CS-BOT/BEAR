@@ -3765,7 +3765,7 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
         for o in matched:
             note_str = f" {o['note']}" if o.get("note") else ""
             lines.append(f"{o['code']} {o['name'][:18]} *{o['qty']:g}{note_str}")
-    lines.append(f"合計：{total_qty:g} 件")
+    lines.append(f"合計：{total_qty:g}")
     return "\n".join(lines)
 
 
