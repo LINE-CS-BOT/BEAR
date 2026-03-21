@@ -749,10 +749,11 @@ def _txt_buf_flush(user_id: str) -> None:
                         _pn = (_info.get("name") if _info else None) or _pc
                         cart_store.add_to_cart(user_id, _pc, _pn, _each_qty)
                         _added.append(f"• {_pn} × {_each_qty}")
+                    state_manager.set(user_id, {"action": "awaiting_multi_img_confirm"})
                     reply_text = (
                         "收到！已加入購物車：\n"
                         + "\n".join(_added)
-                        + "\n\n確認的話請說「好了」送出訂單哦"
+                        + "\n\n如果沒有問題我就送出訂單囉"
                     )
                     _send_reply(reply_token, user_id, reply_text, line_api)
                     reply_text = None
@@ -1249,7 +1250,7 @@ def _auto_save_contact_info(user_id: str, text: str) -> None:
     if addr:
         customer_store.update_address(user_id, addr.group(0).strip())
 
-_YES_KW = {"好", "是", "對", "ok", "OK", "yes", "YES", "好的", "是的", "對的", "確認", "沒問題", "可以", "沒錯", "正確", "確定", "下單"}
+_YES_KW = {"好", "好了", "是", "對", "ok", "OK", "yes", "YES", "好的", "是的", "對的", "確認", "沒問題", "沒有問題", "可以", "沒錯", "正確", "確定", "下單"}
 _NO_KW = {"不", "否", "no", "NO", "不要", "不用", "取消", "算了", "不訂", "不對", "錯了", "不是", "不行", "等不了", "太久", "換一個", "其他"}
 
 _configuration = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
@@ -2862,6 +2863,18 @@ def _handle_stateful(
             # 數量不明，保留狀態再問一次
             prod_name = state.get("prod_name", "這款")
             return tone.ask_quantity(prod_name)
+
+    # ── 多圖+各X 確認：等待確認送出或其他回覆靜默 ──────
+    elif action == "awaiting_multi_img_confirm":
+        if any(kw == text.strip() for kw in _YES_KW):
+            state_manager.clear(user_id)
+            from handlers.ordering import handle_checkout
+            return handle_checkout(user_id, line_api)
+        else:
+            # 非確認 → 靜默，加入待處理
+            state_manager.clear(user_id)
+            issue_store.add(user_id, "multi_img_order", f"客戶回覆：{text}")
+            return None
 
     # ── 圖片下單確認框：等待「確認」或「取消」──────
     elif action == "awaiting_image_order_confirm":
