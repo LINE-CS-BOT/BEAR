@@ -2791,10 +2791,17 @@ def _generate_labels_sync(codes: list[str]) -> dict:
             except Exception:
                 specs = {}
 
-        # 2. 找出哪些 code 在 specs 裡找不到（提前偵測，讓 reply 能顯示）
+        # 2. 找出哪些 code 在 specs 裡找不到或 Ecount 無品名
+        result["no_name"] = []
         for c in codes:
-            if c.upper() not in specs:
-                result["missing"].append(c.upper())
+            uc = c.upper()
+            if uc not in specs:
+                result["missing"].append(uc)
+            else:
+                # 有規格但 Ecount 無品名 → 需先新增品項
+                item = ecount_client.lookup(uc)
+                if not item or not (item.get("name") or "").strip():
+                    result["no_name"].append(uc)
 
         # 3. 生成架上標籤（generate_labels 內部也會判斷缺規格，但我們已先抓到）
         from scripts.generate_shelf_label import generate_labels
@@ -3126,6 +3133,10 @@ def handle_internal_upload_finish(user_id: str) -> str:
         label_lines.append("請補 PO文（含尺寸/重量/價格）後重新上架")
     else:
         label_lines.append("📋 架上標籤已加入佇列，待湊滿3個自動生成")
+    if label_result.get("no_name"):
+        no_name_str = "、".join(label_result["no_name"])
+        label_lines.append(f"⚠️ Ecount 無品名，標籤未生成：{no_name_str}")
+        label_lines.append("請先「新增品項」建立品名，完成後自動加入標籤佇列")
     if label_result["error"]:
         label_lines.append(f"⚠️ 標籤生成錯誤：{label_result['error']}")
 
@@ -3389,6 +3400,14 @@ def _build_one_product(fields: dict) -> str:
             bar_code=bar_code, class_cd=class_cd,   out_price=out_price,
             in_price=in_price, size_des=size_des,   cust="10003",
         )
+        # 自動嘗試加入架上標籤佇列（品項建立後補印）
+        label_result = {}
+        try:
+            label_result = _generate_labels_sync([prod_cd])
+            if label_result["pdfs"]:
+                print(f"[label] 新增品項後自動生成標籤：{[p.name for p in label_result['pdfs']]}")
+        except Exception as _le:
+            print(f"[label] 新增品項後標籤處理失敗：{_le}")
 
     icon = "✅" if ok else "❌"
     details = []
@@ -3400,6 +3419,10 @@ def _build_one_product(fields: dict) -> str:
     line = f"{icon} {prod_cd} {prod_name}　{unit}{detail_str}"
     if not ok and error_msg:
         line += f"\n   ⚠️ 原因：{error_msg}"
+    if ok and label_result.get("pdfs"):
+        line += "\n   🏷️ 架上標籤已自動生成"
+    elif ok and label_result and not label_result.get("missing"):
+        line += "\n   📋 已加入標籤佇列"
     return line
 
 
