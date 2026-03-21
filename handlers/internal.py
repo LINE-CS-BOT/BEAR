@@ -3205,8 +3205,11 @@ def _parse_new_product_fields(text: str) -> dict | None:
     bar_code_m = re.search(r'條碼\s*[:：]?\s*(\S+)', flat)
     bar_code   = bar_code_m.group(1) if bar_code_m else prod_cd  # 預設條碼 = 品項編碼（貨號）
 
-    # 售價 / 賣價 / 出庫單價（含簡寫「售299」「售:299」，以及裸數字行）
-    out_price_m = re.search(r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)', flat)
+    # 售價 / 賣價 / 出庫單價（含簡寫「售299」「售:299」「299元」，以及裸數字行）
+    out_price_m = re.search(r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元?', flat)
+    if not out_price_m:
+        # fallback：數字+元（如「299元」）
+        out_price_m = re.search(r'(?:^|\s)([\d.]+)\s*元(?:\s|$)', flat)
     if not out_price_m:
         # fallback：一行只有純數字，視為售價
         out_price_m = re.search(r'(?:^|\s)([\d.]+)(?=\s|$)', flat)
@@ -3235,13 +3238,13 @@ def _parse_new_product_fields(text: str) -> dict | None:
     name_part = flat[m_code.end():]
     for strip_pat in [
         r'條碼\s*[:：]?\s*\S+',
-        r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+',
+        r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+\s*元?',
         r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
         r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
         rf'單位\s*[:：]?\s*(?:{_UNIT_WORDS_NP})',
         rf'(?:^|\s)(?:{_UNIT_WORDS_NP})(?:\s|$)',
         r'品名\s*[:：]?\s*',
-        r'(?:^|\s)[\d.]+(?=\s|$)',  # 裸數字（售價 fallback）
+        r'(?:^|\s)[\d.]+\s*元?(?=\s|$)',  # 裸數字+元（售價 fallback）
     ]:
         name_part = re.sub(strip_pat, ' ', name_part)
     prod_name = name_part.strip()
