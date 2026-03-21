@@ -557,24 +557,18 @@ async def main(payload: dict) -> None:
                 await context.close()
                 return
 
-        # ── 點選「廣告圖片生成」對話（側邊欄），在此對話中進行所有生成 ──────────
-        print("[gemini] 尋找「廣告圖片生成」對話...", flush=True)
-        ad_conv_sel = 'a:has-text("廣告圖片生成"), [role="listitem"]:has-text("廣告圖片生成"), li:has-text("廣告圖片生成")'
-        try:
-            conv_link = page.locator(ad_conv_sel).first
-            if await conv_link.count() > 0:
-                await conv_link.click()
-                await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                await page.wait_for_timeout(2000)
-                print("[gemini] ✅ 已進入「廣告圖片生成」對話")
-            else:
-                print("[gemini] ⚠️  找不到「廣告圖片生成」對話，使用目前頁面")
-        except Exception as e:
-            print(f"[gemini] ⚠️  切換對話失敗（{e}），繼續")
-
-        # 依序生成（在同一對話中連續送提示詞）
+        # 依序生成（每次開新對話）
         for i, (code, img_list, prompt, platform) in enumerate(tasks):
             print(f"\n[ad] [{i+1}/{total}] {code}_{platform}", flush=True)
+
+            # 開新對話（直接導航到 Gemini 首頁）
+            try:
+                await page.goto(GEMINI_URL, timeout=20000)
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(2000)
+                print("[gemini] ✅ 已開新對話")
+            except Exception as e:
+                print(f"[gemini] ⚠️  開新對話失敗（{e}），使用目前頁面")
 
             result = await generate_one(
                 page, code, img_list, prompt, output_folder, platform
