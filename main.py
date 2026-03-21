@@ -3317,6 +3317,8 @@ def _dispatch(
         return handle_business_hours(text)
     elif intent == Intent.GREETING:
         return tone.greeting_reply()
+    elif intent == Intent.CREDIT_CARD:
+        return "抱歉我們沒有刷卡喔"
     elif intent == Intent.CONFIRMATION:
         # 購物車有東西 → 視為確認下單
         from storage import cart as cart_store
