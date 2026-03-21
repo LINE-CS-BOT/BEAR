@@ -2554,6 +2554,16 @@ def on_message(event: MessageEvent):
                     ))
                 return
 
+            # ── 標籤指令 ──
+            if text.strip().splitlines()[0].strip().startswith("標籤"):
+                ack = handle_internal_label_queue(text)
+                if ack:
+                    line_api.reply_message(ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=ack)],
+                    ))
+                return
+
             # ── 觸發批次上架 Session ──
             if text.strip() in _INTERNAL_UPLOAD_TRIGGERS:
                 ack = handle_internal_upload_start(user_id)
