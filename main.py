@@ -65,6 +65,7 @@ from handlers.internal import (
     handle_internal_rebate,
     handle_internal_unfulfilled,
     handle_internal_unclaimed,
+    handle_internal_showcase_push,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
@@ -462,6 +463,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or _handle_visit_query_command(combined)
         or _handle_spec_rebuild_command(combined)
         or _handle_bot_notify_command(combined)
+        or handle_internal_showcase_push(combined, line_api)
         or handle_internal_tag_push(combined, line_api)
         or handle_internal_add_customer(combined)
         or handle_internal_notify_register(combined, line_api)

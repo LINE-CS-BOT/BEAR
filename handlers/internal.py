@@ -2556,6 +2556,80 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
     return result
 
 
+# ---------------------------------------------------------------------------
+# 看貨群推送
+# ---------------------------------------------------------------------------
+
+_SHOWCASE_TRIGGER = "看貨群"
+
+
+def handle_internal_showcase_push(text: str, line_api) -> str | None:
+    """
+    偵測「看貨群」+ 產品編碼，推送 PO文+圖片到看貨群。
+    格式：
+      看貨群
+      T1122
+      Z3456
+    或單行：看貨群 T1122 Z3456
+    """
+    if _SHOWCASE_TRIGGER not in text:
+        return None
+
+    from config import settings
+    showcase_gid = settings.LINE_GROUP_ID_SHOWCASE
+    if not showcase_gid:
+        return "❌ 看貨群 ID 未設定"
+
+    # 提取產品編碼
+    remaining = text.replace(_SHOWCASE_TRIGGER, "").strip()
+    codes = _PROD_CODE_RE.findall(remaining)
+    if not codes:
+        return "❌ 請指定產品編碼\n格式：看貨群\nT1122\nZ3456"
+
+    products = _resolve_push_products(" ".join(codes))
+    if not products:
+        return f"❌ 找不到產品：{' '.join(codes)}"
+
+    # 取 ngrok URL + 媒體資料夾
+    ngrok_url = _get_ngrok_url()
+    media_dir = _get_media_dir()
+
+    # 收集每個產品的推送資料，檢查 PO 文
+    pushed = []
+    skipped = []
+    for prod_code, prod_name in products:
+        raw_po = _get_raw_po_block(prod_code)
+        if not raw_po:
+            skipped.append(f"{prod_name}（{prod_code}）")
+            continue
+
+        media_msgs = []
+        if ngrok_url and media_dir:
+            files = _match_product_media_files(prod_code, media_dir)
+            media_msgs = _build_media_messages(prod_code, files, ngrok_url)
+
+        try:
+            text_msg = TextMessage(text=raw_po)
+            _push_messages_chunked(line_api, showcase_gid, text_msg, media_msgs)
+            pushed.append(f"{prod_name}（{prod_code}）")
+        except Exception as e:
+            print(f"[showcase-push] 推送失敗 {prod_code}: {e}")
+            skipped.append(f"{prod_name}（{prod_code}）推送失敗")
+
+    lines = []
+    if pushed:
+        lines.append(f"📣 已推送至看貨群！\n產品：{'、'.join(pushed)}")
+    if skipped:
+        lines.append(f"⚠️ 以下產品無 PO 文，未推送：\n{'、'.join(skipped)}")
+    if not pushed and not skipped:
+        lines.append("❌ 沒有產品可推送")
+    if not ngrok_url:
+        lines.append("⚠️ ngrok 未啟動，圖片未推送")
+    elif not media_dir:
+        lines.append("⚠️ 產品照片磁碟機未連線")
+    return "\n".join(lines)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 6. 上架指令系統
 #
