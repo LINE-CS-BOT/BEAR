@@ -516,7 +516,8 @@ def _txt_buf_flush(user_id: str) -> None:
                     ))
                     _reply_token_used[0] = True
                     return
-                except Exception:
+                except Exception as _reply_err:
+                    print(f"[txt-buf] reply_message 失敗: {_reply_err}", flush=True)
                     reply_token = None  # 標記 token 已失效
             try:
                 line_api.push_message(PushMessageRequest(
@@ -2586,10 +2587,21 @@ def on_message(event: MessageEvent):
                     )
             return  # 非營業時間查詢 → 靜默不回
 
-        # ── 內部群組 → 存文字緩衝，5 秒後統一處理 ──────────────────────
+        # ── 內部群組 ──────────────────────────────────────────
         if (source_type == "group"
                 and settings.LINE_GROUP_ID
                 and event.source.group_id == settings.LINE_GROUP_ID):
+            # 簡單查詢指令：直接 reply 不走 buffer（避免 token 過期）
+            _quick_reply = (
+                handle_internal_rebate(text)
+                or handle_internal_unfulfilled(text)
+                or handle_internal_unclaimed(text)
+            )
+            if _quick_reply:
+                _send_reply(event.reply_token, event.source.group_id,
+                            _quick_reply, line_api)
+                return
+            # 其餘走文字緩衝，5 秒後統一處理
             _txt_buf_add(user_id, text, "group", event.source.group_id,
                          reply_token=event.reply_token)
             return
