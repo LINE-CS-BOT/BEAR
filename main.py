@@ -215,18 +215,27 @@ def _img_buf_flush(user_id: str) -> None:
 
 def _img_buf_set(user_id: str, msg_id: str, context: str, group_id: str | None,
                  reply_token: str | None = None) -> None:
-    """存入緩衝並啟動 timer"""
+    """存入緩衝並啟動 timer（支援多張圖片累積）"""
     timer = _threading.Timer(_IMG_COALESCE_SECS, _img_buf_flush, args=(user_id,))
     timer.daemon = True
     with _img_buffer_lock:
         old = _img_buffer.get(user_id)
         if old:
             old["timer"].cancel()   # 取消舊 timer（連續圖片更新）
-        _img_buffer[user_id] = {
-            "msg_id": msg_id, "context": context,
-            "group_id": group_id, "timer": timer,
-            "reply_token": reply_token,
-        }
+            # 累積多張圖片
+            old_ids = old.get("msg_ids", [old["msg_id"]] if old.get("msg_id") else [])
+            old_ids.append(msg_id)
+            _img_buffer[user_id] = {
+                "msg_id": old_ids[0], "msg_ids": old_ids, "context": context,
+                "group_id": group_id, "timer": timer,
+                "reply_token": reply_token,
+            }
+        else:
+            _img_buffer[user_id] = {
+                "msg_id": msg_id, "msg_ids": [msg_id], "context": context,
+                "group_id": group_id, "timer": timer,
+                "reply_token": reply_token,
+            }
     timer.start()
 
 
@@ -718,8 +727,36 @@ def _txt_buf_flush(user_id: str) -> None:
             try:
                 current_state = state_manager.get(user_id)
 
-                # 1:1 圖片識別（img_e 是從 _img_buf_pop 取得的緩衝圖片）
-                img_pc = _img_identify_from_buf(img_e["msg_id"]) if img_e else None
+                # 1:1 圖片識別（img_e 支援多張圖片）
+                img_pcs = []
+                if img_e:
+                    msg_ids = img_e.get("msg_ids", [img_e["msg_id"]] if img_e.get("msg_id") else [])
+                    for _mid in msg_ids:
+                        _pc = _img_identify_from_buf(_mid)
+                        if _pc and _pc not in img_pcs:
+                            img_pcs.append(_pc)
+                img_pc = img_pcs[0] if img_pcs else None
+
+                # ── 多張圖片 + 「各X」→ 批次加入購物車 ──────────────
+                _each_m = re.search(r'各\s*(\d+)\s*(?:個|箱|件|盒|套|組)?', combined) if img_pcs else None
+                if len(img_pcs) > 1 and _each_m and not current_state:
+                    _each_qty = int(_each_m.group(1))
+                    from services.ecount import ecount_client as _ec
+                    from storage import cart as cart_store
+                    _added = []
+                    for _pc in img_pcs:
+                        _info = _ec.lookup(_pc)
+                        _pn = (_info.get("name") if _info else None) or _pc
+                        cart_store.add_to_cart(user_id, _pc, _pn, _each_qty)
+                        _added.append(f"• {_pn} × {_each_qty}")
+                    reply_text = (
+                        "收到！已加入購物車：\n"
+                        + "\n".join(_added)
+                        + "\n\n確認的話請說「好了」送出訂單哦"
+                    )
+                    _send_reply(reply_token, user_id, reply_text, line_api)
+                    reply_text = None
+                    img_pc = None  # 已處理，不走單張流程
 
                 # ── 圖片 + 文字：規則判斷意圖，再決定處理方式 ──────────────
                 if img_pc and not current_state:
