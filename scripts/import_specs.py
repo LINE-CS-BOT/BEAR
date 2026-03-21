@@ -71,8 +71,8 @@ def parse_specs(text: str) -> dict:
         code = name = size = weight = machine = price = ""
         first_untagged = ""   # 第一行無標籤文字（備用品名）
 
-        for line in block.splitlines():
-            line = line.strip()
+        block_lines = [l.strip() for l in block.splitlines()]
+        for i, line in enumerate(block_lines):
             if not line:
                 continue
 
@@ -94,10 +94,15 @@ def parse_specs(text: str) -> dict:
                 name = m.group(1).strip()
                 continue
 
-            # 尺寸（支援「尺寸-」「尺寸：」「包裝尺寸-」「包裝尺寸：」「尺寸-約」「產品尺寸：」）
-            m = re.match(r"(?:產品|包裝)?尺寸[-：: 約]*(.+)", line)
+            # 尺寸（支援「尺寸-」「尺寸：」「包裝尺寸-」「外盒尺寸」「產品尺寸：」）
+            m = re.match(r"(?:產品|包裝|外盒)?尺寸[-：: 約]*(.*)", line)
             if m:
-                size = m.group(1).strip()
+                val = m.group(1).strip()
+                if val:
+                    size = val
+                elif i + 1 < len(block_lines) and block_lines[i + 1].strip():
+                    # 尺寸標籤後面沒值，取下一行
+                    size = block_lines[i + 1].strip()
                 continue
 
             # 重量（支援「重量：」「產品重量：」）
