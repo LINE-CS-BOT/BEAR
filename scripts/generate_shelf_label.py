@@ -133,13 +133,17 @@ def _notify_missing_specs(codes: list[str]):
 
 
 def _build_product_data(code: str, specs: dict) -> dict | None:
-    """組合一個產品的欄位資料；找不到規格則回傳 None"""
+    """組合一個產品的欄位資料；找不到規格或品名則回傳 None"""
     spec = specs.get(code.upper())
     if not spec:
         print(f"[label] 找不到 {code} 的規格資料，跳過")
         return None
 
-    name   = _ecount_name(code) or spec.get("name", code)
+    name = _ecount_name(code)
+    if not name:
+        print(f"[label] {code} 在 Ecount 無品名，跳過（請先新增品項）")
+        return None
+
     size   = _strip_unit(spec.get("size", ""))
     price  = _parse_price(spec.get("price", ""))
     weight = _strip_unit(spec.get("weight", ""))
