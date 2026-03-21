@@ -387,11 +387,13 @@ def handle_checkout(
             cust_phone = (cust_info.get("phone") or "").strip() if cust_info else ""
 
             if cust_name and cust_phone:
-                # 有姓名+電話 → 先更新（>4小時），再用 JSON 比對
+                # 有姓名+電話 → 先 JSON 比對，失敗就 API 建立
                 cust_code = _resolve_cust_code(user_id, do_refresh=True)
+                if not cust_code:
+                    cust_code = _create_ecount_customer(user_id)
 
             if not cust_code:
-                # DB 缺姓名/電話，或 JSON 比對失敗 → 詢問客戶聯絡資訊
+                # DB 真的沒有姓名或電話 → 才詢問客戶聯絡資訊
                 from storage.state import state_manager
                 state_manager.set(user_id, {"action": "awaiting_contact_info_checkout"})
                 return tone.ask_contact_info()
