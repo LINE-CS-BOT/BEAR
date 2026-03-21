@@ -1,5 +1,15 @@
 [
   {
+    "code": "K0213",
+    "file": "K0213A.jpg",
+    "hash": "e9868d7182e73966"
+  },
+  {
+    "code": "K0213",
+    "file": "K0213B.jpg",
+    "hash": "eba096dd25a49c72"
+  },
+  {
     "code": "K0236",
     "file": "K0236A.jpg",
     "hash": "8a94a3d3646edb23"
@@ -228,6 +238,41 @@
     "code": "S0414",
     "file": "S0414正.jpg",
     "hash": "90c94bd2d50d9d7a"
+  },
+  {
+    "code": "S0548",
+    "file": "S0548A.jpg",
+    "hash": "cd523e227d5e2159"
+  },
+  {
+    "code": "S0548",
+    "file": "S0548B.jpg",
+    "hash": "8fe0514267e26cee"
+  },
+  {
+    "code": "S0571",
+    "file": "S0571A.jpg",
+    "hash": "9966669d3c9bc161"
+  },
+  {
+    "code": "S0571",
+    "file": "S0571B.jpg",
+    "hash": "cf3039cf3192c639"
+  },
+  {
+    "code": "S0571",
+    "file": "S0571D.jpg",
+    "hash": "8bcfa69348f0b896"
+  },
+  {
+    "code": "S0571",
+    "file": "S0571E.jpg",
+    "hash": "aaf2cdc1991fb019"
+  },
+  {
+    "code": "S0571",
+    "file": "S0571F.jpg",
+    "hash": "c9d774d858a613c3"
   },
   {
     "code": "S0599",
@@ -720,6 +765,16 @@
     "hash": "fab1c13cac3f1382"
   },
   {
+    "code": "Z2087",
+    "file": "Z2087A.jpg",
+    "hash": "be81c137996867e1"
+  },
+  {
+    "code": "Z2087",
+    "file": "Z2087B.jpg",
+    "hash": "ff80e43bc8246e9a"
+  },
+  {
     "code": "Z3031",
     "file": "Z3031A.jpg",
     "hash": "ea9cf19595115393"
@@ -768,6 +823,21 @@
     "code": "Z3218",
     "file": "Z3218.jpg",
     "hash": "faa78992934cc4d9"
+  },
+  {
+    "code": "Z3227",
+    "file": "Z3227A.jpg",
+    "hash": "9c3363cc92b3cc39"
+  },
+  {
+    "code": "Z3227",
+    "file": "Z3227B.jpg",
+    "hash": "98773a4e6398cd32"
+  },
+  {
+    "code": "Z3227",
+    "file": "Z3227C.jpg",
+    "hash": "af89c661f036e459"
   },
   {
     "code": "Z3234",
