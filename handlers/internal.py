@@ -3426,6 +3426,49 @@ def _build_one_product(fields: dict) -> str:
     return line
 
 
+def handle_internal_label_queue(text: str, state_key: str | None = None) -> str | None:
+    """
+    手動加入標籤佇列：
+      「標籤 Z3594」         → 加入 1 個
+      「標籤 Z3594 T1135 Z3555」 → 加入多個
+    """
+    t = text.strip()
+    if not t.startswith("標籤"):
+        return None
+
+    remaining = t.replace("標籤", "").strip()
+    codes = _PROD_CODE_RE.findall(remaining)
+    if not codes:
+        return "❌ 請指定產品編碼\n格式：標籤 Z3594 T1135 Z3555"
+
+    codes = [c.upper() for c in codes]
+    label_result = _generate_labels_sync(codes)
+
+    lines = []
+    # 成功加入的
+    added = [c for c in codes
+             if c not in (label_result.get("missing") or [])
+             and c not in (label_result.get("no_name") or [])]
+    if added:
+        lines.append(f"📋 已加入標籤佇列：{'、'.join(added)}")
+    if label_result.get("pdfs"):
+        names = "、".join(p.name for p in label_result["pdfs"])
+        lines.append(f"🏷️ 架上標籤已生成：{names}")
+    elif added and not label_result.get("pdfs"):
+        lines.append("待湊滿 3 個自動生成")
+    # 失敗的
+    if label_result.get("missing"):
+        lines.append(f"⚠️ 規格缺失：{'、'.join(label_result['missing'])}")
+    if label_result.get("no_name"):
+        lines.append(f"⚠️ Ecount 無品名：{'、'.join(label_result['no_name'])}")
+    if label_result.get("error"):
+        lines.append(f"❌ 錯誤：{label_result['error']}")
+    if not lines:
+        lines.append("❌ 沒有產品可加入標籤佇列")
+
+    return "\n".join(lines)
+
+
 def handle_internal_new_product(text: str) -> str | None:
     """
     新增品項指令：支援單筆與多筆，在 Ecount 建立品項並記錄到 admin 待審核清單。
