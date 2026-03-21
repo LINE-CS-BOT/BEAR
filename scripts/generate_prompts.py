@@ -279,8 +279,8 @@ def process_code(code: str, step1_only: bool = False) -> bool:
 # ── 主流程 ─────────────────────────────────────────────────────────────────────
 
 def main():
-    # 預設只跑 STEP 1（精簡快速），加 --step2 才跑完整兩步流程
-    step1_only = "--step2" not in sys.argv
+    # 預設跑完整兩步流程（STEP 1 + STEP 2），加 --step1-only 才只跑 STEP 1
+    step1_only = "--step1-only" in sys.argv
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
     if args:
