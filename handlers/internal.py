@@ -3433,7 +3433,8 @@ def handle_internal_label_queue(text: str, state_key: str | None = None) -> str 
       「標籤 Z3594 T1135 Z3555」 → 加入多個
     """
     t = text.strip()
-    if not t.startswith("標籤"):
+    lines = t.splitlines()
+    if not lines[0].strip().startswith("標籤"):
         return None
 
     remaining = t.replace("標籤", "").strip()
