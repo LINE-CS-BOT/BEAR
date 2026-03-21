@@ -488,24 +488,57 @@ def _start_ad_generation_bg(
     group_id: str,
     line_api=None,
 ) -> None:
-    """以子程序執行 scripts/generate_ad_gemini.py"""
+    """先用 Claude CLI 生成優化提示詞，再用 Gemini 生成廣告圖"""
     import json
     import threading
 
     def _run():
-        script = Path(__file__).parent.parent / "scripts" / "generate_ad_gemini.py"
+        root = Path(__file__).parent.parent
+        python = sys.executable
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        codes = list(images.keys())
+
+        # STEP 0：用 generate_prompts.py 跑 Claude 兩個 skill 生成優化提示詞
+        prompt_script = root / "scripts" / "generate_prompts.py"
+        if prompt_script.exists():
+            for code in codes:
+                # 檢查是否已有預存提示詞（跳過已有的）
+                prompt_dir = root / "data" / "ad_prompts"
+                line_txt = prompt_dir / f"{code}_line.txt"
+                fb_txt = prompt_dir / f"{code}_fb.txt"
+                if line_txt.exists() and fb_txt.exists():
+                    print(f"[ad] {code} 已有優化提示詞，跳過 Claude", flush=True)
+                    continue
+                print(f"[ad] {code} 呼叫 Claude 生成優化提示詞...", flush=True)
+                try:
+                    proc = subprocess.run(
+                        [python, str(prompt_script), code],
+                        cwd=str(root),
+                        creationflags=flags,
+                        capture_output=True,
+                        timeout=300,
+                    )
+                    if proc.stdout:
+                        print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
+                    if proc.returncode != 0 and proc.stderr:
+                        print(proc.stderr.decode("utf-8", errors="replace"), flush=True)
+                except subprocess.TimeoutExpired:
+                    print(f"[ad] {code} Claude 提示詞生成逾時（300s）", flush=True)
+                except Exception as e:
+                    print(f"[ad] {code} Claude 提示詞生成失敗：{e}", flush=True)
+
+        # STEP 1：用 generate_ad_gemini.py 生成廣告圖（會自動讀取預存提示詞）
+        ad_script = root / "scripts" / "generate_ad_gemini.py"
         payload = json.dumps({
-            "codes":         list(images.keys()),
+            "codes":         codes,
             "images":        images,
             "output_folder": output_folder,
             "notify_group":  group_id,
         }, ensure_ascii=False)
 
-        python = sys.executable
-        flags  = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         proc = subprocess.Popen(
-            [python, str(script), "--payload", payload],
-            cwd=str(Path(__file__).parent.parent),
+            [python, str(ad_script), "--payload", payload],
+            cwd=str(root),
             creationflags=flags,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
