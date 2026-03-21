@@ -1505,10 +1505,11 @@ def _format_po(prod_code: str) -> str:
 # ── 5-a. 規格搜尋（台型 / 尺寸）────────────────────────────────────────
 
 _MACHINE_TYPES = ["中巨", "標準台", "標準", "K霸", "巨無霸"]
-_SPEC_QUERY_KW = ["有哪些", "有什麼", "哪些產品", "什麼產品", "產品", "有哪些產品", "推薦"]
+_SPEC_QUERY_KW = ["有哪些", "有什麼", "哪些產品", "什麼產品", "產品", "有哪些產品", "推薦", "庫存"]
 
 import re as _re_spec
 _SIZE_RE = _re_spec.compile(r'(\d+(?:\.\d+)?)\s*公分')
+_PRICE_RE = _re_spec.compile(r'(\d+)\s*(?:元|塊)?以下')
 
 
 def handle_internal_spec_query(text: str) -> str | None:
@@ -1528,20 +1529,35 @@ def handle_internal_spec_query(text: str) -> str | None:
     # 偵測尺寸
     m_size = _SIZE_RE.search(text)
     size_kw = m_size.group(0) if m_size else None  # 例：「13公分」
+    # 偵測價格上限
+    m_price = _PRICE_RE.search(text)
+    price_limit = int(m_price.group(1)) if m_price else None
 
-    if not matched_machine and not size_kw:
+    if not matched_machine and not size_kw and not price_limit:
         return None
+
+    # 是否只列有庫存的
+    stock_only = "庫存" in text
 
     # 搜尋規格DB
     if matched_machine:
         specs = get_by_machine(matched_machine)
         label = f"「{matched_machine}」台型"
-    else:
+    elif size_kw:
         specs = get_by_size(size_kw)
         label = f"「{size_kw}」尺寸"
+    else:
+        # 價格搜尋：取全部規格再篩選
+        from storage.specs import get_all
+        all_specs = get_all()
+        specs = list(all_specs.values()) if isinstance(all_specs, dict) else all_specs
+        label = f"「{price_limit}元以下」"
 
     if not specs:
         return f"🔍 規格DB 目前沒有{label}的產品記錄"
+
+    # 排除耗材
+    specs = [s for s in specs if not s.get("code", "").upper().startswith("HH")]
 
     # 依價格由高到低排序
     def _price_val(s):
@@ -1549,7 +1565,11 @@ def handle_internal_spec_query(text: str) -> str | None:
         return int(nums[0]) if nums else 0
     specs = sorted(specs, key=_price_val, reverse=True)
 
-    lines = [f"🔍 {label} 的產品（共 {len(specs)} 筆）：\n"]
+    # 價格上限篩選
+    if price_limit:
+        specs = [s for s in specs if 0 < _price_val(s) <= price_limit]
+
+    result_lines = []
     for s in specs:
         code = s.get("code", "")
         name = s.get("name", code)
@@ -1558,16 +1578,40 @@ def handle_internal_spec_query(text: str) -> str | None:
         # 查庫存
         try:
             item = ecount_client.lookup(code)
-            qty      = item.get("qty") if item else None
-            preorder = item.get("preorder") if item else None
-            stock_str = f"可售：{qty} 個" if qty is not None else "庫存查詢失敗"
-            if (preorder or 0) > 0:
-                stock_str += f"  預購：{preorder} 個"
+            qty        = item.get("qty") if item else None
+            preorder   = item.get("preorder") if item else None
+            warehouse  = item.get("balance") if item else None
+            unfulfilled = item.get("unfilled") if item else None
+            hq_pending = item.get("incoming") if item else None
         except Exception:
-            stock_str = "庫存查詢失敗"
-        lines.append(f"• {code}　{name}\n  {size}　{price}　{stock_str}")
+            qty = warehouse = unfulfilled = hq_pending = preorder = None
+        # 庫存模式：只列可售 > 0
+        if stock_only and (qty is None or qty <= 0):
+            continue
+        # 完整明細
+        detail = f"📦 {name}（{code}）"
+        if size or price:
+            detail += f"\n  {size}　{price}" if size else f"\n  {price}"
+        if warehouse is not None:
+            detail += f"\n  ├ 倉庫庫存：{warehouse} 個"
+        if unfulfilled is not None:
+            detail += f"\n  ├ ERP未出：{unfulfilled} 個"
+        if hq_pending is not None:
+            detail += f"\n  ├ 總公司未到：{hq_pending} 個"
+        if qty is not None:
+            if qty > 0:
+                detail += f"\n  ├ 可售庫存：{qty} 個"
+            else:
+                detail += f"\n  └ 可售庫存：{qty} 個（缺貨）"
+        if (preorder or 0) > 0:
+            detail += f"\n  └ 可預購：{preorder} 個"
+        result_lines.append(detail)
 
-    return "\n".join(lines)
+    if stock_only and not result_lines:
+        return f"🔍 {label} 目前沒有有庫存的產品"
+
+    header = f"🔍 {label} {'有庫存的' if stock_only else ''}產品（共 {len(result_lines)} 筆）：\n"
+    return "\n".join([header] + result_lines)
 
 
 # ── 5. 庫存查詢 ────────────────────────────────────────────────────────
@@ -3326,6 +3370,16 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
     if not any(kw in t for kw in _REBATE_KW):
         return None
 
+    # 提取查詢客戶名
+    query_name = t
+    for kw in _REBATE_KW + ["查", "查詢", "多少", "？", "?", " "]:
+        query_name = query_name.replace(kw, "")
+    query_name = query_name.strip()
+
+    # 單純「回饋金」不觸發，需要「回饋金資料」（總表）或「XXX回饋金」（客戶查詢）
+    if not query_name and "回饋金資料" not in t:
+        return None
+
     from services.rebate import calculate_rebates, get_approaching_customers
 
     result = calculate_rebates()
@@ -3335,12 +3389,6 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
 
     if not groups:
         return f"📊 {month} 回饋金\n目前無銷貨資料"
-
-    # 檢查是否查詢特定客戶
-    query_name = t
-    for kw in _REBATE_KW + ["查", "查詢", "多少", "？", "?", " "]:
-        query_name = query_name.replace(kw, "")
-    query_name = query_name.strip()
 
     if query_name:
         # 特定客戶查詢
