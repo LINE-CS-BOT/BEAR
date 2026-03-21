@@ -3512,3 +3512,86 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
             note_str = f" {o['note']}" if o.get("note") else ""
             lines.append(f"{o['code']} {o['name'][:18]} *{o['qty']:g}{note_str}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 未取訂單查詢
+# ---------------------------------------------------------------------------
+
+_UNCLAIMED_PATH = Path(__file__).parent.parent / "data" / "unclaimed_orders.json"
+
+_UNCLAIMED_KW = ["未取資料", "未取"]
+
+
+def _load_unclaimed() -> list[dict]:
+    if not _UNCLAIMED_PATH.exists():
+        return []
+    try:
+        return _json.loads(_UNCLAIMED_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _unclaimed_needs_refresh() -> bool:
+    if not _UNCLAIMED_PATH.exists():
+        return True
+    import time
+    return time.time() - _UNCLAIMED_PATH.stat().st_mtime > 30 * 60
+
+
+def _refresh_unclaimed():
+    try:
+        import asyncio
+        from scripts.sync_unfulfilled import sync_unclaimed
+        asyncio.run(sync_unclaimed())
+    except Exception as e:
+        print(f"[unclaimed] 自動更新失敗: {e}")
+
+
+def handle_internal_unclaimed(text: str, state_key: str | None = None) -> str | None:
+    """
+    內部群未取訂單查詢：
+      「未取資料」    → 全部未取訂單摘要
+      「XXX 未取」   → 查特定客戶的未取訂單
+    """
+    t = text.strip()
+    if not any(kw in t for kw in _UNCLAIMED_KW):
+        return None
+
+    # 檔案超過 30 分鐘自動更新
+    if _unclaimed_needs_refresh():
+        print("[unclaimed] 資料超過 30 分鐘，自動更新...")
+        _refresh_unclaimed()
+
+    orders = _load_unclaimed()
+    if not orders:
+        return "📋 目前沒有未取訂單"
+
+    # 提取查詢關鍵字
+    query = t
+    for kw in _UNCLAIMED_KW + ["查", "查詢", "？", "?", " "]:
+        query = query.replace(kw, "")
+    query = query.strip()
+
+    if query:
+        # 特定客戶查詢
+        matched = [o for o in orders if query in o["customer"] or query in o["product"]]
+        if not matched:
+            return f"📋 找不到「{query}」的未取訂單"
+        lines = [f"「{query}」未取訂單({len(matched)}筆)"]
+        for o in matched:
+            lines.append(f"{o['product'][:20]} *{o['qty']:g}")
+        return "\n".join(lines)
+
+    # 全部未取 — 按客戶分組
+    by_customer: dict[str, list[dict]] = {}
+    for o in orders:
+        by_customer.setdefault(o["customer"], []).append(o)
+
+    lines = [f"📋 未取訂單（共 {len(orders)} 筆，{len(by_customer)} 位客戶）"]
+    for cust, cust_orders in sorted(by_customer.items(), key=lambda x: -len(x[1])):
+        total_qty = sum(o["qty"] for o in cust_orders)
+        lines.append(f"\n{cust}（{len(cust_orders)} 筆，共 {total_qty:g} 件）")
+        for o in cust_orders:
+            lines.append(f"  {o['product'][:20]} *{o['qty']:g}")
+    return "\n".join(lines)

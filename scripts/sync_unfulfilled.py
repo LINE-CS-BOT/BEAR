@@ -15,6 +15,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 ROOT = Path(__file__).parent.parent
 OUTPUT_PATH = ROOT / "data" / "unfulfilled_orders.json"
+UNCLAIMED_PATH = ROOT / "data" / "unclaimed_orders.json"
 
 sys.path.insert(0, str(ROOT))
 from scripts._chrome_helper import (
@@ -126,8 +127,100 @@ async def sync_unfulfilled():
         return False
 
 
+async def sync_unclaimed():
+    """同步未取訂單（已到貨但銷貨單為「輸入」）"""
+    from playwright.async_api import async_playwright
+
+    launch_chrome_if_needed()
+    async with async_playwright() as p:
+        browser, page = await connect_get_page(p)
+        if not page:
+            print("[unclaimed] ✗ 無法連接 Chrome")
+            return False
+
+        ec_sid = await ensure_logged_in(page)
+        if not ec_sid:
+            print("[unclaimed] ✗ 未登入 Ecount")
+            return False
+
+        # 1. 導航到訂貨單出貨處理
+        url = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}{_ORDER_HASH}"
+        print("[unclaimed] 導航訂貨單出貨處理...")
+        try:
+            await page.goto("about:blank", timeout=5000)
+            await page.goto(url, timeout=20000)
+            await page.wait_for_load_state("networkidle", timeout=12000)
+            await page.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"[unclaimed] ✗ 導航失敗: {e}")
+            return False
+
+        # 2. 點擊「已到貨」tab
+        try:
+            await page.locator("a#tabConfirm").click(timeout=5000)
+            print("[unclaimed] ✓ 已點擊「已到貨」tab")
+            await page.wait_for_timeout(3000)
+        except Exception as e:
+            print(f"[unclaimed] ✗ 點擊已到貨 tab 失敗: {e}")
+            return False
+
+        # 3. 解析全部頁面，篩選銷貨單為「輸入」的
+        all_data = []
+        page_num = 1
+        while True:
+            data = await page.evaluate(r"""() => {
+                const results = [];
+                const rows = document.querySelectorAll('tr');
+                for (const row of rows) {
+                    const cells = Array.from(row.querySelectorAll('td'));
+                    if (cells.length < 7) continue;
+                    const no = cells[0]?.textContent?.trim() || '';
+                    if (!no || isNaN(parseInt(no))) continue;
+                    const dateNo = cells[1]?.textContent?.trim() || '';
+                    const customer = cells[3]?.textContent?.trim() || '';
+                    const product = cells[4]?.textContent?.trim() || '';
+                    const qty = parseFloat((cells[5]?.textContent?.trim() || '0').replace(/,/g, '')) || 0;
+                    const saleSlip = cells[6]?.textContent?.trim() || '';
+                    if (saleSlip === '輸入') {
+                        results.push({ date_no: dateNo, customer, product, qty });
+                    }
+                }
+                return results;
+            }""")
+            all_data.extend(data)
+
+            # 嘗試下一頁
+            try:
+                next_link = page.locator(f"a:has-text('{page_num + 1}')").first
+                if await next_link.is_visible(timeout=2000):
+                    await next_link.click()
+                    await page.wait_for_timeout(3000)
+                    page_num += 1
+                    continue
+            except Exception:
+                pass
+            break
+
+    if all_data:
+        UNCLAIMED_PATH.write_text(
+            json.dumps(all_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[unclaimed] ✓ 未取訂單已存：{len(all_data)} 筆")
+        print(f"[unclaimed]   → {UNCLAIMED_PATH}")
+        for d in all_data[:5]:
+            print(f"  {d['customer']:15s} {d['product'][:25]:25s} x{d['qty']}")
+        return True
+    else:
+        print("[unclaimed] 目前沒有未取訂單")
+        # 寫入空陣列
+        UNCLAIMED_PATH.write_text("[]", encoding="utf-8")
+        return True
+
+
 def main():
     asyncio.run(sync_unfulfilled())
+    asyncio.run(sync_unclaimed())
 
 
 if __name__ == "__main__":

@@ -64,6 +64,7 @@ from handlers.internal import (
     handle_internal_consumable,
     handle_internal_rebate,
     handle_internal_unfulfilled,
+    handle_internal_unclaimed,
     _NEW_PROD_TRIGGER_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
@@ -470,6 +471,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or handle_internal_order(combined, line_api, group_id=group_id)
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
+        or handle_internal_unclaimed(combined, group_id)
         or handle_internal_consumable(combined, group_id)
         or handle_internal_spec_query(combined)
         or handle_internal_product_info(combined, group_id)
@@ -924,10 +926,12 @@ async def _rebate_sync_loop():
             if now.day <= 3:
                 print("[rebate] 月初，額外同步上月資料...")
                 await sync_rebate(last_month=True)
-            # 同步未處理訂單
-            from scripts.sync_unfulfilled import sync_unfulfilled
+            # 同步未處理訂單 + 未取訂單
+            from scripts.sync_unfulfilled import sync_unfulfilled, sync_unclaimed
             print("[unfulfilled] 凌晨自動同步未處理訂單...")
             await sync_unfulfilled()
+            print("[unclaimed] 凌晨自動同步未取訂單...")
+            await sync_unclaimed()
         except Exception as e:
             print(f"[rebate/unfulfilled] 自動同步失敗: {e}")
 
