@@ -20,6 +20,7 @@ class Intent(Enum):
     CHECKOUT = "checkout"
     MACHINE_SIZE = "machine_size"
     VISIT_STORE = "visit_store"
+    CREDIT_CARD = "credit_card"
     UNKNOWN = "unknown"
 
 
@@ -224,6 +225,11 @@ def detect_intent(text: str) -> Intent:
     for kw in _DELIVERY_KEYWORDS:
         if kw in text:
             return Intent.DELIVERY
+
+    # 刷卡
+    _CREDIT_CARD_KW = ["刷卡", "信用卡", "分期"]
+    if any(kw in text for kw in _CREDIT_CARD_KW):
+        return Intent.CREDIT_CARD
 
     for kw in _GREETING_KEYWORDS:
         if kw in text.lower():
