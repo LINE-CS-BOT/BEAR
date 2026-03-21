@@ -3443,31 +3443,86 @@ def handle_internal_label_queue(text: str, state_key: str | None = None) -> str 
         return "❌ 請指定產品編碼\n格式：標籤 Z3594 T1135 Z3555"
 
     codes = [c.upper() for c in codes]
-    label_result = _generate_labels_sync(codes)
 
-    lines = []
-    # 成功加入的
-    added = [c for c in codes
-             if c not in (label_result.get("missing") or [])
-             and c not in (label_result.get("no_name") or [])]
-    if added:
-        lines.append(f"📋 已加入標籤佇列：{'、'.join(added)}")
-    if label_result.get("pdfs"):
-        names = "、".join(p.name for p in label_result["pdfs"])
-        lines.append(f"🏷️ 架上標籤已生成：{names}")
-    elif added and not label_result.get("pdfs"):
-        lines.append("待湊滿 3 個自動生成")
-    # 失敗的
-    if label_result.get("missing"):
-        lines.append(f"⚠️ 規格缺失：{'、'.join(label_result['missing'])}")
-    if label_result.get("no_name"):
-        lines.append(f"⚠️ Ecount 無品名：{'、'.join(label_result['no_name'])}")
-    if label_result.get("error"):
-        lines.append(f"❌ 錯誤：{label_result['error']}")
-    if not lines:
-        lines.append("❌ 沒有產品可加入標籤佇列")
+    # 先檢查哪些有效（有規格+有品名）
+    from scripts.generate_shelf_label import (
+        _load_specs, _build_product_data, _generate_one_pdf,
+        _load_queue, _save_queue, QUEUE_FILE, OUTPUT_DIR, _queue_lock,
+    )
+    from scripts.import_specs import parse_specs, OUTPUT as SPECS_OUTPUT, SOURCE as SPECS_SOURCE
+    import json as _json2
 
-    return "\n".join(lines)
+    # 同步 specs
+    try:
+        if SPECS_SOURCE.exists():
+            specs_data = parse_specs(SPECS_SOURCE.read_text(encoding="utf-8"))
+            SPECS_OUTPUT.parent.mkdir(exist_ok=True)
+            SPECS_OUTPUT.write_text(_json2.dumps(specs_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            import storage.specs as _spec_store2
+            _spec_store2.reload()
+        else:
+            specs_data = _json2.loads(SPECS_OUTPUT.read_text(encoding="utf-8")) if SPECS_OUTPUT.exists() else {}
+    except Exception:
+        specs_data = {}
+
+    valid = []
+    missing = []
+    no_name = []
+    for c in codes:
+        d = _build_product_data(c, specs_data)
+        if d:
+            valid.append(d)
+        elif c not in specs_data:
+            missing.append(c)
+        else:
+            no_name.append(c)
+
+    result_lines = []
+    pdfs = []
+
+    if len(valid) >= 3:
+        # ≥ 3 個：直接生成 PDF，不混入佇列
+        from datetime import datetime as _dt2
+        ts = _dt2.now().strftime("%Y%m%d")
+        while len(valid) >= 3:
+            batch = valid[:3]
+            valid = valid[3:]
+            codes_str = "_".join(p["商品編號"] for p in batch)
+            out_path = OUTPUT_DIR / f"架上標_{ts}_{codes_str}.pdf"
+            try:
+                _generate_one_pdf(batch, out_path)
+                pdfs.append(out_path)
+            except Exception as e:
+                result_lines.append(f"❌ PDF 生成失敗：{e}")
+        # 剩餘不足 3 個的加入佇列
+        if valid:
+            with _queue_lock:
+                queue = _load_queue()
+                for p in valid:
+                    queue.append(p)
+                _save_queue(queue)
+            result_lines.append(f"📋 {'、'.join(p['商品編號'] for p in valid)} 加入佇列，待湊滿 3 個")
+    elif valid:
+        # < 3 個：加入佇列
+        label_result = _generate_labels_sync([p["商品編號"] for p in valid])
+        pdfs = label_result.get("pdfs", [])
+        added_codes = [p["商品編號"] for p in valid]
+        if pdfs:
+            pass  # 下面統一顯示
+        else:
+            result_lines.append(f"📋 {'、'.join(added_codes)} 加入佇列，待湊滿 3 個")
+
+    if pdfs:
+        names = "、".join(p.name for p in pdfs)
+        result_lines.insert(0, f"🏷️ 架上標籤已生成：{names}")
+    if missing:
+        result_lines.append(f"⚠️ 規格缺失：{'、'.join(missing)}")
+    if no_name:
+        result_lines.append(f"⚠️ Ecount 無品名：{'、'.join(no_name)}")
+    if not result_lines:
+        result_lines.append("❌ 沒有產品可加入標籤佇列")
+
+    return "\n".join(result_lines)
 
 
 def handle_internal_new_product(text: str) -> str | None:
