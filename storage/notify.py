@@ -129,13 +129,15 @@ class NotifyStore:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def update(self, notify_id: int, qty_wanted: int = None, source: str = None) -> bool:
-        """更新通知記錄"""
+    def update(self, notify_id: int, **kwargs) -> bool:
+        """更新通知記錄（支援 prod_code, prod_name, qty_wanted, source）"""
+        allowed = {"prod_code", "prod_name", "qty_wanted", "source"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        if not updates:
+            return False
         with sqlite3.connect(DB_PATH) as conn:
-            if qty_wanted is not None:
-                conn.execute("UPDATE notify SET qty_wanted=? WHERE id=?", (qty_wanted, notify_id))
-            if source is not None:
-                conn.execute("UPDATE notify SET source=? WHERE id=?", (source, notify_id))
+            for col, val in updates.items():
+                conn.execute(f"UPDATE notify SET {col}=? WHERE id=?", (val, notify_id))
             return True
 
     def delete(self, notify_id: int) -> bool:
