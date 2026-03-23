@@ -77,10 +77,12 @@ def build():
         try:
             img = Image.open(f).convert("RGB")
             h   = imagehash.phash(img)
+            ah  = imagehash.average_hash(img)
             entries.append({
                 "code": code,
                 "file": f.name,
                 "hash": str(h),
+                "ahash": str(ah),
             })
             print(f"  ✓  {f.name} → {code}")
             ok += 1
