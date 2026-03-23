@@ -148,6 +148,33 @@ def _get_profile_cached(line_api, user_id: str):
             return cached[0]
         return None
 
+# ── 月額度 429 全域開關 ─────────────────────────────────────
+_push_quota_exhausted = False        # True = 本月 push 額度已用完
+_push_quota_exhausted_at: str = ""   # 記錄首次偵測到的時間
+
+def _mark_push_exhausted():
+    global _push_quota_exhausted, _push_quota_exhausted_at
+    if not _push_quota_exhausted:
+        _push_quota_exhausted = True
+        _push_quota_exhausted_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        print(f"[quota] ⚠ 月額度用完，停止所有 push_message（{_push_quota_exhausted_at}）", flush=True)
+
+def _is_quota_429(exc: Exception) -> bool:
+    """檢查例外是否為月額度 429"""
+    s = str(exc)
+    return "429" in s and "monthly limit" in s.lower()
+
+def _check_quota_reset():
+    """每月 1 號自動重置額度開關"""
+    global _push_quota_exhausted, _push_quota_exhausted_at
+    if _push_quota_exhausted and _push_quota_exhausted_at:
+        exhausted_month = _push_quota_exhausted_at[:7]  # "YYYY-MM"
+        current_month = datetime.now().strftime("%Y-%m")
+        if current_month != exhausted_month:
+            _push_quota_exhausted = False
+            _push_quota_exhausted_at = ""
+            print(f"[quota] ✓ 新月份 {current_month}，額度開關已重置", flush=True)
+
 # ── 圖片訊息合併緩衝（等待後續文字，最多 N 秒）──────────
 import threading as _threading
 
@@ -176,11 +203,17 @@ def _send_reply(reply_token: str | None, to: str, text: str, line_api) -> None:
             # token 過期或已用過，fallback
     else:
         print(f"[send_reply] 無 reply_token，直接 push to={to[:10]}...", flush=True)
+    if _push_quota_exhausted:
+        print(f"[send_reply] 月額度已用完，跳過 push", flush=True)
+        return
     try:
         line_api.push_message(PushMessageRequest(
             to=to, messages=[TextMessage(text=text)]))
     except Exception as _pe:
-        print(f"[send_reply] push_message 也失敗: {_pe}", flush=True)
+        if _is_quota_429(_pe):
+            _mark_push_exhausted()
+        else:
+            print(f"[send_reply] push_message 也失敗: {_pe}", flush=True)
 
 
 def _img_buf_flush(user_id: str) -> None:
@@ -532,11 +565,17 @@ def _txt_buf_flush(user_id: str) -> None:
                 except Exception as _reply_err:
                     print(f"[txt-buf] reply_message 失敗: {_reply_err}", flush=True)
                     reply_token = None  # 標記 token 已失效
+            if _push_quota_exhausted:
+                print(f"[txt-buf] 月額度已用完，跳過 push", flush=True)
+                return
             try:
                 line_api.push_message(PushMessageRequest(
                     to=group_id, messages=[TextMessage(text=text)]))
             except Exception as _push_err:
-                print(f"[txt-buf] push_message 失敗（可能月額度用完）: {_push_err}", flush=True)
+                if _is_quota_429(_push_err):
+                    _mark_push_exhausted()
+                else:
+                    print(f"[txt-buf] push_message 失敗: {_push_err}", flush=True)
 
         # ════ 內部群組 ════
         if context == "group":
@@ -948,17 +987,22 @@ async def _process_queued_messages():
                     reply_text = None
 
                 if reply_text:
-                    try:
-                        line_api.push_message(
-                            PushMessageRequest(
-                                to=uid,
-                                messages=[TextMessage(text=reply_text)],
+                    if _push_quota_exhausted:
+                        print(f"[queue] 月額度已用完，跳過 push {uid[:10]}...", flush=True)
+                    else:
+                        try:
+                            line_api.push_message(
+                                PushMessageRequest(
+                                    to=uid,
+                                    messages=[TextMessage(text=reply_text)],
+                                )
                             )
-                        )
-                        print(f"[queue] OK {uid[:10]}... ({msg['msg_type']})", flush=True)
-                    except Exception as _push_e:
-                        # 429 月額度用完時跳過，不讓 crash 影響整個佇列
-                        print(f"[queue] push_message 失敗 (跳過): {_push_e}", flush=True)
+                            print(f"[queue] OK {uid[:10]}... ({msg['msg_type']})", flush=True)
+                        except Exception as _push_e:
+                            if _is_quota_429(_push_e):
+                                _mark_push_exhausted()
+                            else:
+                                print(f"[queue] push_message 失敗 (跳過): {_push_e}", flush=True)
             except Exception as e:
                 print(f"[queue] 處理失敗 uid={msg['user_id'][:10]}...: {e}", flush=True)
             finally:
@@ -1075,12 +1119,21 @@ async def _check_restock_notifications():
                             code=record["prod_code"],
                         )
 
-                    line_api.push_message(
-                        PushMessageRequest(
-                            to=record["user_id"],
-                            messages=[TextMessage(text=msg)],
+                    if _push_quota_exhausted:
+                        print(f"[notify] 月額度已用完，跳過 push {record['user_id'][:10]}...", flush=True)
+                        continue
+                    try:
+                        line_api.push_message(
+                            PushMessageRequest(
+                                to=record["user_id"],
+                                messages=[TextMessage(text=msg)],
+                            )
                         )
-                    )
+                    except Exception as _notify_push_e:
+                        if _is_quota_429(_notify_push_e):
+                            _mark_push_exhausted()
+                            continue
+                        raise
                     notify_store.mark_notified(record["id"])
                     notified_count += 1
                     print(
@@ -1115,6 +1168,7 @@ async def _followup_loop():
     """每小時檢查對話狀態：24h 提醒 / 48h 清除"""
     await asyncio.sleep(60)   # 啟動後 1 分鐘才第一次跑（避免啟動擠塞）
     while True:
+        _check_quota_reset()
         try:
             from handlers.followup import check_and_followup
             result = await asyncio.to_thread(check_and_followup, _line_api)
@@ -2281,6 +2335,7 @@ async def admin_api_status():
         "db_orders":     db_orders_ok,
         "server":        server_info,
         "ngrok":         {"ok": ngrok_ok, "url": ngrok_url},
+        "push_quota":    {"exhausted": _push_quota_exhausted, "since": _push_quota_exhausted_at or None},
     }
 
 
