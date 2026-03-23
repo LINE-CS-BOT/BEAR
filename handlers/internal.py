@@ -99,7 +99,7 @@ _NOTIFY_REG_SHORTHAND_RE = re.compile(
 )
 # 每一行：「姓名  產品代碼  [數量]」
 _NOTIFY_REG_LINE_RE  = re.compile(
-    r'(.+?)\s+([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)(?:\s+([零一二三四五六七八九十百千\d]+)\s*(?:個|件|盒|套|箱|組)?)?'
+    r'(.+?)\s+([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)(?:\s+([零一二三四五六七八九十百千\d]+)\s*(個|件|盒|套|箱|組)?)?'
 )
 
 # 品名下單 token（合體格式）：「衛生紙30箱」「泡澡球10件」
@@ -1117,16 +1117,20 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
             prod_name = (item["name"] if item else "") or prod_code
             results   = []
             for nl in rest:
-                # 解析「名字  數量」或「名字10」
-                mq = re.match(r'^(.+?)[\s　]+(\d+)\s*(?:個|件|盒|套|箱|組)?$', nl)
+                # 解析「名字  數量 單位」或「名字10箱」
+                mq = re.match(r'^(.+?)[\s　]+(\d+)\s*(個|件|盒|套|箱|組)?$', nl)
                 if not mq:
-                    # 數字緊跟名字後面，如「張三10」
-                    mq2 = re.match(r'^(.+?)(\d+)\s*(?:個|件|盒|套|箱|組)?$', nl)
+                    mq2 = re.match(r'^(.+?)(\d+)\s*(個|件|盒|套|箱|組)?$', nl)
                     cust_name_q = re.sub(r'\s+', '', mq2.group(1)) if mq2 else re.sub(r'\s+', '', nl)
                     qty = int(mq2.group(2)) if mq2 else 1
+                    unit = (mq2.group(3) or "") if mq2 else ""
                 else:
                     cust_name_q = re.sub(r'\s+', '', mq.group(1))
                     qty = int(mq.group(2))
+                    unit = mq.group(3) or ""
+                if unit in ("箱", "件"):
+                    from handlers.ordering import resolve_order_qty
+                    qty = resolve_order_qty(prod_code, qty)
                 results.append(_notify_register_and_push(cust_name_q, prod_code, prod_name, qty))
             return "\n".join(results) if results else None
 
@@ -1205,6 +1209,11 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
         cust_name_q = m.group(1).strip()
         prod_code   = m.group(2).upper()
         qty         = _parse_qty(m.group(3)) if m.group(3) else 1
+        unit        = m.group(4) or ""
+        # 箱/件單位換算
+        if unit in ("箱", "件"):
+            from handlers.ordering import resolve_order_qty
+            qty = resolve_order_qty(prod_code, qty)
         item        = ecount_client.lookup(prod_code)
         prod_name   = (item["name"] if item else "") or prod_code
         results.append(_notify_register_and_push(
