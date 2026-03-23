@@ -848,9 +848,6 @@ def _txt_buf_flush(user_id: str) -> None:
                 elif img_e and not current_state:
                     issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
                     print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗", flush=True)
-                    reply_text = "不好意思，無法辨識這張圖片的產品😅\n麻煩提供一下產品編號（如 Z3456），我馬上幫您查！"
-                    _send_reply(reply_token, user_id, reply_text, line_api)
-                    reply_text = None
 
                 # ── 凍結判斷：有待處理問題 → 完全靜默，等真人標記完成 ──────
                 if not current_state and issue_store.has_pending_issue(user_id):
