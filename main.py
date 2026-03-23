@@ -727,15 +727,36 @@ def _txt_buf_flush(user_id: str) -> None:
             try:
                 current_state = state_manager.get(user_id)
 
-                # 1:1 圖片識別（img_e 支援多張圖片）
+                # 1:1 圖片識別：優先從文字提取貨號，沒有才辨識圖片
                 img_pcs = []
-                if img_e:
+                _text_codes = _PROD_CODE_RE.findall(combined) if img_e else []
+                if _text_codes:
+                    # 文字裡有貨號，直接用
+                    for _tc in _text_codes:
+                        _tc_upper = _tc.upper()
+                        if _tc_upper not in img_pcs:
+                            img_pcs.append(_tc_upper)
+                elif img_e:
+                    # 文字沒貨號，才用圖片辨識
                     msg_ids = img_e.get("msg_ids", [img_e["msg_id"]] if img_e.get("msg_id") else [])
                     for _mid in msg_ids:
                         _pc = _img_identify_from_buf(_mid)
                         if _pc and _pc not in img_pcs:
                             img_pcs.append(_pc)
                 img_pc = img_pcs[0] if img_pcs else None
+
+                # ── 補圖指令：「補圖 Z3278」+ 圖片 → 存到產品資料夾 ──────
+                _add_img_m = re.match(r'補圖\s+([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', combined.strip(), re.IGNORECASE)
+                if _add_img_m and img_e:
+                    _add_code = _add_img_m.group(1).upper()
+                    msg_ids = img_e.get("msg_ids", [img_e["msg_id"]] if img_e.get("msg_id") else [])
+                    from handlers.internal import handle_internal_add_images
+                    media_items = [{"type": "image", "msg_id": mid} for mid in msg_ids]
+                    ack = handle_internal_add_images(_add_code, media_items)
+                    _send_reply(reply_token, user_id, ack, line_api)
+                    reply_text = None
+                    img_pc = None
+                    img_pcs = []
 
                 # ── 多張圖片 + 「各X」→ 批次加入購物車 ──────────────
                 _each_m = re.search(r'各\s*(\d+)\s*(?:個|箱|件|盒|套|組)?', combined) if img_pcs else None
