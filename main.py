@@ -962,19 +962,41 @@ async def _rebate_sync_loop():
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
         try:
-            from scripts.sync_rebate import sync_rebate
+            import subprocess as _sp
+            _python = sys.executable
+            _root = str(Path(__file__).parent)
+            _flags = _sp.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+            # 同步回饋金
             print("[rebate] 凌晨自動同步本月資料...")
-            await sync_rebate(last_month=False)
-            # 每月 1~3 日額外同步上月資料（確保上月資料完整）
+            proc = await asyncio.to_thread(
+                _sp.run, [_python, "-m", "scripts.sync_rebate"],
+                cwd=_root, capture_output=True, timeout=180, creationflags=_flags,
+            )
+            if proc.stdout:
+                print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
+            if proc.returncode != 0 and proc.stderr:
+                print(proc.stderr.decode("utf-8", errors="replace"), flush=True)
+
+            # 每月 1~3 日額外同步上月資料
             if now.day <= 3:
                 print("[rebate] 月初，額外同步上月資料...")
-                await sync_rebate(last_month=True)
+                proc = await asyncio.to_thread(
+                    _sp.run, [_python, "-m", "scripts.sync_rebate", "--last-month"],
+                    cwd=_root, capture_output=True, timeout=180, creationflags=_flags,
+                )
+                if proc.stdout:
+                    print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
+
             # 同步未處理訂單 + 未取訂單
-            from scripts.sync_unfulfilled import sync_unfulfilled, sync_unclaimed
-            print("[unfulfilled] 凌晨自動同步未處理訂單...")
-            await sync_unfulfilled()
-            print("[unclaimed] 凌晨自動同步未取訂單...")
-            await sync_unclaimed()
+            print("[unfulfilled] 凌晨自動同步未處理+未取訂單...")
+            proc = await asyncio.to_thread(
+                _sp.run, [_python, "-m", "scripts.sync_unfulfilled"],
+                cwd=_root, capture_output=True, timeout=180, creationflags=_flags,
+            )
+            if proc.stdout:
+                print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
+
         except Exception as e:
             print(f"[rebate/unfulfilled] 自動同步失敗: {e}")
 
@@ -2481,8 +2503,16 @@ async def admin_rebate(sync: bool = False):
     """取得當月回饋金計算結果，sync=true 時先從 Ecount 同步"""
     if sync:
         try:
-            from scripts.sync_rebate import sync_rebate
-            await sync_rebate(last_month=False)
+            import subprocess as _sp
+            _python = sys.executable
+            _root = str(Path(__file__).parent)
+            _flags = _sp.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            proc = await asyncio.to_thread(
+                _sp.run, [_python, "-m", "scripts.sync_rebate"],
+                cwd=_root, capture_output=True, timeout=180, creationflags=_flags,
+            )
+            if proc.stdout:
+                print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
         except Exception as e:
             print(f"[rebate] 同步失敗: {e}")
     from services.rebate import calculate_rebates
