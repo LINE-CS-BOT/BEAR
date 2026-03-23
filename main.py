@@ -2477,8 +2477,14 @@ async def admin_notify_delete(notify_id: int):
 
 # ── 回饋金 ──────────────────────────────────────────────
 @app.get("/admin/rebate")
-async def admin_rebate():
-    """取得當月回饋金計算結果"""
+async def admin_rebate(sync: bool = False):
+    """取得當月回饋金計算結果，sync=true 時先從 Ecount 同步"""
+    if sync:
+        try:
+            from scripts.sync_rebate import sync_rebate
+            await sync_rebate(last_month=False)
+        except Exception as e:
+            print(f"[rebate] 同步失敗: {e}")
     from services.rebate import calculate_rebates
     return await asyncio.to_thread(calculate_rebates)
 

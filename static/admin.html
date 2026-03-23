@@ -580,7 +580,7 @@
   <div class="card">
     <div class="report-toolbar">
       <div class="card-label" style="margin-bottom:0">💰 回饋金</div>
-      <button class="btn-refresh" onclick="loadRebate()">🔄 重新計算</button>
+      <button class="btn-refresh" onclick="loadRebate(true)">🔄 同步並重新計算</button>
     </div>
     <div id="rebate-wrap" style="margin-top:14px">
       <div style="color:#bbb;font-size:0.85rem">載入中...</div>
@@ -1651,12 +1651,15 @@
   }
 
   // ── 回饋金 ─────────────────────────────────────
-  async function loadRebate() {
+  async function loadRebate(sync = false) {
     const wrap = document.getElementById('rebate-wrap');
-    wrap.innerHTML = '<span class="spinner"></span> 計算中…';
+    wrap.innerHTML = sync
+      ? '<span class="spinner"></span> 從 Ecount 同步中…'
+      : '<span class="spinner"></span> 計算中…';
     try {
+      const rebateUrl = sync ? '/admin/rebate?sync=true' : '/admin/rebate';
       const [rebateRes, approachRes] = await Promise.all([
-        fetch('/admin/rebate'),
+        fetch(rebateUrl),
         fetch('/admin/rebate/approaching'),
       ]);
       const rebate = await rebateRes.json();
