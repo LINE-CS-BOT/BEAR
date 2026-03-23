@@ -2445,8 +2445,14 @@ async def admin_notify_list():
         # 附加單位顯示
         item = ecount_client.get_product_cache_item(r["prod_code"])
         box_qty = (item.get("box_qty") or 0) if item else 0
+        prod_unit = (item.get("unit") or "") if item else ""
         qty = r["qty_wanted"]
-        if box_qty > 1 and qty >= box_qty and qty % box_qty == 0:
+        if prod_unit == "箱":
+            # 產品本身以箱計
+            r["qty_display"] = f"{qty}箱"
+            r["unit"] = "箱"
+            r["box_qty"] = box_qty or 1
+        elif box_qty > 1 and qty >= box_qty and qty % box_qty == 0:
             r["qty_display"] = f"{qty // box_qty}箱"
             r["unit"] = "箱"
             r["box_qty"] = box_qty
