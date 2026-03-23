@@ -565,6 +565,17 @@
   </div>
 
 
+  <!-- 到貨通知管理 -->
+  <div class="card">
+    <div class="report-toolbar">
+      <div class="card-label" style="margin-bottom:0">📬 到貨通知管理</div>
+      <button class="btn-refresh" onclick="loadNotify()">🔄 重新載入</button>
+    </div>
+    <div id="notify-wrap" style="margin-top:14px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
   <!-- ⑦ 回饋金 -->
   <div class="card">
     <div class="report-toolbar">
@@ -1525,6 +1536,71 @@
     }
   }
 
+  // ── 到貨通知管理 ─────────────────────────────────
+  async function loadNotify() {
+    const wrap = document.getElementById('notify-wrap');
+    wrap.innerHTML = '<span class="spinner"></span> 載入中…';
+    try {
+      const res = await fetch('/admin/notify');
+      const data = await res.json();
+
+      if (!data.length) {
+        wrap.innerHTML = '<div style="color:#bbb">目前沒有到貨通知記錄</div>';
+        return;
+      }
+
+      const pending = data.filter(r => r.status === 'pending');
+      const notified = data.filter(r => r.status === 'notified');
+      const cancelled = data.filter(r => r.status === 'cancelled');
+
+      let html = `<div style="margin-bottom:8px;font-size:0.85rem;color:#888">
+        待通知：${pending.length}　已通知：${notified.length}　已取消：${cancelled.length}
+      </div>`;
+
+      html += `<table class="cust-table">
+        <thead><tr>
+          <th>客戶</th>
+          <th>產品</th>
+          <th style="text-align:right">數量</th>
+          <th>來源</th>
+          <th>狀態</th>
+          <th>時間</th>
+          <th>操作</th>
+        </tr></thead><tbody>`;
+
+      for (const r of data) {
+        const statusColor = r.status === 'pending' ? '#e65100' : r.status === 'notified' ? '#1e8e3e' : '#999';
+        const statusLabel = r.status === 'pending' ? '待通知' : r.status === 'notified' ? '已通知' : '已取消';
+        const sourceLabel = r.source === 'staff' ? '內部群' : '客戶';
+        const time = r.status === 'notified' && r.notified_at
+          ? r.notified_at.substring(0, 16).replace('T', ' ')
+          : r.created_at.substring(0, 16).replace('T', ' ');
+
+        html += `<tr>
+          <td>${r.customer_name || ''}</td>
+          <td>${r.prod_name || ''}<br><span style="color:#999;font-size:0.8em">${r.prod_code}</span></td>
+          <td style="text-align:right">${r.qty_wanted}</td>
+          <td><span style="font-size:0.8em">${sourceLabel}</span></td>
+          <td><span style="color:${statusColor};font-weight:700">${statusLabel}</span></td>
+          <td style="font-size:0.8em;color:#888">${time}</td>
+          <td>
+            ${r.status === 'pending' ? `<button onclick="deleteNotify(${r.id})" style="font-size:0.75rem;padding:2px 6px;cursor:pointer">刪除</button>` : ''}
+          </td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = `<div style="color:#c5221f">載入失敗：${e}</div>`;
+    }
+  }
+
+  async function deleteNotify(id) {
+    if (!confirm('確定要刪除這筆通知記錄嗎？')) return;
+    await fetch(`/admin/notify/${id}`, { method: 'DELETE' });
+    loadNotify();
+  }
+
   // ── 回饋金 ─────────────────────────────────────
   async function loadRebate() {
     const wrap = document.getElementById('rebate-wrap');
@@ -1642,6 +1718,7 @@
   loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
   scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
   loadNewProducts();               // 載入待審核新品項
+  loadNotify();                    // 載入到貨通知
   loadRebate();                    // 載入回饋金
   loadGroups();                    // 載入群組管理
   loadTakeoverPanel();

@@ -2432,6 +2432,29 @@ async def admin_recent_customers():
         return []
 
 
+# ── 到貨通知管理 ──────────────────────────────────────────
+@app.get("/admin/notify")
+async def admin_notify_list():
+    """取得全部到貨通知記錄"""
+    records = notify_store.get_all()
+    # 附加客戶名稱
+    for r in records:
+        cust = customer_store.get_by_line_id(r["user_id"])
+        r["customer_name"] = (cust.get("real_name") or cust.get("display_name") or r["user_id"][:10]) if cust else r["user_id"][:10]
+    return records
+
+@app.put("/admin/notify/{notify_id}")
+async def admin_notify_update(notify_id: int, qty_wanted: int = None, source: str = None):
+    """更新到貨通知"""
+    notify_store.update(notify_id, qty_wanted=qty_wanted, source=source)
+    return {"ok": True}
+
+@app.delete("/admin/notify/{notify_id}")
+async def admin_notify_delete(notify_id: int):
+    """刪除到貨通知"""
+    notify_store.delete(notify_id)
+    return {"ok": True}
+
 # ── 回饋金 ──────────────────────────────────────────────
 @app.get("/admin/rebate")
 async def admin_rebate():
