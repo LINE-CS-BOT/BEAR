@@ -120,6 +120,30 @@ class NotifyStore:
             )
             return cur.rowcount > 0
 
+    def get_all(self) -> list[dict]:
+        """取得全部記錄（admin 介面用）"""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM notify ORDER BY status ASC, created_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update(self, notify_id: int, qty_wanted: int = None, source: str = None) -> bool:
+        """更新通知記錄"""
+        with sqlite3.connect(DB_PATH) as conn:
+            if qty_wanted is not None:
+                conn.execute("UPDATE notify SET qty_wanted=? WHERE id=?", (qty_wanted, notify_id))
+            if source is not None:
+                conn.execute("UPDATE notify SET source=? WHERE id=?", (source, notify_id))
+            return True
+
+    def delete(self, notify_id: int) -> bool:
+        """刪除記錄"""
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute("DELETE FROM notify WHERE id=?", (notify_id,))
+            return cur.rowcount > 0
+
     def count_pending(self) -> int:
         """目前等待通知的總筆數（所有來源）"""
         with sqlite3.connect(DB_PATH) as conn:
