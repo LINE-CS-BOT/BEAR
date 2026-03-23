@@ -42,10 +42,15 @@ def check_and_followup(line_api) -> dict:
         print(f"[followup] 清除過期狀態: {user_id}")
 
     # ── 24小時未回 → 提醒 ─────────────────────────────────
+    from main import _push_quota_exhausted, _is_quota_429, _mark_push_exhausted
+
     for entry in persistent_state_store.get_need_remind():
         user_id = entry["user_id"]
         action  = entry["action"]
         text    = _REMIND_TEXT.get(action, _DEFAULT_REMIND)
+        if _push_quota_exhausted:
+            print(f"[followup] 月額度已用完，跳過提醒 {user_id}", flush=True)
+            continue
         try:
             line_api.push_message(PushMessageRequest(
                 to=user_id,
@@ -55,6 +60,9 @@ def check_and_followup(line_api) -> dict:
             reminded += 1
             print(f"[followup] 提醒送出: {user_id} ({action})")
         except Exception as e:
-            print(f"[followup] 提醒失敗: {user_id} → {e}")
+            if _is_quota_429(e):
+                _mark_push_exhausted()
+            else:
+                print(f"[followup] 提醒失敗: {user_id} → {e}")
 
     return {"reminded": reminded, "expired": expired}
