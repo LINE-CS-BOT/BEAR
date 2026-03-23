@@ -265,9 +265,24 @@ def handle_spec_inquiry_qty(group_id: str, text: str, line_api) -> str | None:
     else:
         return f"❌ {name}（{prod_code}）訂單建立失敗"
 
-def _push_arrival_msg(uid: str, prod_name: str, prod_code: str, qty: int, line_api) -> bool:
-    """push 到貨通知給單一客戶，回傳是否成功"""
-    msg = f"您的訂單 {prod_name}（{prod_code}）× {qty} 已經到貨喔"
+def _push_arrival_msg(uid: str, prod_name: str, prod_code: str, qty: int, source: str = "staff", line_api=None) -> bool:
+    """push 到貨通知給單一客戶，根據 source 用不同模板"""
+    if source == "staff":
+        # 內部群登記：訂購到貨格式
+        item = ecount_client.get_product_cache_item(prod_code)
+        box_qty = (item.get("box_qty") or 0) if item else 0
+        if box_qty > 1 and qty >= box_qty and qty % box_qty == 0:
+            qty_display = f"{qty // box_qty}箱"
+        else:
+            qty_display = f"{qty}個"
+        msg = (
+            f"老闆您好，您之前訂的貨已經到了\n"
+            f"{prod_name}（{prod_code}）× {qty_display}"
+        )
+    else:
+        # 客戶自己登記：到貨通知格式
+        from handlers.tone import restock_back_in_stock
+        msg = restock_back_in_stock(name=prod_name, code=prod_code)
     try:
         line_api.push_message(
             PushMessageRequest(to=uid, messages=[TextMessage(text=msg)])
@@ -327,7 +342,8 @@ def handle_internal_arrival(text: str, line_api: MessagingApi) -> str | None:
             pending_rows = notify_store.get_pending_by_code(prod_code, source="staff")
             entry = next((r for r in pending_rows if r["user_id"] == uid), None)
             qty   = entry["qty_wanted"] if entry else 1
-            ok    = _push_arrival_msg(uid, prod_name, prod_code, qty, line_api)
+            source = entry.get("source", "staff") if entry else "staff"
+            ok    = _push_arrival_msg(uid, prod_name, prod_code, qty, source, line_api)
             if ok:
                 if entry:
                     notify_store.mark_notified(entry["id"])
@@ -348,22 +364,25 @@ def handle_internal_arrival(text: str, line_api: MessagingApi) -> str | None:
     results = []
     for raw_code in codes:
         prod_code = raw_code.upper()
-        pending   = notify_store.get_pending_by_code(prod_code, source="staff")
-        if not pending:
+        # 取全部 pending（staff + customer）
+        all_pending = notify_store.get_pending_by_code(prod_code, source="staff")
+        all_pending += notify_store.get_pending_by_code(prod_code, source="customer")
+        if not all_pending:
             results.append(f"📦 {prod_code}：沒有待通知的客戶")
             continue
 
         item      = ecount_client.lookup(prod_code)
         prod_name = (item["name"] if item else "") or prod_code
         notified  = 0
-        for entry in pending:
+        for entry in all_pending:
             uid = entry["user_id"]
             qty = entry["qty_wanted"]
-            ok  = _push_arrival_msg(uid, prod_name, prod_code, qty, line_api)
+            source = entry.get("source", "customer")
+            ok = _push_arrival_msg(uid, prod_name, prod_code, qty, source, line_api)
             if ok:
                 notify_store.mark_notified(entry["id"])
                 notified += 1
-                print(f"[internal] 到貨通知(staff): {prod_code} → {uid}")
+                print(f"[internal] 到貨通知({source}): {prod_code} → {uid}")
 
         results.append(f"📦 {prod_code}：已通知 {notified} 位客戶")
 
