@@ -2457,9 +2457,10 @@ async def admin_notify_list():
     return records
 
 @app.put("/admin/notify/{notify_id}")
-async def admin_notify_update(notify_id: int, qty_wanted: int = None, source: str = None):
+async def admin_notify_update(notify_id: int, request: Request):
     """更新到貨通知"""
-    notify_store.update(notify_id, qty_wanted=qty_wanted, source=source)
+    body = await request.json()
+    notify_store.update(notify_id, **body)
     return {"ok": True}
 
 @app.delete("/admin/notify/{notify_id}")

@@ -1585,7 +1585,7 @@
           <td><span style="color:${statusColor};font-weight:700">${statusLabel}</span></td>
           <td style="font-size:0.8em;color:#888">${time}</td>
           <td style="white-space:nowrap">
-            ${isPending ? `<button onclick="editNotify(${r.id}, ${r.qty_wanted}, '${r.unit}', ${r.box_qty})" style="font-size:0.75rem;padding:2px 6px;cursor:pointer">修改</button> <button onclick="deleteNotify(${r.id})" style="font-size:0.75rem;padding:2px 6px;cursor:pointer;color:#c62828">刪除</button>` : ''}
+            ${isPending ? `<button onclick="editNotify(${r.id}, ${r.qty_wanted}, '${r.unit}', ${r.box_qty}, '${r.prod_code}', '${(r.prod_name||'').replace(/'/g,"\\'")}')" style="font-size:0.75rem;padding:2px 6px;cursor:pointer">修改</button> <button onclick="deleteNotify(${r.id})" style="font-size:0.75rem;padding:2px 6px;cursor:pointer;color:#c62828">刪除</button>` : ''}
           </td>
         </tr>`;
       }
@@ -1596,15 +1596,51 @@
     }
   }
 
-  async function editNotify(id, currentQty, unit, boxQty) {
-    const currentDisplay = (unit === '箱' && boxQty > 1) ? (currentQty / boxQty) : currentQty;
-    const input = prompt(`修改數量（目前 ${currentDisplay}${unit}）：\n輸入數字，例如 3`, currentDisplay);
-    if (!input) return;
-    const newVal = parseInt(input);
-    if (isNaN(newVal) || newVal <= 0) { alert('請輸入有效數字'); return; }
-    // 如果單位是箱，換算回個數
-    const newQty = (unit === '箱' && boxQty > 1) ? newVal * boxQty : newVal;
-    await fetch(`/admin/notify/${id}?qty_wanted=${newQty}`, { method: 'PUT' });
+  async function editNotify(id, currentQty, unit, boxQty, prodCode, prodName) {
+    const d = document.createElement('div');
+    d.innerHTML = `
+      <div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999;display:flex;align-items:center;justify-content:center" id="notify-modal">
+        <div style="background:#fff;border-radius:12px;padding:24px;min-width:320px;max-width:90vw">
+          <h3 style="margin:0 0 16px">修改到貨通知</h3>
+          <label style="display:block;margin-bottom:10px">
+            產品編碼：<input id="nm-code" value="${prodCode}" style="width:100%;padding:6px;margin-top:4px;border:1px solid #ccc;border-radius:4px">
+          </label>
+          <label style="display:block;margin-bottom:10px">
+            產品名稱：<input id="nm-name" value="${prodName.replace(/"/g,'&quot;')}" style="width:100%;padding:6px;margin-top:4px;border:1px solid #ccc;border-radius:4px">
+          </label>
+          <div style="display:flex;gap:10px;margin-bottom:10px">
+            <label style="flex:1">
+              數量：<input id="nm-qty" type="number" min="1" value="${currentQty}" style="width:100%;padding:6px;margin-top:4px;border:1px solid #ccc;border-radius:4px">
+            </label>
+            <label style="flex:1">
+              單位：<select id="nm-unit" style="width:100%;padding:6px;margin-top:4px;border:1px solid #ccc;border-radius:4px">
+                <option value="個" ${unit==='個'?'selected':''}>個</option>
+                <option value="箱" ${unit==='箱'?'selected':''}>箱（×${boxQty || '?'}）</option>
+              </select>
+            </label>
+          </div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+            <button onclick="document.getElementById('notify-modal').remove()" style="padding:6px 16px;cursor:pointer">取消</button>
+            <button onclick="submitNotifyEdit(${id}, ${boxQty})" style="padding:6px 16px;cursor:pointer;background:#1a73e8;color:#fff;border:none;border-radius:4px">確認</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(d);
+  }
+
+  async function submitNotifyEdit(id, boxQty) {
+    const code = document.getElementById('nm-code').value.trim();
+    const name = document.getElementById('nm-name').value.trim();
+    const qty = parseInt(document.getElementById('nm-qty').value);
+    const unit = document.getElementById('nm-unit').value;
+    if (!code || !name || isNaN(qty) || qty <= 0) { alert('請填寫完整'); return; }
+    const actualQty = (unit === '箱' && boxQty > 1) ? qty * boxQty : qty;
+    await fetch(`/admin/notify/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prod_code: code.toUpperCase(), prod_name: name, qty_wanted: actualQty })
+    });
+    document.getElementById('notify-modal').remove();
     loadNotify();
   }
 
