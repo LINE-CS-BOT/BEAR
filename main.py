@@ -675,12 +675,18 @@ def _txt_buf_flush(user_id: str) -> None:
             ack = None
             if img_pc:
                 from services.ecount import ecount_client as _ec
+                _ec._ensure_product_cache()
                 _gi = _ec.lookup(img_pc)
                 if _gi:
                     from handlers.internal import _format_po, _fmt_stock_lines
                     _po = _format_po(img_pc)
                     _stock = _fmt_stock_lines(_gi)
                     ack = f"{_po}\n{_stock}"
+                else:
+                    # lookup 失敗（available.json 過期等）→ 只回品名+貨號
+                    _cache = _ec.get_product_cache_item(img_pc)
+                    _name = (_cache.get("name") if _cache else None) or img_pc
+                    ack = f"📦 {_name}（{img_pc}）\n（庫存資料暫時無法取得）"
 
             if not ack:
                     # ── 新增品項觸發 ──
