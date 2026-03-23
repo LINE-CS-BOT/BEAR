@@ -2436,11 +2436,24 @@ async def admin_recent_customers():
 @app.get("/admin/notify")
 async def admin_notify_list():
     """取得全部到貨通知記錄"""
+    from services.ecount import ecount_client
     records = notify_store.get_all()
-    # 附加客戶名稱
     for r in records:
+        # 附加客戶名稱
         cust = customer_store.get_by_line_id(r["user_id"])
         r["customer_name"] = (cust.get("real_name") or cust.get("display_name") or r["user_id"][:10]) if cust else r["user_id"][:10]
+        # 附加單位顯示
+        item = ecount_client.get_product_cache_item(r["prod_code"])
+        box_qty = (item.get("box_qty") or 0) if item else 0
+        qty = r["qty_wanted"]
+        if box_qty > 1 and qty >= box_qty and qty % box_qty == 0:
+            r["qty_display"] = f"{qty // box_qty}箱"
+            r["unit"] = "箱"
+            r["box_qty"] = box_qty
+        else:
+            r["qty_display"] = f"{qty}個"
+            r["unit"] = "個"
+            r["box_qty"] = box_qty
     return records
 
 @app.put("/admin/notify/{notify_id}")
