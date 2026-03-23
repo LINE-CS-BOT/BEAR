@@ -1000,7 +1000,7 @@ async def _check_restock_notifications():
     """
     from services.ecount import ecount_client
 
-    pending = notify_store.get_pending()
+    pending = notify_store.get_pending(source=None)  # 全部（客戶+內部群登記）
     if not pending:
         print("[notify] 無等待通知記錄")
         return
@@ -1016,10 +1016,33 @@ async def _check_restock_notifications():
                 result = ecount_client.lookup(record["prod_code"])
                 qty = result.get("qty") if result else None
                 if qty and qty > 0:
-                    msg = tone.restock_back_in_stock(
-                        name=record["prod_name"],
-                        code=record["prod_code"],
-                    )
+                    source = record.get("source", "customer")
+                    qty_wanted = record.get("qty_wanted", 1)
+
+                    if source == "staff":
+                        # 內部群登記：用訂購格式通知
+                        # 換算箱數顯示
+                        item = ecount_client.get_product_cache_item(record["prod_code"])
+                        box_qty = (item.get("box_qty") or 0) if item else 0
+                        if box_qty > 1 and qty_wanted >= box_qty and qty_wanted % box_qty == 0:
+                            qty_display = f"{qty_wanted // box_qty}箱"
+                        else:
+                            qty_display = f"{qty_wanted}個"
+                        # 取客戶真實姓名
+                        cust = customer_store.get_by_line_id(record["user_id"])
+                        cust_name = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
+                        greeting = f"{cust_name}老闆" if cust_name else "老闆"
+                        msg = (
+                            f"{greeting}您好，您之前訂的貨已經到了\n"
+                            f"　{record['prod_name']}（{record['prod_code']}）× {qty_display}"
+                        )
+                    else:
+                        # 客戶自己登記：用原本的到貨通知格式
+                        msg = tone.restock_back_in_stock(
+                            name=record["prod_name"],
+                            code=record["prod_code"],
+                        )
+
                     line_api.push_message(
                         PushMessageRequest(
                             to=record["user_id"],
@@ -1030,7 +1053,7 @@ async def _check_restock_notifications():
                     notified_count += 1
                     print(
                         f"[notify] OK 已通知 {record['user_id'][:10]}... "
-                        f"-> {record['prod_name']} 庫存={qty}"
+                        f"-> {record['prod_name']} 庫存={qty} (source={source})"
                     )
                 else:
                     print(
