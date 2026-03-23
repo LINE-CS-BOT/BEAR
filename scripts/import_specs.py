@@ -76,26 +76,29 @@ def parse_specs(text: str) -> dict:
             if not line:
                 continue
 
-            # 編號（支援「編號：」「產品編號：」「商品編號：」）
-            m = re.match(r"(?:產品|商品)?編號[：:](.+)", line)
+            # 去除行首 emoji/符號，方便匹配
+            _clean = re.sub(r'^[\U0001f300-\U0001faff\u2600-\u27bf\u2702-\u27b0‼️⁉️*✨⭐️🔥💥⚠️🎉❤️]+\s*', '', line)
+
+            # 編號（支援「編號：」「產品編號：」「商品編號：」「貨號：」）
+            m = re.match(r"(?:產品|商品)?(?:編號|貨號)[：:](.+)", _clean)
             if m:
                 code = m.group(1).strip()
                 continue
 
             # 建議台型
-            m = re.match(r"建議[：:](.+)", line)
+            m = re.match(r"建議[：:](.+)", _clean)
             if m:
                 machine = m.group(1).strip()
                 continue
 
             # 品名（多種格式：「品名：」或「品名」不含冒號）
-            m = re.match(r"品名[：:]?(.+)", line)
+            m = re.match(r"品名[：:]?(.+)", _clean)
             if m:
                 name = m.group(1).strip()
                 continue
 
             # 尺寸（支援「尺寸-」「尺寸：」「包裝尺寸-」「外盒尺寸」「產品尺寸：」）
-            m = re.match(r"(?:產品|包裝|外盒)?尺寸[-：: 約]*(.*)", line)
+            m = re.match(r"(?:產品|包裝|外盒)?尺寸[-：: 約]*(.*)", _clean)
             if m:
                 val = m.group(1).strip()
                 if val:
@@ -104,19 +107,32 @@ def parse_specs(text: str) -> dict:
                     # 尺寸標籤後面沒值，取下一行
                     size = block_lines[i + 1].strip()
                 continue
+            # 尺寸 fallback：行內含「N*N*N公分」或「N×N×N cm」格式
+            if not size:
+                m_size_fb = re.search(r'(\d+(?:\.\d+)?\s*[*×xX]\s*\d+(?:\.\d+)?(?:\s*[*×xX]\s*\d+(?:\.\d+)?)?)\s*(?:公分|cm|CM)', line)
+                if m_size_fb:
+                    size = m_size_fb.group(0).strip()
+                    continue
 
-            # 重量（支援「重量：」「產品重量：」）
-            m = re.match(r"(?:產品)?重量[：: ]*(.+)", line)
+            # 重量（支援「重量：」「產品重量：」「單盒重量：」「單顆重量：」）
+            m = re.match(r"(?:產品|單盒|單顆)?重量[：: ]*(.+)", _clean)
             if m:
                 weight = m.group(1).strip()
                 # 去除「約：」「約」前綴
                 weight = re.sub(r"^約[：:]?\s*", "", weight).strip()
                 # 去除重量後面的備註文字（如「260公克不易脫爪」→「260公克」）
-                weight = re.sub(r"(\d+(?:\.\d+)?(?:公克|g|kg|公斤)).*", r"\1", weight)
+                weight = re.sub(r"(\d+(?:\.\d+)?(?:公克|克|g|kg|公斤)).*", r"\1", weight)
                 continue
+            # 重量 fallback：行內含「約N克」「約Ng」格式
+            if not weight:
+                m_wt_fb = re.search(r'約?\s*(\d+(?:\.\d+)?)\s*(?:公克|克|g|kg|公斤)', line)
+                if m_wt_fb:
+                    weight = m_wt_fb.group(0).strip()
+                    weight = re.sub(r"^約\s*", "", weight).strip()
+                    continue
 
-            # 價格（格式變化多：「價格：」「價格:」「售價：」「單盒特價：」）
-            m = re.match(r"(?:價格|售價|單盒特價|特價)[：:](.+)", line)
+            # 價格（格式變化多：「價格：」「售價：」「單盒特價：」「批價：」「零售價：」）
+            m = re.match(r"(?:價格|售價|單盒特價|特價|批價|零售價)[：:](.+)", _clean)
             if m:
                 price = m.group(1).strip()
                 continue

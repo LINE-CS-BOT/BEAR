@@ -423,6 +423,29 @@ def _media_buf_flush(user_id: str) -> None:
     media    = entry["media"]
     group_id = entry["group_id"]
 
+    # ── 防 race condition：如果 txt_buffer 裡還有待處理的上架指令，
+    #    把媒體塞回去讓 txt_buf_flush 一起處理 ──
+    with _txt_buffer_lock:
+        txt_entry = _txt_buffer.get(user_id)
+        if txt_entry:
+            txt_combined = "\n".join(txt_entry["lines"])
+            if "上架" in txt_combined or "存圖" in txt_combined or "加圖" in txt_combined:
+                # 塞回 media_buf（不設 timer，等 txt_buf_flush pop）
+                with _media_buf_lock:
+                    _media_buf[user_id] = entry
+                    _media_buf[user_id]["timer"] = _threading.Timer(0, lambda: None)
+                print(f"[media-buf] txt_buffer 有上架指令待處理，媒體等合併", flush=True)
+                return
+
+    # ── 如果 upload session 已啟動（txt_buf_flush 先跑完），直接追加 ──
+    _st = state_manager.get(user_id)
+    if _st and _st.get("action") == "uploading":
+        for m in media:
+            handle_internal_upload_add_media(user_id, m["msg_id"], m["type"])
+        _upload_timer_reset(user_id, group_id, entry.get("reply_token"))
+        print(f"[media-buf] upload session 進行中，媒體已追加", flush=True)
+        return
+
     line_api = _line_api
     reply_token = entry.get("reply_token")
     if len(media) == 1 and media[0]["type"] == "image":
@@ -581,6 +604,7 @@ def _txt_buf_flush(user_id: str) -> None:
         if context == "group":
             # 上架 session：per-user（各人獨立上架）
             upload_state = state_manager.get(user_id)
+            print(f"[txt-buf] 內部群 flush: user={user_id[:10]}... upload_state={upload_state.get('action') if upload_state else None} combined={combined[:30]!r}", flush=True)
             # 訂單 state：per-group（任何人都能接下「客戶名 N個」）
             group_order_state = state_manager.get(group_id)
 
@@ -2810,6 +2834,27 @@ def on_message(event: MessageEvent):
         if (source_type == "group"
                 and settings.LINE_GROUP_ID
                 and event.source.group_id == settings.LINE_GROUP_ID):
+            # 上架 session 進行中 → 跳過 quick_reply，所有文字都當上架內容
+            _up_st = state_manager.get(user_id)
+            if _up_st and _up_st.get("action") == "uploading":
+                _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+                print(f"[on_msg] 上架中收到文字，跳過 quick_reply: {text[:30]!r}", flush=True)
+                _txt_buf_add(user_id, text, "group", event.source.group_id,
+                             reply_token=event.reply_token)
+                return
+            # 訊息本身或 buffer 含上架/存文/存圖/加圖 → 跳過 quick_reply
+            _skip_quick = any(kw in text for kw in ("上架", "存圖", "加圖", "存文"))
+            if not _skip_quick:
+                with _txt_buffer_lock:
+                    _pending = _txt_buffer.get(user_id)
+                    if _pending:
+                        _pending_text = "\n".join(_pending["lines"])
+                        _skip_quick = any(kw in _pending_text for kw in ("上架", "存圖", "加圖", "存文"))
+            if _skip_quick:
+                print(f"[on_msg] 含上架指令，跳過 quick_reply: {text[:30]!r}", flush=True)
+                _txt_buf_add(user_id, text, "group", event.source.group_id,
+                             reply_token=event.reply_token)
+                return
             # 簡單查詢指令：直接 reply 不走 buffer（避免 token 過期）
             from handlers.internal import handle_internal_spec_query as _spec_q
             _quick_reply = (
@@ -3544,3 +3589,4 @@ def _dispatch(
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+# reload trigger
