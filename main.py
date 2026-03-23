@@ -745,19 +745,6 @@ def _txt_buf_flush(user_id: str) -> None:
                             img_pcs.append(_pc)
                 img_pc = img_pcs[0] if img_pcs else None
 
-                # ── 補圖指令：「補圖 Z3278」+ 圖片 → 存到產品資料夾 ──────
-                _add_img_m = re.match(r'補圖\s+([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', combined.strip(), re.IGNORECASE)
-                if _add_img_m and img_e:
-                    _add_code = _add_img_m.group(1).upper()
-                    msg_ids = img_e.get("msg_ids", [img_e["msg_id"]] if img_e.get("msg_id") else [])
-                    from handlers.internal import handle_internal_add_images
-                    media_items = [{"type": "image", "msg_id": mid} for mid in msg_ids]
-                    ack = handle_internal_add_images(_add_code, media_items)
-                    _send_reply(reply_token, user_id, ack, line_api)
-                    reply_text = None
-                    img_pc = None
-                    img_pcs = []
-
                 # ── 多張圖片 + 「各X」→ 批次加入購物車 ──────────────
                 _each_m = re.search(r'各\s*(\d+)\s*(?:個|箱|件|盒|套|組)?', combined) if img_pcs else None
                 if len(img_pcs) > 1 and _each_m and not current_state:
