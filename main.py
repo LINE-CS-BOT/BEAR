@@ -1043,10 +1043,10 @@ async def _check_restock_notifications():
 
 
 async def _restock_notify_loop():
-    """每日 20:00 執行到貨通知"""
+    """每日 21:00 執行到貨通知"""
     while True:
         now = datetime.now()
-        target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        target = now.replace(hour=21, minute=0, second=0, microsecond=0)
         if now >= target:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
