@@ -1028,13 +1028,9 @@ async def _check_restock_notifications():
                             qty_display = f"{qty_wanted // box_qty}箱"
                         else:
                             qty_display = f"{qty_wanted}個"
-                        # 取客戶真實姓名
-                        cust = customer_store.get_by_line_id(record["user_id"])
-                        cust_name = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
-                        greeting = f"{cust_name}老闆" if cust_name else "老闆"
                         msg = (
-                            f"{greeting}您好，您之前訂的貨已經到了\n"
-                            f"　{record['prod_name']}（{record['prod_code']}）× {qty_display}"
+                            f"老闆您好，您之前訂的貨已經到了\n"
+                            f"{record['prod_name']}（{record['prod_code']}）× {qty_display}"
                         )
                     else:
                         # 客戶自己登記：用原本的到貨通知格式
