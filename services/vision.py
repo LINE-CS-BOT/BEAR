@@ -242,7 +242,7 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         query_phash = _imagehash.phash(img)
-        query_ahash = _imagehash.average_hash(img)
+        query_chash = _imagehash.colorhash(img)
 
         with open(HASH_DB_PATH, encoding="utf-8") as f:
             db: list[dict] = json.load(f)
@@ -253,6 +253,7 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
         best_code = None
         best_diff = 999
 
+        # 第一輪：pHash 比對
         for entry in db:
             stored_p = _imagehash.hex_to_hash(entry["hash"])
             diff = query_phash - stored_p
@@ -261,12 +262,33 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
                 best_code = entry["code"]
 
         if best_diff <= HASH_THRESHOLD:
-            print(f"[vision] Hash 高可信 → {best_code}（差值={best_diff}，閾值={HASH_THRESHOLD}）")
+            print(f"[vision] pHash 高可信 → {best_code}（差值={best_diff}，閾值={HASH_THRESHOLD}）")
+            return best_code, best_diff
         elif best_diff <= HASH_THRESHOLD_WEAK:
-            print(f"[vision] Hash 弱命中 → {best_code}（差值={best_diff}，僅在 OCR 無結果時採用）")
-        else:
-            print(f"[vision] Hash 無匹配（最近={best_code}，差值={best_diff}）")
+            print(f"[vision] pHash 弱命中 → {best_code}（差值={best_diff}，僅在 OCR 無結果時採用）")
+            return best_code, best_diff
 
+        # 第二輪：pHash 失敗 → colorhash 補救
+        import numpy as _np
+        query_ch_flat = query_chash.hash.flatten().tolist()
+        ch_best_code = None
+        ch_best_diff = 999
+        for entry in db:
+            stored_ch = entry.get("chash")
+            if not stored_ch or not isinstance(stored_ch, list):
+                continue
+            # 比對：計算不同 bit 數
+            diff_c = sum(a != b for a, b in zip(query_ch_flat, stored_ch))
+            if diff_c < ch_best_diff:
+                ch_best_diff = diff_c
+                ch_best_code = entry["code"]
+
+        if ch_best_diff <= 2:
+            # colorhash 高可信（diff≤2 = 顏色分佈幾乎相同）
+            print(f"[vision] colorHash 補救命中 → {ch_best_code}（差值={ch_best_diff}）")
+            return ch_best_code, ch_best_diff
+
+        print(f"[vision] 無匹配（pHash 最近={best_code}/{best_diff}，colorHash 最近={ch_best_code}/{ch_best_diff}）")
         return best_code, best_diff
 
     except Exception as e:
