@@ -241,7 +241,8 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
 
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        query_hash = _imagehash.phash(img)
+        query_phash = _imagehash.phash(img)
+        query_ahash = _imagehash.average_hash(img)
 
         with open(HASH_DB_PATH, encoding="utf-8") as f:
             db: list[dict] = json.load(f)
@@ -253,18 +254,18 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
         best_diff = 999
 
         for entry in db:
-            stored = _imagehash.hex_to_hash(entry["hash"])
-            diff   = query_hash - stored
+            stored_p = _imagehash.hex_to_hash(entry["hash"])
+            diff = query_phash - stored_p
             if diff < best_diff:
                 best_diff = diff
                 best_code = entry["code"]
 
         if best_diff <= HASH_THRESHOLD:
-            print(f"[vision] pHash 高可信 → {best_code}（差值={best_diff}，閾值={HASH_THRESHOLD}）")
+            print(f"[vision] Hash 高可信 → {best_code}（差值={best_diff}，閾值={HASH_THRESHOLD}）")
         elif best_diff <= HASH_THRESHOLD_WEAK:
-            print(f"[vision] pHash 弱命中 → {best_code}（差值={best_diff}，僅在 OCR 無結果時採用）")
+            print(f"[vision] Hash 弱命中 → {best_code}（差值={best_diff}，僅在 OCR 無結果時採用）")
         else:
-            print(f"[vision] pHash 無匹配（最近={best_code}，差值={best_diff}）")
+            print(f"[vision] Hash 無匹配（最近={best_code}，差值={best_diff}）")
 
         return best_code, best_diff
 
