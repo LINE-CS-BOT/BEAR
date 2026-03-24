@@ -283,10 +283,13 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
                 ch_best_diff = diff_c
                 ch_best_code = entry["code"]
 
-        if ch_best_diff <= 2:
-            # colorhash 高可信（diff≤2 = 顏色分佈幾乎相同）
-            print(f"[vision] colorHash 補救命中 → {ch_best_code}（差值={ch_best_diff}）")
+        if ch_best_diff <= 2 and best_diff <= 20:
+            # colorhash 補救：顏色分佈幾乎相同 + pHash 不能差太遠（≤20）
+            # 避免色調相似但完全不同的產品被誤判
+            print(f"[vision] colorHash 補救命中 → {ch_best_code}（色差={ch_best_diff}，pHash={best_diff}）")
             return ch_best_code, ch_best_diff
+        elif ch_best_diff <= 2:
+            print(f"[vision] colorHash 色調相近但 pHash 差太遠（{best_diff}），不採用 {ch_best_code}")
 
         print(f"[vision] 無匹配（pHash 最近={best_code}/{best_diff}，colorHash 最近={ch_best_code}/{ch_best_diff}）")
         return best_code, best_diff
