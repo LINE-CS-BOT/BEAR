@@ -3245,7 +3245,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
     bar_code   = bar_code_m.group(1) if bar_code_m else prod_cd  # 預設條碼 = 品項編碼（貨號）
 
     # 售價 / 賣價 / 出庫單價（含簡寫「售299」「售:299」「299元」，以及裸數字行）
-    out_price_m = re.search(r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元?', flat)
+    out_price_m = re.search(r'(?:產品售價|售價|賣價|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元?', flat)
     if not out_price_m:
         # fallback：數字+元（如「299元」）
         out_price_m = re.search(r'(?:^|\s)([\d.]+)\s*元(?:\s|$)', flat)
@@ -3273,20 +3273,25 @@ def _parse_new_product_fields(text: str) -> dict | None:
         unit_bare_m = re.search(rf'(?:^|\s)({_UNIT_WORDS_NP})(?:\s|$)', flat)
         unit = unit_bare_m.group(1) if unit_bare_m else "個"
 
-    # 品名：從貨號後開始，剝除所有已識別欄位
-    name_part = flat[m_code.end():]
-    for strip_pat in [
-        r'條碼\s*[:：]?\s*\S+',
-        r'(?:售價|賣價|出庫單價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+\s*元?',
-        r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
-        r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
-        rf'單位\s*[:：]?\s*(?:{_UNIT_WORDS_NP})',
-        rf'(?:^|\s)(?:{_UNIT_WORDS_NP})(?:\s|$)',
-        r'品名\s*[:：]?\s*',
-        r'(?:^|\s)[\d.]+\s*元?(?=\s|$)',  # 裸數字+元（售價 fallback）
-    ]:
-        name_part = re.sub(strip_pat, ' ', name_part)
-    prod_name = name_part.strip()
+    # 品名：優先從「品名：」「產品名稱：」標籤取值
+    name_label_m = re.search(r'(?:產品名稱|品名)\s*[:：]\s*(.+?)(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|出庫|入庫|加盟|單位|規格)|$)', flat)
+    if name_label_m:
+        prod_name = name_label_m.group(1).strip()
+    else:
+        # fallback：從貨號後開始，剝除所有已識別欄位
+        name_part = flat[m_code.end():]
+        for strip_pat in [
+            r'條碼\s*[:：]?\s*\S+',
+            r'(?:產品售價|售價|賣價|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+\s*元?',
+            r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
+            r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
+            rf'單位\s*[:：]?\s*(?:{_UNIT_WORDS_NP})',
+            rf'(?:^|\s)(?:{_UNIT_WORDS_NP})(?:\s|$)',
+            r'(?:產品名稱|品名)\s*[:：]?\s*',
+            r'(?:^|\s)[\d.]+\s*元?(?=\s|$)',  # 裸數字+元（售價 fallback）
+        ]:
+            name_part = re.sub(strip_pat, ' ', name_part)
+        prod_name = name_part.strip()
 
     if not prod_name:
         return None  # 品名必填
