@@ -569,7 +569,13 @@
   <div class="card">
     <div class="report-toolbar">
       <div class="card-label" style="margin-bottom:0">📬 到貨通知管理</div>
-      <button class="btn-refresh" onclick="loadNotify()">🔄 重新載入</button>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <input id="notify-search" type="text" placeholder="搜尋客戶/產品編號/品名"
+               style="padding:4px 10px;border:1px solid #ccc;border-radius:6px;font-size:0.85rem;width:200px"
+               onkeydown="if(event.key==='Enter')loadNotify()">
+        <button class="btn-refresh" onclick="loadNotify()">🔍 搜尋</button>
+        <button class="btn-refresh" onclick="document.getElementById('notify-search').value='';loadNotify()">🔄 全部</button>
+      </div>
     </div>
     <div id="notify-wrap" style="margin-top:14px">
       <div style="color:#bbb;font-size:0.85rem">載入中...</div>
@@ -1541,7 +1547,9 @@
     const wrap = document.getElementById('notify-wrap');
     wrap.innerHTML = '<span class="spinner"></span> 載入中…';
     try {
-      const res = await fetch('/admin/notify');
+      const q = (document.getElementById('notify-search')?.value || '').trim();
+      const params = q ? `?q=${encodeURIComponent(q)}` : '';
+      const res = await fetch('/admin/notify' + params);
       const data = await res.json();
 
       if (!data.length) {
