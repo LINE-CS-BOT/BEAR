@@ -54,7 +54,7 @@ from handlers.internal import (
     handle_internal_add_images, handle_internal_save_text,
     handle_internal_upload_start, handle_internal_upload_add_media,
     handle_internal_upload_text, handle_internal_upload_finish,
-    handle_ambiguous_resolve, handle_name_order_confirm,
+    handle_ambiguous_resolve, handle_name_order_confirm, handle_new_customer_confirm,
     handle_internal_new_product,
     _split_new_product_entries,
     handle_internal_spec_inquiry, handle_spec_inquiry_reply, handle_spec_inquiry_qty,
@@ -537,6 +537,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or handle_internal_arrival(combined, line_api)
         or handle_ambiguous_resolve(group_id, combined)
         or handle_name_order_confirm(group_id, combined)
+        or handle_new_customer_confirm(group_id, combined)
         or handle_internal_order(combined, line_api, group_id=group_id)
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
@@ -1083,6 +1084,33 @@ async def _rebate_sync_loop():
             print(f"[rebate/unfulfilled] 自動同步失敗: {e}")
 
 
+async def _sync_ecount_customers_loop():
+    """每日 13:00 自動同步 Ecount 客戶名單"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=13, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            import subprocess as _sp
+            _python = _sys.executable
+            _root = str(Path(__file__).parent)
+            _flags = _sp.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
+            print("[cust-sync] 每日 13:00 自動同步 Ecount 客戶名單...")
+            proc = await asyncio.to_thread(
+                _sp.run, [_python, "-m", "scripts.sync_cust_from_web"],
+                cwd=_root, capture_output=True, timeout=300, creationflags=_flags,
+            )
+            if proc.returncode == 0:
+                print("[cust-sync] 同步完成", flush=True)
+            else:
+                stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
+                print(f"[cust-sync] 同步失敗: {stderr}", flush=True)
+        except Exception as e:
+            print(f"[cust-sync] 同步失敗: {e}", flush=True)
+
+
 async def _queue_processor_loop():
     """每日 10:00 處理離峰佇列"""
     while True:
@@ -1119,7 +1147,11 @@ async def _check_restock_notifications():
             try:
                 result = ecount_client.lookup(record["prod_code"])
                 qty = result.get("qty") if result else None
-                if qty and qty > 0:
+                balance = result.get("balance") or 0 if result else 0
+                unfilled = result.get("unfilled") or 0 if result else 0
+                # 條件1: 可售>0 || 條件2: 可售=0 但倉庫有貨且全部被訂單佔住（balance>0 且 balance==unfilled）
+                _should_notify = (qty and qty > 0) or (qty == 0 and balance > 0 and balance == unfilled)
+                if _should_notify:
                     source = record.get("source", "customer")
                     qty_wanted = record.get("qty_wanted", 1)
 
@@ -1248,6 +1280,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_followup_loop())
     asyncio.create_task(_midnight_inventory_check_loop())
     asyncio.create_task(_rebate_sync_loop())
+    asyncio.create_task(_sync_ecount_customers_loop())
     # 啟動時若已過 10:00 且佇列有待處理訊息，立刻補發（防止 server 重啟後錯過 10:00 觸發）
     if datetime.now().hour >= 10 and queue_store.count_unprocessed() > 0:
         print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")
@@ -2549,21 +2582,24 @@ async def admin_recent_customers():
 
 # ── 到貨通知管理 ──────────────────────────────────────────
 @app.get("/admin/notify")
-async def admin_notify_list():
-    """取得全部到貨通知記錄"""
+async def admin_notify_list(q: str = "", status: str = ""):
+    """
+    取得到貨通知記錄。
+    q: 搜尋關鍵字（客戶名、產品編號、品名）
+    status: 篩選狀態（pending/notified/cancelled），空=全部
+    待通知（pending）最多顯示最新 10 筆。
+    """
     from services.ecount import ecount_client
     records = notify_store.get_all()
-    for r in records:
-        # 附加客戶名稱
+
+    def _enrich(r):
         cust = customer_store.get_by_line_id(r["user_id"])
         r["customer_name"] = (cust.get("real_name") or cust.get("display_name") or r["user_id"][:10]) if cust else r["user_id"][:10]
-        # 附加單位顯示
         item = ecount_client.get_product_cache_item(r["prod_code"])
         box_qty = (item.get("box_qty") or 0) if item else 0
         prod_unit = (item.get("unit") or "") if item else ""
         qty = r["qty_wanted"]
         if prod_unit == "箱":
-            # 產品本身以箱計
             r["qty_display"] = f"{qty}箱"
             r["unit"] = "箱"
             r["box_qty"] = box_qty or 1
@@ -2575,6 +2611,29 @@ async def admin_notify_list():
             r["qty_display"] = f"{qty}個"
             r["unit"] = "個"
             r["box_qty"] = box_qty
+        return r
+
+    records = [_enrich(r) for r in records]
+
+    # 狀態篩選
+    if status:
+        records = [r for r in records if r["status"] == status]
+
+    # 關鍵字搜尋（客戶名、產品編號、品名）
+    if q:
+        kw = q.strip().upper()
+        records = [r for r in records if (
+            kw in r.get("customer_name", "").upper()
+            or kw in r.get("prod_code", "").upper()
+            or kw in r.get("prod_name", "").upper()
+        )]
+
+    # 待通知只顯示最新 10 筆
+    if not q and not status:
+        pending = [r for r in records if r["status"] == "pending"][-10:]
+        others = [r for r in records if r["status"] != "pending"]
+        records = pending + others
+
     return records
 
 @app.put("/admin/notify/{notify_id}")
