@@ -175,6 +175,17 @@ def _check_quota_reset():
             _push_quota_exhausted_at = ""
             print(f"[quota] ✓ 新月份 {current_month}，額度開關已重置", flush=True)
 
+_sync_failures: list[tuple[str, str, str]] = []  # [(時間, 任務名, 錯誤)]
+
+def _notify_sync_failure(task_name: str, error: str):
+    """記錄排程失敗，統一在 17:00 通知內部群"""
+    _sync_failures.append((
+        datetime.now().strftime("%H:%M"),
+        task_name,
+        error[:100],
+    ))
+    print(f"[sync-fail] 已記錄失敗：{task_name}", flush=True)
+
 # ── 圖片訊息合併緩衝（等待後續文字，最多 N 秒）──────────
 import threading as _threading
 
@@ -1082,6 +1093,7 @@ async def _rebate_sync_loop():
 
         except Exception as e:
             print(f"[rebate/unfulfilled] 自動同步失敗: {e}")
+            _notify_sync_failure("回饋金/未處理訂單同步", str(e))
 
 
 async def _sync_ecount_customers_loop():
@@ -1107,8 +1119,42 @@ async def _sync_ecount_customers_loop():
             else:
                 stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
                 print(f"[cust-sync] 同步失敗: {stderr}", flush=True)
+                _notify_sync_failure("Ecount 客戶名單同步", stderr)
         except Exception as e:
             print(f"[cust-sync] 同步失敗: {e}", flush=True)
+            _notify_sync_failure("Ecount 客戶名單同步", str(e))
+
+
+async def _sync_cust_ecount_loop():
+    """每日 13:10 自動同步 Ecount ↔ customers.db（手機比對、自動建 Ecount 客戶）"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=13, minute=10, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            import subprocess as _sp
+            _python = _sys.executable
+            _root = str(Path(__file__).parent)
+            _flags = _sp.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
+            print("[cust-ecount] 每日 13:10 自動同步 Ecount ↔ customers.db...")
+            proc = await asyncio.to_thread(
+                _sp.run, [_python, "-m", "scripts.sync_cust_ecount"],
+                cwd=_root, capture_output=True, timeout=300, creationflags=_flags,
+            )
+            if proc.returncode == 0:
+                stdout = proc.stdout.decode("utf-8", errors="replace") if proc.stdout else ""
+                print(f"[cust-ecount] 同步完成", flush=True)
+                if stdout.strip():
+                    print(stdout.strip(), flush=True)
+            else:
+                stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
+                print(f"[cust-ecount] 同步失敗: {stderr}", flush=True)
+                _notify_sync_failure("Ecount ↔ DB 客戶同步", stderr)
+        except Exception as e:
+            print(f"[cust-ecount] 同步失敗: {e}", flush=True)
+            _notify_sync_failure("Ecount ↔ DB 客戶同步", str(e))
 
 
 async def _queue_processor_loop():
@@ -1131,6 +1177,14 @@ async def _check_restock_notifications():
     有貨 → push 通知客戶 + 標記 notified。
     """
     from services.ecount import ecount_client
+
+    # 先同步庫存，確保資料是最新的
+    try:
+        print("[notify] 先同步庫存資料...", flush=True)
+        ecount_client._sync_and_wait()
+        print("[notify] 庫存同步完成", flush=True)
+    except Exception as _sync_e:
+        print(f"[notify] 庫存同步失敗（繼續使用既有資料）: {_sync_e}", flush=True)
 
     pending = notify_store.get_pending(source=None)  # 全部（客戶+內部群登記）
     if not pending:
@@ -1175,13 +1229,26 @@ async def _check_restock_notifications():
                             code=record["prod_code"],
                         )
 
+                    # 決定推送目標
+                    _target_uid = record["user_id"]
+                    _is_ecount_only = _target_uid.startswith("ecount:")
+                    if _is_ecount_only:
+                        # 無 LINE ID → 推到內部群
+                        _target_uid = settings.LINE_GROUP_ID
+                        _cust_name = record["user_id"].replace("ecount:", "")
+                        msg = (
+                            f"📬 到貨通知\n"
+                            f"客戶：{_cust_name}\n"
+                            f"{record['prod_name']}（{record['prod_code']}）× {qty_display if source == 'staff' else qty_wanted}"
+                        )
+
                     if _push_quota_exhausted:
-                        print(f"[notify] 月額度已用完，跳過 push {record['user_id'][:10]}...", flush=True)
+                        print(f"[notify] 月額度已用完，跳過 push {record['user_id'][:15]}...", flush=True)
                         continue
                     try:
                         line_api.push_message(
                             PushMessageRequest(
-                                to=record["user_id"],
+                                to=_target_uid,
                                 messages=[TextMessage(text=msg)],
                             )
                         )
@@ -1192,8 +1259,9 @@ async def _check_restock_notifications():
                         raise
                     notify_store.mark_notified(record["id"])
                     notified_count += 1
+                    _dest = "內部群" if _is_ecount_only else record["user_id"][:10]
                     print(
-                        f"[notify] OK 已通知 {record['user_id'][:10]}... "
+                        f"[notify] OK 已通知 {_dest}... "
                         f"-> {record['prod_name']} 庫存={qty} (source={source})"
                     )
                 else:
@@ -1204,6 +1272,32 @@ async def _check_restock_notifications():
                 print(f"[notify] FAIL 通知失敗 id={record['id']}: {e}", flush=True)
 
     print(f"[notify] 完成，共通知 {notified_count} 筆")
+
+
+async def _sync_failure_notify_loop():
+    """每日 17:00 統一通知今日排程失敗"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=17, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        if not _sync_failures:
+            continue
+        try:
+            lines = [f"⚠️ 今日排程失敗 {len(_sync_failures)} 項："]
+            for t, name, err in _sync_failures:
+                lines.append(f"• {t} {name}\n  {err}")
+            msg = "\n".join(lines)
+            if not _push_quota_exhausted:
+                _line_api.push_message(PushMessageRequest(
+                    to=settings.LINE_GROUP_ID,
+                    messages=[TextMessage(text=msg)],
+                ))
+                print(f"[sync-fail] 已通知內部群，{len(_sync_failures)} 項失敗", flush=True)
+        except Exception as e:
+            print(f"[sync-fail] 通知失敗: {e}", flush=True)
+        _sync_failures.clear()
 
 
 async def _restock_notify_loop():
@@ -1218,6 +1312,7 @@ async def _restock_notify_loop():
             await _check_restock_notifications()
         except Exception as e:
             print(f"[notify] 排程執行失敗: {e}")
+            _notify_sync_failure("到貨通知檢查", str(e))
 
 
 async def _followup_loop():
@@ -1232,6 +1327,7 @@ async def _followup_loop():
                 print(f"[followup] 提醒 {result['reminded']} 人，清除 {result['expired']} 筆過期狀態")
         except Exception as e:
             print(f"[followup] 排程執行失敗: {e}")
+            _notify_sync_failure("Followup 提醒檢查", str(e))
         await asyncio.sleep(3600)   # 每小時一次
 
 
@@ -1281,6 +1377,8 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_midnight_inventory_check_loop())
     asyncio.create_task(_rebate_sync_loop())
     asyncio.create_task(_sync_ecount_customers_loop())
+    asyncio.create_task(_sync_cust_ecount_loop())
+    asyncio.create_task(_sync_failure_notify_loop())
     # 啟動時若已過 10:00 且佇列有待處理訊息，立刻補發（防止 server 重啟後錯過 10:00 觸發）
     if datetime.now().hour >= 10 and queue_store.count_unprocessed() > 0:
         print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")

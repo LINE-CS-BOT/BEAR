@@ -1349,7 +1349,14 @@ def _notify_register_and_push(
     """
     matches = customer_store.search_by_name(cust_name_q, real_name_only=True)
     if not matches:
-        return f"❌ 找不到客戶「{cust_name_q}」"
+        # LINE DB 找不到 → 用 ecount: 前綴存，到貨時通知到內部群
+        notify_id = notify_store.add(
+            user_id=f"ecount:{cust_name_q}", prod_code=prod_code,
+            prod_name=prod_name, qty_wanted=qty,
+            source="staff",
+        )
+        print(f"[internal] 通知登記(staff): #{notify_id} {cust_name_q}（到貨通知內部群）← {prod_name}({prod_code}) x{qty}")
+        return f"✅ {cust_name_q}｜{prod_name}（{prod_code}）× {qty} 個（到貨通知內部群）"
     if len(matches) > 1:
         ns = "、".join(r.get("real_name") or r.get("display_name", "?") for r in matches[:5])
         return f"⚠️ 「{cust_name_q}」有多位：{ns}"
@@ -1359,15 +1366,17 @@ def _notify_register_and_push(
     cust_label = cust.get("real_name") or cust.get("display_name") or cust_name_q
 
     if not cust_uid:
-        return f"⚠️ 「{cust_label}」尚未和我互動過，無法登記"
+        # 無 LINE ID → 用 ecount: 前綴存，到貨時通知到內部群
+        cust_uid = f"ecount:{cust_label}"
 
     notify_id = notify_store.add(
         user_id=cust_uid, prod_code=prod_code,
         prod_name=prod_name, qty_wanted=qty,
         source="staff",
     )
-    print(f"[internal] 通知登記(staff): #{notify_id} {cust_label} ← {prod_name}({prod_code}) x{qty}")
-    return f"✅ {cust_label}｜{prod_name}（{prod_code}）× {qty} 個"
+    tag = "（到貨通知內部群）" if cust_uid.startswith("ecount:") else ""
+    print(f"[internal] 通知登記(staff): #{notify_id} {cust_label}{tag} ← {prod_name}({prod_code}) x{qty}")
+    return f"✅ {cust_label}｜{prod_name}（{prod_code}）× {qty} 個{tag}"
 
 
 # ── 3. 圖片識別 → PO文 + 等待訂單 ───────────────────────────────────
@@ -3525,9 +3534,8 @@ def _build_one_product(fields: dict) -> str:
     error_msg = result.get("error", "") if isinstance(result, dict) else ""
 
     if ok:
-        # 強制刷新品項快取，讓新品項立即可被查到（下班時間也要刷）
+        # 標記品項快取過期，下次查詢時自動刷新（避免連續新增時重複呼叫 API）
         ecount_client._cache_expires = 0
-        ecount_client._ensure_product_cache()
         from storage.new_products import new_products_store
         new_products_store.add(
             prod_cd=prod_cd,   prod_name=prod_name, unit=unit,
