@@ -512,15 +512,32 @@ def _do_order(
             unit     = (units or {}).get(i["prod_cd"], "個")
             note_str = f"（{i['note']}）" if i.get("note") else ""
             lines_out.append(f"  {i['prod_name']}（{i['prod_cd']}）× {i['qty']} {unit}{note_str}")
-        # 同時建立到貨通知登記
+        # 同時建立到貨通知登記（直接用已知的 cust_code/user_id，避免重名查詢問題）
+        _notify_ok = False
         try:
+            # 優先用 LINE user_id；沒有則用 ecount: 前綴
+            _notify_uid = None
+            if cust_code:
+                # 從 customers.db 找 LINE ID
+                _all_custs = customer_store.search_by_name(cust_label, real_name_only=True)
+                _with_uid = [c for c in _all_custs if c.get("line_user_id")]
+                if _with_uid:
+                    _notify_uid = _with_uid[0]["line_user_id"]
+            if not _notify_uid:
+                _notify_uid = f"ecount:{cust_label}"
             for i in order_items:
-                _notify_register_and_push(
-                    cust_label, i["prod_cd"], i["prod_name"], i["qty"]
+                notify_store.add(
+                    user_id=_notify_uid, prod_code=i["prod_cd"],
+                    prod_name=i["prod_name"], qty_wanted=i["qty"],
+                    source="staff",
                 )
-            print(f"[internal] 到貨通知已登記: {cust_label} | {detail}")
+            _notify_ok = True
+            _tag = "（到貨通知內部群）" if _notify_uid.startswith("ecount:") else ""
+            print(f"[internal] 到貨通知已登記: {cust_label}{_tag} | {detail}")
         except Exception as _ne:
             print(f"[internal] 到貨通知登記失敗: {_ne}")
+        if _notify_ok:
+            lines_out.append("📬 已登記到貨通知")
         return "\n".join(lines_out)
     else:
         detail = "、".join(f"{i['prod_name']}×{i['qty']}" for i in order_items)
@@ -591,6 +608,11 @@ def handle_internal_order(
                     unit    = im.group(3) if im.lastindex >= 3 else None
                     _cd, _q = _apply_unit(prod_cd, qty, unit)
                     items_raw.append((_cd, _q))
+                    # 檢查同行是否有備註
+                    _rest = l[im.end():].strip()
+                    _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip() if re.search(r'備[註誌记]', _rest) else ""
+                    if _inline_note and not note_b:
+                        note_b = _inline_note
                 elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
                     note_b = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
             if items_raw:
@@ -604,6 +626,11 @@ def handle_internal_order(
         for l in lines[1:]:
             im = _STAFF_ORDER_ITEM_RE.search(l)
             if im:
+                # 檢查同行是否有備註（如「Z3616*2 備註:紅色*1粉色*1」）
+                _rest = l[im.end():].strip()
+                _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip() if re.search(r'備[註誌记]', _rest) else ""
+                if _inline_note and not note_b2:
+                    note_b2 = _inline_note
                 prod_cd = im.group(1).strip()
                 qty     = _parse_qty(im.group(2))
                 unit    = im.group(3) if im.lastindex >= 3 else None
