@@ -1045,9 +1045,9 @@ async def _rebate_sync_loop():
         await asyncio.sleep((target - now).total_seconds())
         try:
             import subprocess as _sp
-            _python = sys.executable
+            _python = _sys.executable
             _root = str(Path(__file__).parent)
-            _flags = _sp.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            _flags = _sp.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
 
             # 同步回饋金
             print("[rebate] 凌晨自動同步本月資料...")
@@ -2597,9 +2597,9 @@ async def admin_rebate(sync: bool = False):
     if sync:
         try:
             import subprocess as _sp
-            _python = sys.executable
+            _python = _sys.executable
             _root = str(Path(__file__).parent)
-            _flags = _sp.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            _flags = _sp.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
             proc = await asyncio.to_thread(
                 _sp.run, [_python, "-m", "scripts.sync_rebate"],
                 cwd=_root, capture_output=True, timeout=180, creationflags=_flags,

@@ -3427,6 +3427,9 @@ def _build_one_product(fields: dict) -> str:
     error_msg = result.get("error", "") if isinstance(result, dict) else ""
 
     if ok:
+        # 強制刷新品項快取，讓新品項立即可被查到（下班時間也要刷）
+        ecount_client._cache_expires = 0
+        ecount_client._ensure_product_cache()
         from storage.new_products import new_products_store
         new_products_store.add(
             prod_cd=prod_cd,   prod_name=prod_name, unit=unit,

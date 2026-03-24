@@ -483,8 +483,8 @@ class EcountClient:
 
         is_working = 11 <= hour < 21
 
-        # 下班時間且已有快取 → 直接用
-        if not is_working and self._product_cache:
+        # 下班時間且已有快取且未過期 → 直接用
+        if not is_working and self._product_cache and time.time() < self._cache_expires:
             return
 
         # 快取未過期 → 直接用
