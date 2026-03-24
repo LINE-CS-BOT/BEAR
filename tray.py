@@ -210,11 +210,24 @@ def action_restart_server(icon, item):
         except Exception:
             pass
         del _procs["uvicorn"]
-    # 強制釋放 port 8000，確保舊 process 已死
+    # 強制釋放 port 8000，確保舊 process 已死（shell=True 時 terminate 只殺 cmd.exe）
     _kill_port_8000()
-    time.sleep(1)
+    if not _wait_port_free(8000, timeout=15):
+        # 第二輪嘗試
+        _kill_port_8000()
+        _wait_port_free(8000, timeout=10)
     _start_uvicorn()
-    icon.notify("Server 已重啟", "LINE Bot")
+    # 等待 server 健康
+    for _ in range(20):
+        time.sleep(1)
+        try:
+            r = urllib.request.urlopen("http://localhost:8000/health", timeout=2)
+            if r.status == 200:
+                icon.notify("Server 已重啟", "LINE Bot")
+                return
+        except Exception:
+            pass
+    icon.notify("Server 重啟中，請稍候...", "LINE Bot")
 
 def action_quit(icon, item):
     _stop_all()

@@ -396,6 +396,7 @@ def _do_order(
     items_raw: list[tuple[str, int]],
     units: dict[str, str] | None = None,   # prod_cd → 單位（箱/件/個…）
     note: str = "",                         # 備註，放每個品項的 REMARK
+    group_id: str | None = None,            # 內部群 ID，用於存待確認狀態
 ) -> str:
     """
     共用下單邏輯。items_raw = [(prod_query, qty), ...]
@@ -430,36 +431,31 @@ def _do_order(
         if not cust_matches and cust_name_clean != cust_name_query:
             cust_matches = customer_store.search_by_name(cust_name_query, real_name_only=True)
         if not cust_matches:
-            # 找不到 → 在 Ecount 新建客戶後直接建單（代碼格式同客戶群：M{YYMMDD}{流水號}）
-            from datetime import datetime as _dt
-            import sqlite3 as _sqlite3
-            cust_label = cust_name_clean
-            _today     = _dt.now().strftime("%y%m%d")
-            _prefix    = f"M{_today}"
-            _db_path   = str(_Path(__file__).parent.parent / "data" / "customers.db")
-            try:
-                with _sqlite3.connect(_db_path) as _conn:
-                    _rows = _conn.execute(
-                        "SELECT ecount_cust_cd FROM customers WHERE ecount_cust_cd LIKE ?",
-                        (f"{_prefix}%",),
-                    ).fetchall()
-                _nums  = [int(cd[len(_prefix):]) for (cd,) in _rows
-                          if cd and cd.startswith(_prefix) and cd[len(_prefix):].isdigit()]
-                _serial = max(_nums) + 1 if _nums else 1000
-            except Exception:
-                _serial = 1000
-            new_cust_cd = f"{_prefix}{_serial}"
-            ok = ecount_client.save_customer(
-                new_cust_cd, cust_name_clean, hp_no=_phone
-            )
-            if ok:
-                cust_code   = new_cust_cd
-                is_new_cust = True
-                print(f"[internal] 新建 Ecount 客戶: {cust_name_clean} → {new_cust_cd}", flush=True)
+            # 找不到 → 詢問確認，存入 state 等待回覆「是」
+            from storage.state import state_manager as _sm
+            if group_id:
+                _sm.set(group_id, {
+                    "action": "confirm_new_customer",
+                    "cust_name": cust_name_clean,
+                    "items_raw": items_raw,
+                    "units": units or {},
+                    "note": note,
+                })
+                items_desc = "、".join(f"{pc}×{q}" for pc, q in items_raw)
+                print(f"[internal] 找不到客戶「{cust_name_clean}」，等待確認", flush=True)
+                return (
+                    f"⚠️ 找不到客戶「{cust_name_clean}」\n"
+                    f"訂單內容：{items_desc}\n\n"
+                    f"是今天新客人嗎？\n"
+                    f"回覆「是」→ 同步客戶資料後建單\n"
+                    f"回覆「不是」→ 建立新客人後建單"
+                )
             else:
+                # 無 group_id fallback：直接用預設代碼
                 cust_code   = settings.ECOUNT_DEFAULT_CUST_CD
+                cust_label  = cust_name_clean
                 is_new_cust = False
-                print(f"[internal] 新建客戶失敗，改用預設代碼: {cust_name_clean}", flush=True)
+                print(f"[internal] 找不到客戶「{cust_name_clean}」，無 group_id，用預設代碼", flush=True)
         elif len(cust_matches) > 1:
             names = "、".join(c.get("real_name") or c.get("chat_label") or c.get("display_name", "?") for c in cust_matches[:5])
             return f"⚠️ 「{cust_name_query}」有多位：{names}"
@@ -516,6 +512,15 @@ def _do_order(
             unit     = (units or {}).get(i["prod_cd"], "個")
             note_str = f"（{i['note']}）" if i.get("note") else ""
             lines_out.append(f"  {i['prod_name']}（{i['prod_cd']}）× {i['qty']} {unit}{note_str}")
+        # 同時建立到貨通知登記
+        try:
+            for i in order_items:
+                _notify_register_and_push(
+                    cust_label, i["prod_cd"], i["prod_name"], i["qty"]
+                )
+            print(f"[internal] 到貨通知已登記: {cust_label} | {detail}")
+        except Exception as _ne:
+            print(f"[internal] 到貨通知登記失敗: {_ne}")
         return "\n".join(lines_out)
     else:
         detail = "、".join(f"{i['prod_name']}×{i['qty']}" for i in order_items)
@@ -589,7 +594,7 @@ def handle_internal_order(
                 elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
                     note_b = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
             if items_raw:
-                return _do_order(cust_name, items_raw, note=note_b)
+                return _do_order(cust_name, items_raw, note=note_b, group_id=group_id)
 
     # ── 格式B2：第一行只有姓名（無「訂」），後續行有貨號+數量 ──
     # 例：鄭鉅耀\nZ3340 10個\nZ3338 20個\n備註 送松山
@@ -608,7 +613,7 @@ def handle_internal_order(
                 note_b2 = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
         if items_b2:
             cust_name_b2 = lines[0].strip()
-            return _do_order(cust_name_b2, items_b2, note=note_b2)
+            return _do_order(cust_name_b2, items_b2, note=note_b2, group_id=group_id)
 
     # ── 格式A：每行各自獨立 ──
     valid = [(l, _STAFF_ORDER_LINE_RE.search(l)) for l in lines]
@@ -640,6 +645,7 @@ def handle_internal_order(
                 cust_name_query=m_c.group(1).strip(),
                 items_raw=[_apply_unit(_prod_cd_c, _qty_c, _unit_c)],
                 note=_note_c,
+                group_id=group_id,
             )
 
     # ── 格式D：「姓名 要/訂/下單 商品名 數量」（品名搜尋下單，無需先查庫存）──
@@ -669,6 +675,7 @@ def handle_internal_order(
             return _do_order(
                 cust_name_query=cust_name_d,
                 items_raw=[(prod_code_d, qty_d)],
+                group_id=group_id,
             )
 
     # ── 格式E：品名多品項下單（無貨號，自動搜尋 + 等待確認）──────────────────
@@ -967,8 +974,94 @@ def handle_name_order_confirm(group_id: str, text: str) -> str | None:
         items_raw = [(i["code"], i["qty"]) for i in items]
         note      = state.get("note", "")
         _sm.clear(group_id)
-        return _do_order(customer, items_raw, units=units, note=note)
+        return _do_order(customer, items_raw, units=units, note=note, group_id=group_id)
 
+    return None
+
+
+def handle_new_customer_confirm(group_id: str, text: str) -> str | None:
+    """
+    處理「找不到客戶」後的確認：
+    - 「是」→ 先同步客戶資料再建單（今天新客人，Ecount 已有但 json 未同步）
+    - 「不是」→ 新建 Ecount 客戶再建單
+    state action == "confirm_new_customer" 時才介入。
+    """
+    global _ec_customers_cache, _ec_customers_mtime
+    from storage.state import state_manager as _sm
+    state = _sm.get(group_id)
+    if not state or state.get("action") != "confirm_new_customer":
+        return None
+
+    t = text.strip()
+    cust_name  = state["cust_name"]
+    items_raw  = state["items_raw"]
+    units      = state.get("units", {})
+    note       = state.get("note", "")
+
+    if t in ("是", "是!", "是！", "對"):
+        # 今天新客人 → 同步 ecount_customers.json 再重新建單
+        _sm.clear(group_id)
+        print(f"[internal] 確認「是」→ 同步客戶資料後重新建單: {cust_name}", flush=True)
+        try:
+            import subprocess as _sp, sys as _sys_local
+            _python = _sys_local.executable
+            _root   = str(_Path(__file__).parent.parent)
+            _flags  = _sp.CREATE_NO_WINDOW if _sys_local.platform == "win32" else 0
+            proc = _sp.run(
+                [_python, "-m", "scripts.sync_cust_from_web"],
+                cwd=_root, capture_output=True, timeout=300, creationflags=_flags,
+            )
+            if proc.returncode == 0:
+                print("[internal] 客戶資料同步完成", flush=True)
+                # 重新載入客戶快取
+                _ec_customers_cache = None
+                _ec_customers_mtime = 0
+            else:
+                stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
+                print(f"[internal] 客戶資料同步失敗: {stderr}", flush=True)
+                return f"⚠️ 客戶資料同步失敗，請稍後再試"
+        except Exception as e:
+            print(f"[internal] 客戶資料同步例外: {e}", flush=True)
+            return f"⚠️ 客戶資料同步失敗: {e}"
+        # 確認同步後找得到客戶
+        ec_match = _resolve_customer(cust_name)
+        if not ec_match:
+            return f"❌ 客戶資料已同步，但仍找不到「{cust_name}」，訂單未建立\n請確認 Ecount 客戶名稱是否正確"
+        # 重新建單
+        return _do_order(cust_name, items_raw, units=units, note=note, group_id=group_id)
+
+    if t in ("不是", "不是!", "不是！", "否", "新客人"):
+        # 不是今天新客人 → 直接新建 Ecount 客戶
+        _sm.clear(group_id)
+        print(f"[internal] 確認「不是」→ 新建 Ecount 客戶: {cust_name}", flush=True)
+        from datetime import datetime as _dt
+        import sqlite3 as _sqlite3
+        _today   = _dt.now().strftime("%y%m%d")
+        _prefix  = f"M{_today}"
+        _db_path = str(_Path(__file__).parent.parent / "data" / "customers.db")
+        try:
+            with _sqlite3.connect(_db_path) as _conn:
+                _rows = _conn.execute(
+                    "SELECT ecount_cust_cd FROM customers WHERE ecount_cust_cd LIKE ?",
+                    (f"{_prefix}%",),
+                ).fetchall()
+            _nums  = [int(cd[len(_prefix):]) for (cd,) in _rows
+                      if cd and cd.startswith(_prefix) and cd[len(_prefix):].isdigit()]
+            _serial = max(_nums) + 1 if _nums else 1000
+        except Exception:
+            _serial = 1000
+        new_cust_cd = f"{_prefix}{_serial}"
+        ok = ecount_client.save_customer(new_cust_cd, cust_name)
+        if ok:
+            print(f"[internal] 新建 Ecount 客戶: {cust_name} → {new_cust_cd}", flush=True)
+            # 刷新快取
+            _ec_customers_cache = None
+            _ec_customers_mtime = 0
+        else:
+            return f"❌ 新建客戶「{cust_name}」失敗"
+        return _do_order(cust_name, items_raw, units=units, note=note, group_id=group_id)
+
+    # 其他文字不處理
     return None
 
 
@@ -1118,10 +1211,15 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
     is_start_fmt  = _NOTIFY_REG_START_RE.match(t)
     m_shorthand   = _NOTIFY_REG_SHORTHAND_RE.match(t)
 
-    # ── 格式 A：「登記通知\n第二行\n後續行...」─────────────────────────────
+    # ── 格式 A：「登記通知/通知登記\n第二行\n後續行...」─────────────────────
+    _fmt_a_trigger = None
     if t.startswith("登記通知"):
+        _fmt_a_trigger = "登記通知"
+    elif t.startswith("通知登記"):
+        _fmt_a_trigger = "通知登記"
+    if _fmt_a_trigger:
         lines_all = [l.strip() for l in t.splitlines() if l.strip()]
-        # 去掉第一行「登記通知」
+        # 去掉第一行觸發詞
         lines_body = lines_all[1:]
         if not lines_body:
             return None
@@ -1158,9 +1256,9 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
             cust_name_q = re.sub(r'\s+', '', line2)
             results = []
             for nl in rest:
-                # 解析「貨號  數量」
+                # 解析「貨號  數量」或「貨號*數量」
                 mp = re.match(
-                    r'^([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s*([零一二三四五六七八九十百千\d]+)\s*(?:個|件|盒|套|箱|組)?$',
+                    r'^([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s*[*×\s]\s*([零一二三四五六七八九十百千\d]+)\s*(?:個|件|盒|套|箱|組)?$',
                     nl, re.IGNORECASE
                 )
                 if not mp:
