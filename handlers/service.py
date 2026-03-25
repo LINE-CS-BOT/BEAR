@@ -136,6 +136,11 @@ def handle_machine_query(
     if not in_stock:
         return f"目前{machine_type}的產品都暫時缺貨唷，到貨會再通知您嘿～"
 
+    # 按庫存量排序，取前 10 項
+    in_stock.sort(key=lambda x: -x[1])
+    total_count = len(in_stock)
+    in_stock = in_stock[:10]
+
     # 背景推送每個產品的 PO文 + 圖片
     def _push_products():
         base_url = _cfg.BASE_URL or ""
@@ -162,6 +167,8 @@ def handle_machine_query(
     threading.Thread(target=_push_products, daemon=True).start()
 
     # 回傳標題文字，由 caller 用 reply_message 送出（免費）
+    if total_count > 10:
+        return f"{machine_type}目前有 {total_count} 款有庫存，先為您介紹庫存最多的 10 款～ 🎉"
     return f"找到 {len(in_stock)} 款{machine_type}有庫存的產品，幫您介紹一下～ 🎉"
 
 
