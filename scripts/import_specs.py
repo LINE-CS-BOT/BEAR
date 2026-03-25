@@ -79,8 +79,8 @@ def parse_specs(text: str) -> dict:
             # 去除行首 emoji/符號，方便匹配
             _clean = re.sub(r'^[\U0001f300-\U0001faff\u2600-\u27bf\u2702-\u27b0‼️⁉️*✨⭐️🔥💥⚠️🎉❤️]+\s*', '', line)
 
-            # 編號（支援「編號：」「產品編號：」「商品編號：」「貨號：」）
-            m = re.match(r"(?:產品|商品)?(?:編號|貨號)[：:](.+)", _clean)
+            # 編號（支援「編號：」「產品編號：」「商品編號：」「貨號：」「新編號：」）
+            m = re.match(r"(?:產品|商品|新)?(?:編號|貨號)[：:](.+)", _clean)
             if m:
                 code = m.group(1).strip()
                 continue
