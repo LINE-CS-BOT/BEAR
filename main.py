@@ -202,6 +202,9 @@ def _send_reply(reply_token: str | None, to: str, text: str, line_api) -> None:
     優先用 reply_message（免費，不佔月額度），
     token 不存在或已過期才 fallback 到 push_message。
     """
+    # LINE 訊息上限 5000 字元
+    if len(text) > 4990:
+        text = text[:4950] + "\n\n...（內容過長，已截斷）"
     if reply_token:
         try:
             line_api.reply_message(ReplyMessageRequest(
@@ -589,6 +592,8 @@ def _txt_buf_flush(user_id: str) -> None:
 
         def _send_group_ack(text: str) -> None:
             nonlocal reply_token
+            if len(text) > 4990:
+                text = text[:4950] + "\n\n...（內容過長，已截斷）"
             if reply_token and not _reply_token_used[0]:
                 try:
                     line_api.reply_message(ReplyMessageRequest(
@@ -2999,14 +3004,15 @@ def on_message(event: MessageEvent):
                 _txt_buf_add(user_id, text, "group", event.source.group_id,
                              reply_token=event.reply_token)
                 return
-            # 訊息本身或 buffer 含上架/存文/存圖/加圖 → 跳過 quick_reply
-            _skip_quick = any(kw in text for kw in ("上架", "存圖", "加圖", "存文"))
+            # 訊息本身或 buffer 含上架/存文/存圖/加圖/新建品項/新增品項 → 跳過 quick_reply
+            _SKIP_QUICK_KW = ("上架", "存圖", "加圖", "存文", "新建品項", "新增品項")
+            _skip_quick = any(kw in text for kw in _SKIP_QUICK_KW)
             if not _skip_quick:
                 with _txt_buffer_lock:
                     _pending = _txt_buffer.get(user_id)
                     if _pending:
                         _pending_text = "\n".join(_pending["lines"])
-                        _skip_quick = any(kw in _pending_text for kw in ("上架", "存圖", "加圖", "存文"))
+                        _skip_quick = any(kw in _pending_text for kw in _SKIP_QUICK_KW)
             if _skip_quick:
                 print(f"[on_msg] 含上架指令，跳過 quick_reply: {text[:30]!r}", flush=True)
                 _txt_buf_add(user_id, text, "group", event.source.group_id,

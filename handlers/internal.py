@@ -1682,6 +1682,10 @@ def handle_internal_spec_query(text: str) -> str | None:
     """
     from storage.specs import get_by_machine, get_by_size
 
+    # 多行訊息（超過 2 行）不是簡單查詢，跳過
+    if text.count("\n") >= 2:
+        return None
+
     # 必須含列表意圖關鍵字
     if not any(kw in text for kw in _SPEC_QUERY_KW):
         return None
@@ -3378,8 +3382,15 @@ def _parse_new_product_fields(text: str) -> dict | None:
     bar_code_m = re.search(r'條碼\s*[:：]?\s*(\S+)', flat)
     bar_code   = bar_code_m.group(1) if bar_code_m else prod_cd  # 預設條碼 = 品項編碼（貨號）
 
-    # 售價 / 賣價 / 出庫單價（含簡寫「售299」「售:299」「299元」，以及裸數字行）
-    out_price_m = re.search(r'(?:產品售價|售價|賣價|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元?', flat)
+    # 售價 / 賣價 / 出庫單價
+    # 優先：「單盒N元」「單個N元」格式（最明確）
+    out_price_m = re.search(r'(?:單盒|单盒|單個|单个|每盒|每個|每个)\s*([\d.]+)\s*元', flat)
+    if not out_price_m:
+        # 次優先：「售價：」「產品售價：」等標籤
+        out_price_m = re.search(r'(?:產品售價|售價|賣價|出庫單價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元?', flat)
+    if not out_price_m:
+        # 「特價N元」（確保後面不是「盒起批」等批量描述）
+        out_price_m = re.search(r'特價\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元(?!\S*起批)', flat)
     if not out_price_m:
         # fallback：數字+元（如「299元」）
         out_price_m = re.search(r'(?:^|\s)([\d.]+)\s*元(?:\s|$)', flat)
@@ -3433,16 +3444,22 @@ def _parse_new_product_fields(text: str) -> dict | None:
     class_cd = _detect_class_cd(prod_name)
     in_price = _calc_in_price(class_cd, out_price, in_price_raw)
 
+    # 抓尺寸和重量（寫入 REMARKS_WIN / CONT1）
+    _sz_m = re.search(r'(?:包裝)?尺寸\s*[:：]?\s*約?\s*(\S+)', flat)
+    _wt_m = re.search(r'(?:產品)?重量\s*[:：]?\s*約?\s*(\S+)', flat)
+
     return {
-        "prod_cd":   prod_cd,
-        "prod_name": prod_name,
-        "unit":      unit,
-        "bar_code":  bar_code,
-        "class_cd":  class_cd,
-        "out_price": out_price,
-        "in_price":  in_price,
-        "size_des":  size_des,
-        "cust":      "10003",
+        "prod_cd":      prod_cd,
+        "prod_name":    prod_name,
+        "unit":         unit,
+        "bar_code":     bar_code,
+        "class_cd":     class_cd,
+        "out_price":    out_price,
+        "in_price":     in_price,
+        "size_des":     size_des,
+        "prod_size":    _sz_m.group(1) if _sz_m else "",
+        "prod_weight":  _wt_m.group(1) if _wt_m else "",
+        "cust":         "10003",
     }
 
 
@@ -3541,17 +3558,22 @@ def _build_one_product(fields: dict) -> str:
     in_price  = fields["in_price"]
     size_des  = fields["size_des"]
 
+    _prod_size   = fields.get("prod_size", "")
+    _prod_weight = fields.get("prod_weight", "")
+
     extra: dict = {
         "PROD_TYPE": "3",
         "BAL_FLAG":  "1",
         "USE_FLAG":  "Y",
         "CUST":      "10003",
     }
-    if bar_code:  extra["BAR_CODE"]  = bar_code
-    if class_cd:  extra["CLASS_CD"]  = class_cd
-    if out_price: extra["OUT_PRICE"] = out_price
-    if in_price:  extra["IN_PRICE"]  = in_price
-    if size_des:  extra["SIZE_DES"]  = size_des
+    if bar_code:     extra["BAR_CODE"]     = bar_code
+    if class_cd:     extra["CLASS_CD"]     = class_cd
+    if out_price:    extra["OUT_PRICE"]    = out_price
+    if in_price:     extra["IN_PRICE"]     = in_price
+    if size_des:     extra["SIZE_DES"]     = size_des
+    if _prod_size:   extra["REMARKS_WIN"]  = _prod_size     # 尺寸 → REMARKS_WIN
+    if _prod_weight: extra["CONT1"]        = _prod_weight   # 重量 → CONT1
 
     result = ecount_client.save_product(
         prod_cd=prod_cd, prod_name=prod_name, unit=unit, extra=extra,
