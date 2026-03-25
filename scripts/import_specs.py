@@ -97,8 +97,8 @@ def parse_specs(text: str) -> dict:
                 name = m.group(1).strip()
                 continue
 
-            # 尺寸（支援「尺寸-」「尺寸：」「包裝尺寸-」「外盒尺寸」「產品尺寸：」）
-            m = re.match(r"(?:產品|包裝|外盒)?尺寸[-：: 約]*(.*)", _clean)
+            # 尺寸（支援「尺寸」「尺吋」「包裝尺寸」「產品包裝尺寸」「外盒尺寸」）
+            m = re.match(r"(?:產品)?(?:包裝)?(?:外盒)?(?:尺寸|尺吋)[-：: 約]*(.*)", _clean)
             if m:
                 val = m.group(1).strip()
                 if val:
