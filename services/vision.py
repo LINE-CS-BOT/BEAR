@@ -283,9 +283,9 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
                 ch_best_diff = diff_c
                 ch_best_code = entry["code"]
 
-        if ch_best_diff <= 2 and best_diff <= 20:
-            # colorhash 補救：顏色分佈幾乎相同 + pHash 不能差太遠（≤20）
-            # 避免色調相似但完全不同的產品被誤判
+        if ch_best_diff <= 1 and best_diff <= 18:
+            # colorhash 補救：顏色分佈幾乎完全相同（≤1）+ pHash 接近（≤18）
+            # 收緊條件，避免紙箱等無特徵照片被誤判
             print(f"[vision] colorHash 補救命中 → {ch_best_code}（色差={ch_best_diff}，pHash={best_diff}）")
             return ch_best_code, ch_best_diff
         elif ch_best_diff <= 2:
