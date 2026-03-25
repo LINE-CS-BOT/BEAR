@@ -1722,11 +1722,12 @@
           if (g.members.length === 1 && !g.members[0].stores) {
             const m = g.members[0];
             const tierColor = g.tier === '未達' ? '#999' : g.tier === '10萬' ? '#c62828' : g.tier === '6萬' ? '#e65100' : '#2e7d32';
+            const displayRebate = g.rebate;
             html += `<tr>
               <td>${m.name}</td>
               <td style="text-align:right;font-family:monospace">$${m.amount.toLocaleString()}</td>
               <td><span style="color:${tierColor};font-weight:700">${g.tier}</span></td>
-              <td style="text-align:right;font-family:monospace;font-weight:700;color:${m.rebate > 0 ? '#c62828' : '#ccc'}">$${m.rebate.toLocaleString()}</td>
+              <td style="text-align:right;font-family:monospace;font-weight:700;color:${displayRebate > 0 ? '#c62828' : '#ccc'}">$${displayRebate.toLocaleString()}</td>
             </tr>`;
           } else {
             // Group header
