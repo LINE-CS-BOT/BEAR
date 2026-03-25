@@ -163,10 +163,10 @@ def sync(dry_run: bool = False):
 
     print(f"  已綁定: {len(already)} 筆（跳過）")
     print(f"  命中比對: {len(matched)} 筆 → 更新 ecount_cust_cd")
-    print(f"  未命中: {len(to_create)} 筆 → 在 Ecount 建立新客戶")
+    print(f"  未命中: {len(to_create)} 筆（僅記錄，不自動建立）")
 
-    # 4. 寫入比對結果
-    print("\n[4/4] 寫入 / 建立...")
+    # 4. 寫入比對結果（只同步已比對到的，不建立新客戶）
+    print("\n[4/4] 寫入比對結果...")
 
     updated = 0
     for uid, db_id, name, phone, ecount_code in matched:
@@ -176,33 +176,11 @@ def sync(dry_run: bool = False):
             if ok:
                 updated += 1
 
-    created = 0
-    failed  = 0
-    for uid, db_id, name, phone, new_code in to_create:
-        if not name:
-            print(f"  [跳過] LINE ID {uid} 無顯示名稱")
-            continue
-
-        print(f"  [建立] {name}  →  {new_code}  電話:{phone or '無'}")
-
-        if dry_run:
-            continue
-
-        ok = ecount_client.save_customer(
-            business_no=new_code,
-            cust_name=name,
-            hp_no=phone,
-        )
-        time.sleep(0.3)  # 避免 rate limit
-        if ok:
-            if _update_cust_code(uid, db_id, new_code):
-                created += 1
-                print(f"    ✅ 建立成功 → ecount_cust_cd={new_code}")
-            else:
-                print(f"    ⚠️  Ecount 建立成功，但 DB 更新失敗（id={db_id} uid={uid}）")
-        else:
-            failed += 1
-            print(f"    ❌ Ecount 建立失敗：{name}")
+    # 列出未命中的客戶（僅記錄，不建立）
+    if to_create:
+        print(f"\n  以下 {len(to_create)} 位 LINE 客戶未在 Ecount 找到（不自動建立）：")
+        for uid, db_id, name, phone, new_code in to_create:
+            print(f"    • {name or uid}  電話:{phone or '無'}")
 
     # 摘要
     print("\n" + "=" * 60)
@@ -210,9 +188,7 @@ def sync(dry_run: bool = False):
         print("【DRY RUN 模式，未實際寫入】")
     print(f"已綁定（跳過）: {len(already)}")
     print(f"比對命中並更新: {updated if not dry_run else len(matched)}")
-    print(f"在 Ecount 新建: {created if not dry_run else len(to_create)}")
-    if failed:
-        print(f"建立失敗: {failed}")
+    print(f"未命中（未建立）: {len(to_create)}")
     print("=" * 60)
 
 
