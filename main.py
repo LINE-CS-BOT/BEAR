@@ -781,6 +781,9 @@ def _txt_buf_flush(user_id: str) -> None:
                             })
                             _new_prod_timer_reset(user_id, group_id, reply_token)
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
+                    elif source_msg_id:
+                        # 有圖片但辨識失敗 → 靜默，不把 PO 文當指令 dispatch
+                        ack = None
                     else:
                         ack = _dispatch_internal_fallback(combined, group_id, line_api)
             else:
@@ -2566,6 +2569,74 @@ async def _midnight_inventory_check_loop():
             print(f"[inventory-check] 每日更新完成，共 {len(items)} 筆有庫存品項")
         except Exception as e:
             print(f"[inventory-check] 每日更新失敗: {e}")
+
+
+@app.get("/admin/export-specs")
+async def admin_export_specs():
+    """導出產品規格為 Excel 檔案"""
+    import json as _json
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    import io as _io
+
+    specs_path = _BASE_DIR / "data" / "specs.json"
+    if not specs_path.exists():
+        raise HTTPException(status_code=404, detail="specs.json 不存在")
+
+    specs = _json.loads(specs_path.read_text(encoding="utf-8"))
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "產品規格"
+
+    # 標題列
+    headers = ["產品編號", "品名", "尺寸", "重量", "適用台型", "售價"]
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(name="微軟正黑體", bold=True, color="FFFFFF", size=11)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin_border
+
+    # 資料列
+    row_font = Font(name="微軟正黑體", size=10)
+    for row_idx, (code, s) in enumerate(sorted(specs.items()), 2):
+        values = [
+            s.get("code", ""),
+            s.get("name", ""),
+            s.get("size", ""),
+            s.get("weight", ""),
+            "、".join(s.get("machine", [])),
+            s.get("price", ""),
+        ]
+        for col, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col, value=val)
+            cell.font = row_font
+            cell.border = thin_border
+
+    # 欄寬
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 30
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 20
+    ws.column_dimensions["F"].width = 14
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=product_specs.xlsx"},
+    )
 
 
 @app.get("/admin/inventory-check")

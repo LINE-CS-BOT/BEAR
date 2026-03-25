@@ -87,7 +87,7 @@ async def sync_unfulfilled():
                 break
 
         # 4. 解析表格
-        # 欄位：序號, 品項編碼, 品項名稱[規格], 日期-號碼, 客戶名稱, 餘量, 出貨數量, 交付日期, 摘要
+        # 欄位：序號, 品項編碼, 品項名稱[規格], 客戶名稱, 餘量, 出貨數量, 日期-號碼, 交付日期, 摘要
         data = await page.evaluate(r"""() => {
             const results = [];
             const rows = document.querySelectorAll('tr');
@@ -99,9 +99,10 @@ async def sync_unfulfilled():
 
                 const code = cells[1]?.textContent?.trim() || '';
                 const name = cells[2]?.textContent?.trim() || '';
-                const dateNo = cells[3]?.textContent?.trim() || '';
-                const customer = cells[4]?.textContent?.trim() || '';
-                const qty = parseFloat((cells[5]?.textContent?.trim() || '0').replace(/,/g, '')) || 0;
+                const customer = cells[3]?.textContent?.trim() || '';
+                const qty = parseFloat((cells[4]?.textContent?.trim() || '0').replace(/,/g, '')) || 0;
+                const shipped = parseFloat((cells[5]?.textContent?.trim() || '0').replace(/,/g, '')) || 0;
+                const dateNo = cells[6]?.textContent?.trim() || '';
                 const deliveryDate = cells[7]?.textContent?.trim() || '';
                 const note = cells[8]?.textContent?.trim() || '';
 
@@ -120,7 +121,7 @@ async def sync_unfulfilled():
         print(f"[unfulfilled] ✓ 未處理訂單已存：{len(data)} 筆")
         print(f"[unfulfilled]   → {OUTPUT_PATH}")
         for d in data[:5]:
-            print(f"  {d['code']:10s} {d['name'][:20]:20s} {d['customer']:12s} x{d['qty']}")
+            print(f"  {d['code']:10s} {d['name'][:20]:20s} {d['customer']:10s} x{d['qty']:g}")
         return True
     else:
         print("[unfulfilled] ✗ 無法取得未處理訂單資料")
