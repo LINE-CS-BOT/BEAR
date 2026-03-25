@@ -3082,6 +3082,12 @@ def on_message(event: MessageEvent):
                 _txt_buf_add(user_id, text, "group", event.source.group_id,
                              reply_token=event.reply_token)
                 return
+            # 標籤指令：直接回覆，不走 buffer
+            if text.strip().splitlines()[0].strip().startswith("標籤"):
+                ack = handle_internal_label_queue(text)
+                if ack:
+                    _send_reply(event.reply_token, event.source.group_id, ack, line_api)
+                return
             # 訊息本身或 buffer 含上架/存文/存圖/加圖/新建品項/新增品項 → 跳過 quick_reply
             _SKIP_QUICK_KW = ("上架", "存圖", "加圖", "存文", "新建品項", "新增品項")
             _skip_quick = any(kw in text for kw in _SKIP_QUICK_KW)
