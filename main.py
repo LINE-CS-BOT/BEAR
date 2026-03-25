@@ -2871,6 +2871,13 @@ def on_message(event: MessageEvent):
         # 自動記錄客戶 LINE ID + 顯示名稱
         profile = _get_profile_cached(line_api, user_id)
         display_name = profile.display_name if profile else ""
+        # 群組訊息且 get_profile 失敗 → 嘗試 get_group_member_profile
+        if not display_name and source_type == "group":
+            try:
+                _gp = line_api.get_group_member_profile(event.source.group_id, user_id)
+                display_name = _gp.display_name or ""
+            except Exception:
+                pass
         try:
             if display_name:  # display_name 空白時不建立空記錄
                 customer_store.upsert_from_line(user_id, display_name)
