@@ -511,7 +511,7 @@ def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
         if user_id in _txt_buffer:
             _txt_buffer[user_id]["timer"].cancel()
             _txt_buffer[user_id]["lines"].append(text)
-            # 每次更新 reply_token（保留最新的）
+            # 每次更新 reply_token（保留最新的，離過期最遠）
             if reply_token:
                 _txt_buffer[user_id]["reply_token"] = reply_token
             all_text = "\n".join(_txt_buffer[user_id]["lines"])
