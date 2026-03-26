@@ -76,14 +76,21 @@ def parse_specs(text: str) -> dict:
             if not line:
                 continue
 
-            # 去除行首 emoji/符號，方便匹配
-            _clean = re.sub(r'^[\U0001f300-\U0001faff\u2600-\u27bf\u2702-\u27b0‼️⁉️*✨⭐️🔥💥⚠️🎉❤️]+\s*', '', line)
+            # 去除行首 emoji/符號，方便匹配（涵蓋所有 Unicode emoji 區段）
+            _clean = re.sub(r'^[\U0001f300-\U0001faff\U0001f600-\U0001f64f\U0001f680-\U0001f6ff\u2600-\u27bf\u2702-\u27b0\ufe0f\u200d‼️⁉️*✨⭐️🔥💥⚠️🎉❤️❇️🐚🌈☀️]+\s*', '', line)
 
             # 編號（支援「編號：」「產品編號：」「商品編號：」「貨號：」「新編號：」）
             m = re.match(r"(?:產品|商品|新)?(?:編號|貨號)[：:](.+)", _clean)
             if m:
                 code = m.group(1).strip()
                 continue
+
+            # 編號 fallback：純貨號行（如 U0380、T1202、Z3300）
+            if not code:
+                m = re.match(r'^([A-Za-z]\d{3,5}(?:-\d+)?)$', _clean.strip())
+                if m:
+                    code = m.group(1).strip()
+                    continue
 
             # 建議台型
             m = re.match(r"建議[：:](.+)", _clean)
@@ -114,8 +121,8 @@ def parse_specs(text: str) -> dict:
                     size = m_size_fb.group(0).strip()
                     continue
 
-            # 重量（支援「重量：」「產品重量：」「單盒重量：」「單顆重量：」）
-            m = re.match(r"(?:產品|單盒|單顆)?重量[：: ]*(.+)", _clean)
+            # 重量（支援「重量：」「產品重量：」「單盒重量：」「單顆重量：」「每盒重量：」）
+            m = re.match(r"(?:產品|單盒|單顆|每盒)?重量[：: ]*(.+)", _clean)
             if m:
                 weight = m.group(1).strip()
                 # 去除「約：」「約」前綴
