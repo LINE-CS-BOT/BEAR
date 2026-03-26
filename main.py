@@ -2787,7 +2787,18 @@ async def admin_notify_list(q: str = "", status: str = ""):
             r["box_qty"] = box_qty
         return r
 
-    records = [_enrich(r) for r in records]
+    enriched = []
+    for r in records:
+        try:
+            enriched.append(_enrich(r))
+        except Exception as _e:
+            print(f"[admin/notify] enrich 失敗 id={r.get('id')}: {_e}", flush=True)
+            r["customer_name"] = r.get("user_id", "?")[:20]
+            r["qty_display"] = f"{r.get('qty_wanted', 0)}個"
+            r["unit"] = "個"
+            r["box_qty"] = 0
+            enriched.append(r)
+    records = enriched
 
     # 狀態篩選
     if status:
@@ -2802,9 +2813,9 @@ async def admin_notify_list(q: str = "", status: str = ""):
             or kw in r.get("prod_name", "").upper()
         )]
 
-    # 待通知只顯示最新 10 筆
+    # 待通知顯示全部 pending（不截斷）
     if not q and not status:
-        pending = [r for r in records if r["status"] == "pending"][-10:]
+        pending = [r for r in records if r["status"] == "pending"]
         others = [r for r in records if r["status"] != "pending"]
         records = pending + others
 
@@ -3294,6 +3305,17 @@ def _handle_stateful(
         else:
             # 選不到 → 再問一次
             return tone.ask_product_clarify(state.get("keyword", ""), candidates)
+
+    # ── 改單/取消偵測（所有 stateful 狀態共用）──────────────
+    _CHANGE_KW = ["改訂單", "改數量", "改成", "改為", "改下單",
+                  "取消訂單", "我取消", "不要了", "我不要",
+                  "減少", "少叫", "多叫", "加訂", "追加",
+                  "幫我改", "幫改", "修改訂單"]
+    if any(kw in text for kw in _CHANGE_KW):
+        state_manager.clear(user_id)
+        issue_store.add(user_id, "order_change", text)
+        print(f"[stateful] 改單/取消 → 清除狀態，進待處理 user={user_id[:10]}...: {text!r}")
+        return "稍等一下喔"
 
     # ── 等待數量：客戶確認要購買幾個 ──────────────
     if action == "awaiting_quantity":
@@ -3807,6 +3829,10 @@ def _dispatch(
         return handle_address_change(user_id, text, line_api)
     elif intent == Intent.COMPLAINT:
         return handle_complaint(user_id, text, line_api)
+    elif intent == Intent.ORDER_CHANGE:
+        issue_store.add(user_id, "order_change", text)
+        print(f"[dispatch] 改單/取消 → 進待處理 user={user_id[:10]}...: {text!r}")
+        return "稍等一下喔"
     elif intent == Intent.URGENT_ORDER:
         return handle_urgent_order(user_id, text, line_api)
     elif intent == Intent.NOTIFY_REQUEST:

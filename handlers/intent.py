@@ -21,6 +21,7 @@ class Intent(Enum):
     MACHINE_SIZE = "machine_size"
     VISIT_STORE = "visit_store"
     CREDIT_CARD = "credit_card"
+    ORDER_CHANGE = "order_change"
     UNKNOWN = "unknown"
 
 
@@ -177,6 +178,16 @@ def detect_intent(text: str) -> Intent:
     for kw in _ADDRESS_CHANGE_KEYWORDS:
         if kw in text:
             return Intent.ADDRESS_CHANGE
+
+    # 改單/取消（在催貨之前判，避免「取消訂單」被誤判成催貨）
+    _ORDER_CHANGE_KEYWORDS = [
+        "改訂單", "改數量", "改成", "改為", "改下單",
+        "取消訂單", "我取消", "不要了", "我不要",
+        "減少", "少叫", "多叫", "加訂", "追加",
+        "幫我改", "幫改", "修改訂單",
+    ]
+    if any(kw in text for kw in _ORDER_CHANGE_KEYWORDS):
+        return Intent.ORDER_CHANGE
 
     # 非制式催貨（比正式查單先判，避免「到了嗎」干擾）
     for kw in _URGENT_ORDER_KEYWORDS:
