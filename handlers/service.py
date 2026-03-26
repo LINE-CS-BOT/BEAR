@@ -224,13 +224,10 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
             print(f"[image] pHash 弱命中備援 → {prod_code}")
 
     if not prod_code:
-        # OCR 也找不到 → 記錄 DB，納入每小時待處理清單
+        # OCR 也找不到 → 靜默記錄，納入待處理清單（不回覆客戶）
         issue_store.add(user_id, "image_query", "（傳來一張圖片，無法辨識）")
-        now = datetime.now(pytz.timezone(_settings.BUSINESS_TZ))
-        if _is_open_now(now):
-            return tone.checking()
-        else:
-            return "上班時處理嘿"
+        print(f"[image] 辨識失敗 → 靜默進待處理 user={user_id[:10]}...")
+        return None
 
     # 識別成功 → 查庫存
     from storage.state import state_manager

@@ -169,6 +169,59 @@ def parse_specs(text: str) -> dict:
     return specs
 
 
+def _strip_paren_prefix(name: str) -> str:
+    """去除品名開頭的括號前綴，如 '(大)潮牌跑酷' → '潮牌跑酷'、'（原）三麗鷗' → '三麗鷗'"""
+    return re.sub(r'^[\(（][^)）]*[\)）]\s*', '', name).strip()
+
+
+def _format_price(price_val) -> str:
+    """價格統一為 '數字元' 格式，如 109.0 → '109元'、'109元' → '109元'"""
+    if isinstance(price_val, (int, float)) and price_val > 0:
+        n = int(price_val) if price_val == int(price_val) else price_val
+        return f"{n}元"
+    if isinstance(price_val, str):
+        m = re.search(r'(\d+(?:\.\d+)?)', price_val)
+        if m:
+            n = float(m.group(1))
+            n = int(n) if n == int(n) else n
+            return f"{n}元"
+    return ""
+
+
+def _enrich_from_ecount(specs: dict) -> dict:
+    """用 Ecount 品項資料覆蓋品名和價格"""
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    try:
+        from services.ecount import ecount_client
+        ecount_client._ensure_product_cache()
+    except Exception as e:
+        print(f"⚠️ 無法載入 Ecount 品項快取：{e}")
+        return specs
+
+    matched = 0
+    for code, s in specs.items():
+        item = ecount_client.get_product_cache_item(code)
+        if not item:
+            # 品名/價格保留 PO 文原始值，但統一格式
+            s["name"] = _strip_paren_prefix(s["name"]) if s["name"] else ""
+            s["price"] = _format_price(s["price"])
+            continue
+        matched += 1
+        # 品名：用 Ecount 的，去掉括號前綴
+        ec_name = _strip_paren_prefix(item.get("name", ""))
+        if ec_name:
+            s["name"] = ec_name
+        # 價格：用 Ecount 的 OUT_PRICE
+        ec_price = item.get("price", 0)
+        if ec_price and ec_price > 0:
+            s["price"] = _format_price(ec_price)
+        else:
+            s["price"] = _format_price(s["price"])
+
+    print(f"[enrich] Ecount 匹配 {matched}/{len(specs)} 筆")
+    return specs
+
+
 def main():
     try:
         exists = SOURCE.exists()
@@ -180,6 +233,9 @@ def main():
 
     text = SOURCE.read_text(encoding="utf-8")
     specs = parse_specs(text)
+
+    # 用 Ecount 覆蓋品名和價格
+    specs = _enrich_from_ecount(specs)
 
     OUTPUT.parent.mkdir(exist_ok=True)
     with open(OUTPUT, "w", encoding="utf-8") as f:
