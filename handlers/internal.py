@@ -3579,12 +3579,20 @@ def _build_one_product(fields: dict) -> str:
     if _prod_size:   extra["REMARKS_WIN"]  = _prod_size     # 尺寸 → REMARKS_WIN
     if _prod_weight: extra["CONT1"]        = _prod_weight   # 重量 → CONT1
 
-    result = ecount_client.save_product(
-        prod_cd=prod_cd, prod_name=prod_name, unit=unit, extra=extra,
-    )
-
-    ok = isinstance(result, dict) and result.get("ok")
-    error_msg = result.get("error", "") if isinstance(result, dict) else ""
+    # 先檢查品項是否已存在
+    _existing = ecount_client.get_product_cache_item(prod_cd)
+    if _existing:
+        # 品項已存在 → 跳過新增，直接視為成功
+        print(f"[內部] 品項已存在，跳過新增: {prod_cd} ({_existing.get('name', '')})")
+        ok = True
+        error_msg = ""
+        result = {"ok": True, "slip": prod_cd}
+    else:
+        result = ecount_client.save_product(
+            prod_cd=prod_cd, prod_name=prod_name, unit=unit, extra=extra,
+        )
+        ok = isinstance(result, dict) and result.get("ok")
+        error_msg = result.get("error", "") if isinstance(result, dict) else ""
 
     if ok:
         # 標記品項快取過期，下次查詢時自動刷新（避免連續新增時重複呼叫 API）

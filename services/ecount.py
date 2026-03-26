@@ -341,9 +341,12 @@ class EcountClient:
                 print(f"[Ecount] save_product 成功: {prod_cd} → {slip}")
                 return {"ok": True, "slip": slip or prod_cd}
             errors = data.get("Errors") or []
-            msgs = " | ".join(e.get("Message", "") for e in errors)
-            print(f"[Ecount] save_product 失敗: {msgs}")
-            return {"ok": False, "error": msgs or "未知錯誤"}
+            msgs = " | ".join(e.get("Message", "") for e in errors if e.get("Message"))
+            status = data.get("Status", "?")
+            if not msgs:
+                msgs = f"Ecount 回傳 Status={status}"
+            print(f"[Ecount] save_product 失敗: {prod_cd} | {msgs} | raw={data}")
+            return {"ok": False, "error": msgs}
         except Exception as e:
             print(f"[Ecount] save_product 錯誤: {e}")
             return {"ok": False, "error": str(e)}
