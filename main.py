@@ -531,6 +531,29 @@ def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
     timer.start()
 
 
+def _handle_missing_ecount_name(text: str) -> str | None:
+    """內部群指令「缺品名」：列出 specs 裡 Ecount 查不到品名的貨號"""
+    if text.strip() not in ("缺品名", "無品名"):
+        return None
+    import json as _json
+    from scripts.import_specs import OUTPUT
+    from services.ecount import ecount_client
+    try:
+        specs = _json.loads(OUTPUT.read_text(encoding="utf-8")) if OUTPUT.exists() else {}
+    except Exception:
+        return "❌ 讀取 specs.json 失敗"
+    ecount_client._ensure_product_cache()
+    missing = []
+    for code, s in specs.items():
+        item = ecount_client.get_product_cache_item(code)
+        if not item or not (item.get("name") or "").strip():
+            spec_name = s.get("name", "")
+            missing.append(f"  {code}：{spec_name}")
+    if not missing:
+        return "✅ 所有規格品項都有 Ecount 品名"
+    return f"⚠️ Ecount 無品名（{len(missing)} 筆）：\n" + "\n".join(missing)
+
+
 def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str | None:
     """內部群組 fallback dispatch chain"""
     return (
@@ -3116,7 +3139,8 @@ def on_message(event: MessageEvent):
             # 簡單查詢指令：直接 reply 不走 buffer（避免 token 過期）
             from handlers.internal import handle_internal_spec_query as _spec_q
             _quick_reply = (
-                handle_internal_rebate(text)
+                _handle_missing_ecount_name(text)
+                or handle_internal_rebate(text)
                 or handle_internal_unfulfilled(text)
                 or handle_internal_unclaimed(text)
                 or _spec_q(text)

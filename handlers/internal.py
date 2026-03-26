@@ -2931,16 +2931,17 @@ def _generate_labels_sync(codes: list[str]) -> dict:
     """
     result = {"pdfs": [], "missing": [], "error": None}
     try:
-        from scripts.import_specs import parse_specs, OUTPUT, SOURCE
+        from scripts.import_specs import parse_specs, _enrich_from_ecount, OUTPUT, SOURCE
         import json as _json
 
-        # 1. 同步解析 PO文，更新 specs.json
+        # 1. 同步解析 PO文，用 Ecount 覆蓋品名/價格，更新 specs.json
         try:
             exists = SOURCE.exists()
         except OSError:
             exists = False
         if exists:
             specs = parse_specs(SOURCE.read_text(encoding="utf-8"))
+            specs = _enrich_from_ecount(specs)
             OUTPUT.parent.mkdir(exist_ok=True)
             OUTPUT.write_text(
                 _json.dumps(specs, ensure_ascii=False, indent=2),
