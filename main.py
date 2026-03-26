@@ -3138,12 +3138,14 @@ def on_message(event: MessageEvent):
                 return
             # 簡單查詢指令：直接 reply 不走 buffer（避免 token 過期）
             from handlers.internal import handle_internal_spec_query as _spec_q
+            from handlers.internal import handle_internal_inventory as _inv_q
             _quick_reply = (
                 _handle_missing_ecount_name(text)
                 or handle_internal_rebate(text)
                 or handle_internal_unfulfilled(text)
                 or handle_internal_unclaimed(text)
                 or _spec_q(text)
+                or _inv_q(text)
             )
             if _quick_reply:
                 _send_reply(event.reply_token, event.source.group_id,
