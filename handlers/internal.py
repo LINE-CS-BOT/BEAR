@@ -2959,6 +2959,7 @@ def _generate_labels_sync(codes: list[str]) -> dict:
                 specs = {}
 
         # 2. 找出哪些 code 在 specs 裡找不到或 Ecount 無品名
+        ecount_client._cache_expires = 0  # 強制刷新，確保新增品項後能查到
         result["no_name"] = []
         for c in codes:
             uc = c.upper()
@@ -3667,6 +3668,9 @@ def handle_internal_label_queue(text: str, state_key: str | None = None) -> str 
             specs_data = _json2.loads(SPECS_OUTPUT.read_text(encoding="utf-8")) if SPECS_OUTPUT.exists() else {}
     except Exception:
         specs_data = {}
+
+    # 強制刷新 Ecount 品項快取，確保新增品項後能立即查到
+    ecount_client._cache_expires = 0
 
     valid = []
     missing = []
