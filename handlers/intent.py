@@ -204,9 +204,11 @@ def detect_intent(text: str) -> Intent:
         if kw in text:
             return Intent.BARGAINING
 
-    # 運費相關問題優先排除，不走 PRICE（→ UNKNOWN 轉真人）
-    _SHIPPING_WORDS = ["運費", "含運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
-    if not any(w in text for w in _SHIPPING_WORDS):
+    # 運費/免運相關問題 → 直接 UNKNOWN（轉真人靜默）
+    _SHIPPING_WORDS = ["運費", "含運", "免運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
+    if any(w in text for w in _SHIPPING_WORDS):
+        return Intent.UNKNOWN
+    if True:
         for kw in _PRICE_KEYWORDS:
             if kw in text:
                 return Intent.PRICE
