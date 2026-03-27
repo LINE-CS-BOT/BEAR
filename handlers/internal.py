@@ -3574,8 +3574,8 @@ def _build_one_product(fields: dict) -> str:
     if out_price:    extra["OUT_PRICE"]    = out_price
     if in_price:     extra["IN_PRICE"]     = in_price
     if size_des:     extra["SIZE_DES"]     = size_des
-    # 從規格提取裝箱數（如「20個/箱」→ EXCH_RATE=20）
-    _box_m = re.search(r'(\d+)\s*(?:個|盒|入)\s*/\s*(?:箱|件)', size_des)
+    # 從規格提取裝箱數（如「20個/箱」「24/箱」→ EXCH_RATE=20）
+    _box_m = re.search(r'(\d+)\s*(?:個|盒|入)?\s*/\s*(?:箱|件)', size_des)
     if _box_m:       extra["EXCH_RATE"]    = _box_m.group(1)
     if _prod_size:   extra["REMARKS_WIN"]  = _prod_size     # 尺寸 → REMARKS_WIN
     if _prod_weight: extra["CONT1"]        = _prod_weight   # 重量 → CONT1
