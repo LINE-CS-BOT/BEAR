@@ -3123,7 +3123,7 @@ def on_message(event: MessageEvent):
                     _send_reply(event.reply_token, event.source.group_id, ack, line_api)
                 return
             # 訊息本身或 buffer 含上架/存文/存圖/加圖/新建品項/新增品項 → 跳過 quick_reply
-            _SKIP_QUICK_KW = ("上架", "存圖", "加圖", "存文", "新建品項", "新增品項")
+            _SKIP_QUICK_KW = ("上架", "存圖", "加圖", "存文")
             _skip_quick = any(kw in text for kw in _SKIP_QUICK_KW)
             if not _skip_quick:
                 with _txt_buffer_lock:
@@ -3139,8 +3139,10 @@ def on_message(event: MessageEvent):
             # 簡單查詢指令：直接 reply 不走 buffer（避免 token 過期）
             from handlers.internal import handle_internal_spec_query as _spec_q
             from handlers.internal import handle_internal_inventory as _inv_q
+            from handlers.internal import handle_internal_new_product as _new_prod
             _quick_reply = (
                 _handle_missing_ecount_name(text)
+                or _new_prod(text)
                 or handle_internal_rebate(text)
                 or handle_internal_unfulfilled(text)
                 or handle_internal_unclaimed(text)
