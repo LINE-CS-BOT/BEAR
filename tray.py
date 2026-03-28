@@ -25,8 +25,7 @@ if not os.path.exists(PYTHON):          # fallback
     PYTHON  = sys.executable
 LOCK_FILE   = os.path.join(BASE_DIR, "data", "tray.lock")
 
-UVICORN_CMD = [PYTHON, "-m", "uvicorn", "main:app",
-               "--host", "0.0.0.0", "--port", "8000", "--reload"]
+UVICORN_CMD = [PYTHON, "main.py"]
 
 CADDY_EXE   = os.path.join(BASE_DIR, "caddy.exe")
 CADDY_CMD   = [CADDY_EXE, "run", "--config", os.path.join(BASE_DIR, "Caddyfile")]

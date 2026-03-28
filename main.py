@@ -3148,6 +3148,7 @@ def on_message(event: MessageEvent):
                 or handle_internal_unclaimed(text)
                 or _spec_q(text)
                 or _inv_q(text)
+                or handle_internal_order(text, line_api, group_id=event.source.group_id)
             )
             if _quick_reply:
                 _send_reply(event.reply_token, event.source.group_id,
@@ -3371,7 +3372,13 @@ def _handle_stateful(
             state_manager.clear(user_id)
             return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
         else:
-            # 數量不明，保留狀態再問一次
+            # 訊息明顯不是回答數量（問句、其他意圖）→ 清 state，走正常流程
+            _other_intent = detect_intent(text)
+            if _other_intent and _other_intent not in (Intent.UNKNOWN, Intent.CONFIRMATION):
+                state_manager.clear(user_id)
+                print(f"[stateful] awaiting_quantity 但意圖={_other_intent.value}，清除狀態", flush=True)
+                return None  # 回 None 讓訊息走正常 dispatch
+            # 純粹數量不明（如「嗯」「？」），保留狀態再問一次
             prod_name = state.get("prod_name", "這款")
             return tone.ask_quantity(prod_name)
 
@@ -3426,6 +3433,12 @@ def _handle_stateful(
             state_manager.clear(user_id)
             return f"好的{tone.suffix_light()} 有需要再找我哦"
         else:
+            # 訊息明顯不是回答數量（問句、其他意圖）→ 清 state，走正常流程
+            _other_intent = detect_intent(text)
+            if _other_intent and _other_intent not in (Intent.UNKNOWN, Intent.CONFIRMATION):
+                state_manager.clear(user_id)
+                print(f"[stateful] awaiting_restock_qty 但意圖={_other_intent.value}，清除狀態", flush=True)
+                return None
             prod_name = state.get("prod_name", "這款")
             return tone.ask_quantity(prod_name)
 
@@ -3889,5 +3902,8 @@ def _dispatch(
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True,
+                reload_delay=1.5,
+                reload_excludes=["data", "*.log", "截圖用", "static"])
+# reload trigger v2
 # reload trigger
