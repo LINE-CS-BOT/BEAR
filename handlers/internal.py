@@ -3421,7 +3421,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
         unit = unit_bare_m.group(1) if unit_bare_m else "個"
 
     # 品名：優先從「品名：」「產品名稱：」標籤取值
-    name_label_m = re.search(r'(?:產品名稱|品名)\s*[:：]\s*(.+?)(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|出庫|入庫|加盟|單位|規格)|$)', flat)
+    name_label_m = re.search(r'(?:產品名稱|品名)\s*[:：]\s*(.+?)(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|建議|包裝)|$)', flat)
     if name_label_m:
         prod_name = name_label_m.group(1).strip()
     else:
