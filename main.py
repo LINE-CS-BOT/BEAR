@@ -3868,6 +3868,8 @@ def _dispatch(
         return handle_multi_product(user_id, text)
     elif intent == Intent.ADDRESS_CHANGE:
         return handle_address_change(user_id, text, line_api)
+    elif intent == Intent.ADDRESS_QUERY:
+        return tone.address_query()
     elif intent == Intent.COMPLAINT:
         return handle_complaint(user_id, text, line_api)
     elif intent == Intent.ORDER_CHANGE:
@@ -3902,8 +3904,8 @@ def _dispatch(
 
 
 if __name__ == "__main__":
+    import os as _os
+    _os.environ["WATCHFILES_FORCE_POLLING"] = "true"
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True,
                 reload_delay=1.5,
                 reload_excludes=["data", "*.log", "截圖用", "static"])
-# reload trigger v2
-# reload trigger

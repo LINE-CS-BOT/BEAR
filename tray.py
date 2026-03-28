@@ -25,6 +25,7 @@ if not os.path.exists(PYTHON):          # fallback
     PYTHON  = sys.executable
 LOCK_FILE   = os.path.join(BASE_DIR, "data", "tray.lock")
 
+os.environ["WATCHFILES_FORCE_POLLING"] = "true"
 UVICORN_CMD = [PYTHON, "main.py"]
 
 CADDY_EXE   = os.path.join(BASE_DIR, "caddy.exe")

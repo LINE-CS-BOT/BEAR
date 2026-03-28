@@ -14,6 +14,7 @@ class Intent(Enum):
     RETURN = "return"
     MULTI_PRODUCT = "multi_product"
     ADDRESS_CHANGE = "address_change"
+    ADDRESS_QUERY = "address_query"
     COMPLAINT = "complaint"
     URGENT_ORDER = "urgent_order"
     NOTIFY_REQUEST = "notify_request"
@@ -48,6 +49,12 @@ _ADDRESS_CHANGE_KEYWORDS = [
     "改地址", "換地址", "地址改", "地址錯了", "送錯地址",
     "改收件", "換收件", "改配送", "地址要改", "地址變更",
     "收件人", "改名字", "地址打錯", "地址填錯",
+]
+
+_ADDRESS_QUERY_KEYWORDS = [
+    "地址", "在哪裡", "在哪", "怎麼去", "怎麼走",
+    "店址", "店在哪", "地點", "位置", "在哪邊",
+    "導航", "路線",
 ]
 
 _CHECKOUT_KEYWORDS = [
@@ -178,6 +185,11 @@ def detect_intent(text: str) -> Intent:
     for kw in _ADDRESS_CHANGE_KEYWORDS:
         if kw in text:
             return Intent.ADDRESS_CHANGE
+
+    # 地址查詢（在地址更改之後判，避免「改地址」被誤判）
+    for kw in _ADDRESS_QUERY_KEYWORDS:
+        if kw in text:
+            return Intent.ADDRESS_QUERY
 
     # 改單/取消（在催貨之前判，避免「取消訂單」被誤判成催貨）
     _ORDER_CHANGE_KEYWORDS = [

@@ -269,6 +269,16 @@ def ask_product_clarify(keyword: str, candidates: list) -> str:
     return "\n".join(lines)
 
 
+def preorder_ask_qty(name: str) -> str:
+    """預購商品，問客戶要幾個"""
+    b = boss()
+    return random.choice([
+        f"「{name}」是預購商品唷！請問{b}需要幾個呢？",
+        f"這款是預購商品{suffix_light()} 請問{b}要訂幾個呢？",
+        f"「{name}」目前是預購的哦～ 請問{b}需要幾個？",
+    ])
+
+
 def out_of_stock_ask_qty(name: str) -> str:
     """缺貨，但先問數量以便詢問總公司調貨"""
     b = boss()
@@ -515,6 +525,17 @@ def return_ack() -> str:
 
 
 # ── 地址更改已記錄 ────────────────────────────────────
+def address_query() -> str:
+    """回覆店家地址"""
+    b = boss()
+    addr = _settings.STORE_ADDRESS
+    return random.choice([
+        f"{b}您好！我們的地址是：\n📍 {addr}\n歡迎來店面逛逛哦",
+        f"我們的店在這邊唷～\n📍 {addr}\n{b}有需要可以直接過來哦",
+        f"地址給您：\n📍 {addr}\n歡迎{b}來店裡逛逛",
+    ])
+
+
 def address_change_ack() -> str:
     b = boss()
     return random.choice([
