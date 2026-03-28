@@ -838,6 +838,8 @@ def main():
     parser.add_argument("--save-only", action="store_true", help="只存 JSON，不同步 DB")
     parser.add_argument("--from-file", action="store_true",
                         help=f"從 {OUTPUT_JSON} 讀取（跳過爬蟲）")
+    parser.add_argument("--auto", action="store_true",
+                        help="排程用（非互動模式，失敗時直接退出）")
     args = parser.parse_args()
 
     print("=" * 60)

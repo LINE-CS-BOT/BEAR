@@ -263,10 +263,15 @@ def _cn_to_int(text: str) -> int | None:
         ones = _CN_DIGIT.get(m.group(2), 0)   # 空白 → 個位 0
         val = tens * 10 + ones
         return val if val > 0 else None
-    # 單個中文數字（一–九）
+    # 單個中文數字（一–九）＋量詞，避免「一次」「一下」「一起」等誤判
+    _cn_unit = r'(?:個|箱|件|盒|組|台|條|瓶|套|份|片|包|罐|顆|粒)'
     for char, val in _CN_DIGIT.items():
-        if char in text:
+        if re.search(char + _cn_unit, text):
             return val
+    # 純中文數字（整段訊息就是一個中文數字，例如「三」）
+    stripped = text.strip()
+    if len(stripped) == 1 and stripped in _CN_DIGIT:
+        return _CN_DIGIT[stripped]
     return None
 
 

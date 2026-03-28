@@ -9,7 +9,7 @@ echo ===================================
 echo.
 
 :: 啟動 FastAPI server（新視窗）
-start "LINE Bot Server" cmd /k "cd /d %WORKDIR% && %PYTHON% -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+start "LINE Bot Server" cmd /k "cd /d %WORKDIR% && %PYTHON% main.py"
 
 :: 等待 server 啟動
 timeout /t 3 > nul
