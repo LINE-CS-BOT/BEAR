@@ -3891,11 +3891,12 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
 
 _UNFULFILLED_PATH = Path(__file__).parent.parent / "data" / "unfulfilled_orders.json"
 
-_UNFULFILLED_KW = ["未處理"]
+_UNFULFILLED_KW = ["未備貨"]
+_UNFULFILLED_ALL_KW = ["未備貨資料"]
 
 
 def _load_unfulfilled() -> list[dict]:
-    """載入未處理訂單資料"""
+    """載入未備貨訂單資料"""
     if not _UNFULFILLED_PATH.exists():
         return []
     try:
@@ -3925,22 +3926,12 @@ def _refresh_unfulfilled():
 
 def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str | None:
     """
-    內部群未處理訂單查詢：
-      「XXX 未處理」  → 查特定產品或客戶的未處理訂單
-    需要有關鍵字才觸發，單純「未處理」不觸發。
+    內部群未備貨訂單查詢：
+      「未備貨資料」      → 列出全部未備貨訂單
+      「XXX 未備貨」      → 查特定產品或客戶的未備貨訂單
     """
     t = text.strip()
     if not any(kw in t for kw in _UNFULFILLED_KW):
-        return None
-
-    # 提取查詢關鍵字
-    query = t
-    for kw in _UNFULFILLED_KW + ["查", "查詢", "訂單", "？", "?", " "]:
-        query = query.replace(kw, "")
-    query = query.strip()
-
-    # 需要有查詢對象，單純「未處理」不觸發
-    if not query:
         return None
 
     # 檔案超過 30 分鐘自動更新
@@ -3950,7 +3941,28 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
 
     orders = _load_unfulfilled()
     if not orders:
-        return "📋 目前沒有未處理訂單資料"
+        return "📋 目前沒有未備貨訂單資料"
+
+    # 「未備貨資料」→ 全部列出（按客戶分組）
+    if any(kw in t for kw in _UNFULFILLED_ALL_KW):
+        custs: dict[str, list] = {}
+        for o in orders:
+            custs.setdefault(o["customer"], []).append(o)
+        lines = [f"📋 全部未備貨訂單（{len(orders)} 筆，{len(custs)} 位客戶）"]
+        for cust, cust_orders in sorted(custs.items()):
+            items = "、".join(f"{o['code']}*{o['qty']:g}" for o in cust_orders)
+            lines.append(f"  {cust}: {items}")
+        return "\n".join(lines)
+
+    # 提取查詢關鍵字
+    query = t
+    for kw in _UNFULFILLED_KW + ["查", "查詢", "訂單", "？", "?", " "]:
+        query = query.replace(kw, "")
+    query = query.strip()
+
+    # 沒有查詢對象 → 不觸發
+    if not query:
+        return None
 
     # 搜尋產品或客戶
     matched = [o for o in orders
@@ -3958,21 +3970,19 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
                or query in o["name"]
                or query in o["customer"]]
     if not matched:
-        return f"📋 找不到「{query}」的未處理訂單"
+        return f"📋 找不到「{query}」的未備貨訂單"
 
     # 判斷是否為產品查詢（所有結果同一產品）
     total_qty = sum(o["qty"] for o in matched)
     codes = set(o["code"] for o in matched)
     if len(codes) == 1:
-        # 產品查詢：標題顯示編碼+品名
         first = matched[0]
-        lines = [f"{first['code']} {first['name']} 未處理訂單({len(matched)}筆)"]
+        lines = [f"{first['code']} {first['name']} 未備貨訂單({len(matched)}筆)"]
         for o in matched:
             note_str = f" {o['note']}" if o.get("note") else ""
             lines.append(f"{o['customer']} *{o['qty']:g}{note_str}")
     else:
-        # 客戶或混合查詢
-        lines = [f"「{query}」未處理訂單({len(matched)}筆)"]
+        lines = [f"「{query}」未備貨訂單({len(matched)}筆)"]
         for o in matched:
             note_str = f" {o['note']}" if o.get("note") else ""
             lines.append(f"{o['code']} {o['name'][:18]} *{o['qty']:g}{note_str}")

@@ -8,6 +8,29 @@ from storage.state import state_manager
 from handlers import tone
 
 
+def _check_preorder(prod_cd: str) -> bool:
+    """檢查 PO文 或品名是否含「預購」，判斷是否為預購商品"""
+    from storage import specs as spec_store
+    spec = spec_store.get_by_code(prod_cd)
+    if spec:
+        name = spec.get("name", "")
+        if "預購" in name:
+            return True
+    # 也檢查 Ecount 品名
+    cache = ecount_client.get_product_cache_item(prod_cd)
+    if cache and "預購" in (cache.get("name") or ""):
+        return True
+    # 檢查原始 PO文
+    try:
+        from handlers.internal import _get_raw_po_block
+        raw = _get_raw_po_block(prod_cd)
+        if raw and "預購" in raw:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def handle_inventory(user_id: str, text: str, line_api: MessagingApi) -> str:
     """處理庫存查詢入口"""
     # 複合詢問（AA 和 BB 都有嗎）→ 嘗試同時查詢
@@ -175,6 +198,15 @@ def _query_single_product(user_id: str, prod_cd: str, line_api: MessagingApi = N
             return tone.in_stock_low(name) + case_tip
         return tone.in_stock(name) + case_tip
     else:
+        # 預購判斷：PO文含「預購」→ 走預購流程（直接問數量下單）
+        _is_preorder = _check_preorder(item["code"])
+        if _is_preorder:
+            state_manager.set(user_id, {
+                "action":    "awaiting_quantity",
+                "prod_cd":   item["code"],
+                "prod_name": name,
+            })
+            return tone.preorder_ask_qty(name)
         state_manager.set(user_id, {
             "action":    "awaiting_restock_qty",
             "prod_name": name,
