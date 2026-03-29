@@ -304,7 +304,7 @@ _media_buf: dict[str, dict] = {}
 _media_buf_lock = _threading.Lock()
 
 # ── 上架 Session 自動完成 timer（圖片傳完 30 秒無後續自動 finish）────
-_UPLOAD_AUTO_FINISH_SECS = 30.0
+_UPLOAD_AUTO_FINISH_SECS = 15.0
 _upload_finish_timers: dict[str, _threading.Timer] = {}
 _upload_finish_timers_lock = _threading.Lock()
 
