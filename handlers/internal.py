@@ -4148,3 +4148,68 @@ def handle_internal_unclaimed(text: str, state_key: str | None = None) -> str | 
         for o in cust_orders:
             lines.append(f"  {o['product'][:20]} *{o['qty']:g}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 客戶訂單查詢（未備貨 + 已備貨未取）
+# ---------------------------------------------------------------------------
+
+_ORDER_KW = ["訂單"]
+
+
+def handle_internal_customer_orders(text: str, state_key: str | None = None) -> str | None:
+    """
+    內部群客戶訂單查詢：
+      「鄭家展訂單」→ 列出該客戶的未備貨 + 已備貨未取訂單
+    """
+    t = text.strip()
+    if not any(kw in t for kw in _ORDER_KW):
+        return None
+
+    # 提取客戶名
+    query = t
+    for kw in _ORDER_KW + ["查", "查詢", "？", "?", " "]:
+        query = query.replace(kw, "")
+    query = query.strip()
+    if not query:
+        return None  # 沒有客戶名，不處理
+
+    # 確保兩個資料檔都是最新的
+    if _unfulfilled_needs_refresh():
+        print("[customer-orders] 未備貨資料過期，自動更新...")
+        _refresh_unfulfilled()
+    if _unclaimed_needs_refresh():
+        print("[customer-orders] 未取資料過期，自動更新...")
+        _refresh_unclaimed()
+
+    # 載入未備貨
+    unfulfilled = _load_unfulfilled()
+    uf_matched = [o for o in unfulfilled if query in o.get("customer", "")]
+
+    # 載入已備貨未取
+    unclaimed = _load_unclaimed()
+    uc_matched = [o for o in unclaimed if query in o.get("customer", "")]
+
+    if not uf_matched and not uc_matched:
+        return f"📋 找不到「{query}」的訂單"
+
+    lines = [f"📋「{query}」訂單"]
+
+    if uf_matched:
+        total_qty = sum(o.get("qty", 0) for o in uf_matched)
+        lines.append(f"\n⏳ 未備貨（{len(uf_matched)}筆，共 {total_qty:g} 件）")
+        for o in uf_matched:
+            name = o.get("name", "")[:20]
+            code = o.get("code", "")
+            qty = o.get("qty", 0)
+            lines.append(f"  {code} {name} *{qty:g}")
+
+    if uc_matched:
+        total_qty = sum(o.get("qty", 0) for o in uc_matched)
+        lines.append(f"\n✅ 已備貨未取（{len(uc_matched)}筆，共 {total_qty:g} 件）")
+        for o in uc_matched:
+            product = o.get("product", "")[:20]
+            qty = o.get("qty", 0)
+            lines.append(f"  {product} *{qty:g}")
+
+    return "\n".join(lines)
