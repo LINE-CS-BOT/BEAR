@@ -556,6 +556,9 @@ def _handle_missing_ecount_name(text: str) -> str | None:
 
 def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str | None:
     """內部群組 fallback dispatch chain"""
+    # 含 @ tag 的訊息是對話，不需要 bot 回覆
+    if "@" in combined:
+        return None
     return (
         handle_spec_inquiry_reply(group_id, combined, line_api)
         or handle_spec_inquiry_qty(group_id, combined, line_api)

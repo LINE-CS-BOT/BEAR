@@ -3996,7 +3996,7 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
 
 _UNCLAIMED_PATH = Path(__file__).parent.parent / "data" / "unclaimed_orders.json"
 
-_UNCLAIMED_KW = ["未取資料", "未取"]
+_UNCLAIMED_KW = ["未取資料", "未取", "已備貨"]
 
 
 def _load_unclaimed() -> list[dict]:
@@ -4054,7 +4054,8 @@ def handle_internal_unclaimed(text: str, state_key: str | None = None) -> str | 
         matched = [o for o in orders if query in o["customer"] or query in o["product"]]
         if not matched:
             return f"📋 找不到「{query}」的未取訂單"
-        lines = [f"「{query}」未取訂單({len(matched)}筆)"]
+        total_qty = sum(o["qty"] for o in matched)
+        lines = [f"「{query}」未取訂單({len(matched)}筆，共 {total_qty:g} 件)"]
         for o in matched:
             lines.append(f"{o['product'][:20]} *{o['qty']:g}")
         return "\n".join(lines)
