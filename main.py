@@ -65,6 +65,7 @@ from handlers.internal import (
     handle_internal_rebate,
     handle_internal_unfulfilled,
     handle_internal_unclaimed,
+    handle_internal_customer_orders,
     handle_internal_showcase_push,
     handle_internal_label_queue,
     _NEW_PROD_TRIGGER_RE,
@@ -585,6 +586,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
         or handle_internal_unclaimed(combined, group_id)
+        or handle_internal_customer_orders(combined, group_id)
         or handle_internal_consumable(combined, group_id)
         or handle_internal_spec_query(combined)
         or handle_internal_product_info(combined, group_id)
