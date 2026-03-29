@@ -60,6 +60,7 @@ def _normalize_machine(raw: str) -> str:
 
 def parse_specs(text: str) -> dict:
     specs = {}
+    _last_code = ""
     # 按空行切割產品區塊
     blocks = re.split(r"\n{2,}", text.strip())
 
@@ -80,17 +81,45 @@ def parse_specs(text: str) -> dict:
             _clean = re.sub(r'^[\U0001f300-\U0001faff\U0001f600-\U0001f64f\U0001f680-\U0001f6ff\u2600-\u27bf\u2702-\u27b0\ufe0f\u200d‼️⁉️*✨⭐️🔥💥⚠️🎉❤️❇️🐚🌈☀️]+\s*', '', line)
 
             # 編號（支援「編號：」「產品編號：」「商品編號：」「貨號：」「新編號：」）
+            _new_code = ""
             m = re.match(r"(?:產品|商品|新)?(?:編號|貨號)[：:](.+)", _clean)
             if m:
-                code = m.group(1).strip()
-                continue
-
+                raw_code = m.group(1).strip()
+                m_code_only = re.match(r'([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', raw_code)
+                _new_code = m_code_only.group(1) if m_code_only else raw_code
             # 編號 fallback：純貨號行（如 U0380、T1202、Z3300）
-            if not code:
+            if not _new_code and not code:
                 m = re.match(r'^([A-Za-z]\d{3,5}(?:-\d+)?)$', _clean.strip())
                 if m:
-                    code = m.group(1).strip()
-                    continue
+                    _new_code = m.group(1).strip()
+            if _new_code:
+                # block 內尚無貨號但有累積 specs → 屬於前一個 block 的貨號
+                if not code and _last_code and _last_code in specs and (size or weight or price):
+                    if size and not specs[_last_code]["size"]:
+                        specs[_last_code]["size"] = size
+                    if weight and not specs[_last_code]["weight"]:
+                        specs[_last_code]["weight"] = weight
+                    if price and not specs[_last_code]["price"]:
+                        specs[_last_code]["price"] = price
+                    name = size = weight = machine = price = ""
+                    first_untagged = ""
+                # 同一 block 出現第二個貨號 → 先存前一個貨號的 specs
+                elif code and code != _new_code.upper() and (size or weight or price):
+                    _save_code = code.upper()
+                    if _save_code not in specs:
+                        specs[_save_code] = {"code": _save_code, "name": name, "size": size, "weight": weight, "machine": [], "price": price}
+                    else:
+                        if size and not specs[_save_code]["size"]:
+                            specs[_save_code]["size"] = size
+                        if weight and not specs[_save_code]["weight"]:
+                            specs[_save_code]["weight"] = weight
+                        if price and not specs[_save_code]["price"]:
+                            specs[_save_code]["price"] = price
+                    _last_code = _save_code
+                    name = size = weight = machine = price = ""
+                    first_untagged = ""
+                code = _new_code
+                continue
 
             # 建議台型
             m = re.match(r"建議[：:](.+)", _clean)
@@ -155,9 +184,18 @@ def parse_specs(text: str) -> dict:
             name = first_untagged
 
         if not code:
+            # 無貨號但有規格 → 補到前一個貨號
+            if _last_code and _last_code in specs:
+                if size and not specs[_last_code]["size"]:
+                    specs[_last_code]["size"] = size
+                if weight and not specs[_last_code]["weight"]:
+                    specs[_last_code]["weight"] = weight
+                if price and not specs[_last_code]["price"]:
+                    specs[_last_code]["price"] = price
             continue
 
         code = code.upper()   # 統一大寫，避免 k0216 vs K0216 查不到
+        _last_code = code
 
         # 台型清單：「標準/迷你台用」 → ["標準台", "迷你台"]
         machine_clean = machine.replace("用", "").replace("專", "").strip()

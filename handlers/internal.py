@@ -3175,6 +3175,44 @@ def handle_internal_upload_add_media(user_id: str, msg_id: str, media_type: str)
         print(f"[upload-session] append_upload_media 失敗（state 已失效）")
 
 
+def _split_po_segments(text: str, codes: list[str]) -> list[tuple[str, str]]:
+    """將含多個貨號的 PO文拆分為 [(code, segment_text), ...]"""
+    lines = text.split('\n')
+    # 找出每個貨號所在的行號
+    code_line_map: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        for m in _PROD_CODE_RE.finditer(line):
+            c = m.group(1).upper()
+            if c in codes and c not in code_line_map:
+                code_line_map[c] = i
+
+    # 按行號排序
+    ordered = sorted(
+        [(code_line_map.get(c, len(lines)), c) for c in codes],
+        key=lambda x: x[0],
+    )
+
+    segments = []
+    for idx, (line_idx, code) in enumerate(ordered):
+        if idx == 0:
+            start = 0
+        else:
+            prev_line = ordered[idx - 1][0]
+            # 在前一個貨號行和本貨號行之間找分割點（中點偏後）
+            mid = (prev_line + line_idx + 1) // 2
+            start = mid
+        if idx + 1 < len(ordered):
+            next_line = ordered[idx + 1][0]
+            mid = (line_idx + next_line + 1) // 2
+            end = mid
+        else:
+            end = len(lines)
+        seg = '\n'.join(lines[start:end]).strip()
+        segments.append((code, seg))
+
+    return segments
+
+
 def handle_internal_upload_text(user_id: str, combined: str) -> str:
     """
     在 uploading session 中收到文字（5 秒合併後）：
@@ -3212,12 +3250,50 @@ def handle_internal_upload_text(user_id: str, combined: str) -> str:
         return None  # 靜默，不通知群組
 
     # ── PO文（含貨號的長文）────────────────────────────────────────────
-    m_po = _PROD_CODE_RE.search(combined)
-    if m_po:
-        code = m_po.group(1).upper()
+    all_po_matches = list(_PROD_CODE_RE.finditer(combined))
+    if all_po_matches:
+        # 取得不重複的貨號（保持順序）
+        seen = set()
+        unique_codes = []
+        for m in all_po_matches:
+            c = m.group(1).upper()
+            if c not in seen:
+                seen.add(c)
+                unique_codes.append(c)
+
+        if len(unique_codes) > 1:
+            # ── 多組 PO文合併在同一訊息 → 逐組拆分 ──
+            segments = _split_po_segments(combined, unique_codes)
+            cur_media = state.get("current_media", [])
+            # 先存前一組（如有）
+            if current_code and (cur_media or current_po):
+                groups.append({
+                    "code":  current_code,
+                    "media": cur_media,
+                    "po":    current_po,
+                })
+                state["current_media"] = []
+            # 前 N-1 組直接存入 groups（media 為空，圖片會在 finish 時分配）
+            for seg_code, seg_text in segments[:-1]:
+                groups.append({
+                    "code":  seg_code,
+                    "media": [],
+                    "po":    seg_text,
+                })
+            # 最後一組設為 current（後續圖片會進 current_media）
+            last_code, last_text = segments[-1]
+            state["groups"]        = groups
+            state["current_code"]  = last_code
+            state["current_po"]    = last_text
+            state_manager.set(user_id, state)
+            print(f"[upload] 偵測到 {len(unique_codes)} 組 PO文：{'、'.join(unique_codes)}", flush=True)
+            return None
+
+        # ── 單一貨號 ──
+        code = unique_codes[0]
         cur_media = state.get("current_media", [])
         # 若貨號不同且前一組有內容 → 先存前一組
-        if current_code and current_code != code and cur_media:
+        if current_code and current_code != code and (cur_media or current_po):
             groups.append({
                 "code":  current_code,
                 "media": cur_media,
@@ -3996,7 +4072,7 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
 
 _UNCLAIMED_PATH = Path(__file__).parent.parent / "data" / "unclaimed_orders.json"
 
-_UNCLAIMED_KW = ["未取資料", "未取", "已備貨"]
+_UNCLAIMED_KW = ["未取資料", "已備貨資料", "未取", "已備貨"]
 
 
 def _load_unclaimed() -> list[dict]:
