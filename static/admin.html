@@ -468,8 +468,12 @@
       </div>
       <!-- 右：未處理 -->
       <div class="report-col report-col-pending">
-        <div class="report-col-title">⏳ 未處理</div>
+        <div class="report-col-title" style="display:flex;justify-content:space-between;align-items:center">
+          ⏳ 未處理
+          <button onclick="resolveAllIssues()" style="font-size:12px;padding:2px 8px;cursor:pointer;border:1px solid #c5221f;background:#fff;color:#c5221f;border-radius:4px">全部已處理</button>
+        </div>
         <div class="report-col-box" id="report-pending">載入中...</div>
+        <div id="pending-issues-list"></div>
       </div>
     </div>
 
@@ -704,6 +708,46 @@
       elDone.textContent    = '載入失敗，請重試';
       elPending.textContent = '載入失敗，請重試';
     }
+    // 載入未處理問題（含按鈕）
+    loadPendingIssues();
+  }
+
+  async function loadPendingIssues() {
+    const el = document.getElementById('pending-issues-list');
+    try {
+      const r = await fetch('/admin/pending-issues');
+      const d = await r.json();
+      if (!d.issues || d.issues.length === 0) {
+        el.innerHTML = '';
+        return;
+      }
+      const typeLabel = {unknown:'未知訊息', image_query:'圖片查詢', return:'退換貨',
+        complaint:'客訴', address_change:'改地址', delivery_query:'問出貨',
+        order_failed:'訂單失敗'};
+      el.innerHTML = d.issues.map(i => {
+        const name = i.display_name || i.user_id.substring(0,10);
+        const type = typeLabel[i.type] || i.type;
+        const text = (i.text_raw || '').substring(0, 40);
+        const time = i.created_at ? i.created_at.substring(5,16).replace('T',' ') : '';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid #eee;font-size:13px">
+          <span><b>${name}</b> [${type}] ${text} <span style="color:#999">${time}</span></span>
+          <button onclick="resolveIssue(${i.id},this)" style="font-size:11px;padding:1px 6px;cursor:pointer;border:1px solid #1e8e3e;background:#fff;color:#1e8e3e;border-radius:3px;white-space:nowrap">已處理</button>
+        </div>`;
+      }).join('');
+    } catch(e) { el.innerHTML = ''; }
+  }
+
+  async function resolveIssue(id, btn) {
+    btn.textContent = '...';
+    btn.disabled = true;
+    await fetch('/admin/resolve-issue?issue_id=' + id, {method:'POST'});
+    loadReport();
+  }
+
+  async function resolveAllIssues() {
+    if (!confirm('確定全部標記為已處理？')) return;
+    await fetch('/admin/resolve-all-issues', {method:'POST'});
+    loadReport();
   }
 
   // ── 重啟 Server ──────────────────────────────────
