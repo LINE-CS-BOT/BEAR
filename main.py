@@ -240,6 +240,10 @@ def _send_reply(reply_token: str | None, to: str, text: str, line_api) -> None:
 
 def _img_buf_flush(user_id: str) -> None:
     """Timer callback：N 秒後沒有文字跟上，單獨處理圖片"""
+    # 如果有文字正在 buffer 中，不要單獨處理圖片，讓文字 flush 來帶走
+    with _txt_buffer_lock:
+        if user_id in _txt_buffer:
+            return  # 文字 flush 會 pop img_buf
     with _img_buffer_lock:
         entry = _img_buffer.pop(user_id, None)
     if not entry:
@@ -271,6 +275,30 @@ def _img_buf_flush(user_id: str) -> None:
 def _img_buf_set(user_id: str, msg_id: str, context: str, group_id: str | None,
                  reply_token: str | None = None) -> None:
     """存入緩衝並啟動 timer（支援多張圖片累積）"""
+    # 如果 txt_buffer 已有這個 user 的文字，不啟動 timer
+    # 讓文字 flush 來帶走圖片，避免圖片先被單獨 flush
+    with _txt_buffer_lock:
+        _has_pending_text = user_id in _txt_buffer
+    if _has_pending_text:
+        with _img_buffer_lock:
+            old = _img_buffer.get(user_id)
+            if old:
+                old["timer"].cancel()
+                old_ids = old.get("msg_ids", [old["msg_id"]] if old.get("msg_id") else [])
+                old_ids.append(msg_id)
+                _img_buffer[user_id] = {
+                    "msg_id": old_ids[0], "msg_ids": old_ids, "context": context,
+                    "group_id": group_id, "timer": _threading.Timer(0, lambda: None),
+                    "reply_token": reply_token,
+                }
+            else:
+                _img_buffer[user_id] = {
+                    "msg_id": msg_id, "msg_ids": [msg_id], "context": context,
+                    "group_id": group_id, "timer": _threading.Timer(0, lambda: None),
+                    "reply_token": reply_token,
+                }
+        return  # 不啟動 timer，等文字 flush 帶走
+
     timer = _threading.Timer(_IMG_COALESCE_SECS, _img_buf_flush, args=(user_id,))
     timer.daemon = True
     with _img_buffer_lock:
@@ -506,8 +534,9 @@ def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
     reply_token：最後一則訊息的 reply_token，flush 時優先用 reply_message（不佔月額度）
     """
     _is_upload_cmd = ("上架" in text or "存圖" in text or "加圖" in text or "存文" in text)
-    # 含庫存/訂購相關關鍵字 → 可能有圖片跟上，多等幾秒
-    _may_have_image = any(k in text for k in ["有嗎", "有沒有", "還有", "有貨", "要", "個", "箱"])
+    # 含庫存查詢關鍵字（問句型）→ 可能有圖片跟上，多等幾秒
+    # 不包含純量詞（個/箱），避免「10個」這種回覆也延長等待
+    _may_have_image = any(k in text for k in ["有嗎", "有沒有", "還有貨", "有貨嗎", "還有嗎"])
     if _is_upload_cmd:
         wait_secs = _MEDIA_COALESCE_SECS
     elif _may_have_image:
@@ -1028,10 +1057,10 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                                     "prod_cd":   img_pc,
                                     "prod_name": _un,
                                 })
-                            current_state = state_manager.get(user_id)
                         if _inv_reply:
                             _send_reply(reply_token, user_id, _inv_reply, line_api)
-                        reply_text = None  # 已處理，後面跳過
+                        reply_text = None
+                        return  # 已處理完畢，不走後面的 dispatch
                     elif _price_kw:
                         # 問價格 → 走 price handler
                         print(f"[txt-buf] 圖片+文字 → 問價格 {img_pc}", flush=True)
@@ -1092,19 +1121,23 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                     _img_data = _dl_img(_img_mid) if _img_mid else None
                     _claude_img_reply = ask_claude_image(_img_data, combined, user_id=user_id) if _img_data else None
                     if _claude_img_reply:
-                        # 如果 Claude 回覆裡有產品代碼，設 state 讓下一輪接住數量
-                        _ci_codes = _PROD_CODE_RE.findall(_claude_img_reply)
-                        if _ci_codes:
-                            _ci_cd = _ci_codes[0].upper()
-                            from services.ecount import ecount_client as _ec_ci
-                            _ci_item = _ec_ci.get_product_cache_item(_ci_cd)
-                            _ci_name = (_ci_item.get("name") if _ci_item else None) or _ci_cd
-                            state_manager.set(user_id, {
-                                "action":    "awaiting_quantity",
-                                "prod_cd":   _ci_cd,
-                                "prod_name": _ci_name,
-                            })
-                            print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
+                        # 如果 Claude 回覆裡有產品代碼，且客戶沒有提到數量 → 設 state 等數量
+                        # 如果客戶已經說了數量（如「15個」），購物車已加，不需要再設 state
+                        from handlers.ordering import extract_quantity as _eq_ci
+                        _ci_has_qty = bool(_eq_ci(combined))
+                        if not _ci_has_qty:
+                            _ci_codes = _PROD_CODE_RE.findall(_claude_img_reply)
+                            if _ci_codes:
+                                _ci_cd = _ci_codes[0].upper()
+                                from services.ecount import ecount_client as _ec_ci
+                                _ci_item = _ec_ci.get_product_cache_item(_ci_cd)
+                                _ci_name = (_ci_item.get("name") if _ci_item else None) or _ci_cd
+                                state_manager.set(user_id, {
+                                    "action":    "awaiting_quantity",
+                                    "prod_cd":   _ci_cd,
+                                    "prod_name": _ci_name,
+                                })
+                                print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
                         from services.claude_ai import add_chat_history
                         add_chat_history(user_id, "bot", _claude_img_reply)
                         _send_reply(reply_token, user_id, _claude_img_reply, line_api)
@@ -2885,33 +2918,29 @@ async def admin_release(user_id: str):
         print(f"[takeover] 釋放: {user_id[:10]}...")
     return {"status": "ok", "user_id": user_id}
 
-@app.post("/admin/resolve-issue")
-async def admin_resolve_issue(issue_id: int):
-    """標記單一問題為已處理"""
-    ok = issue_store.resolve(issue_id)
-    return {"status": "ok" if ok else "not_found", "issue_id": issue_id}
+@app.post("/admin/resolve-item")
+async def admin_resolve_item(item_type: str, item_id: int):
+    """標記單一待處理項目為已處理。item_type: P/R/D/I/Q"""
+    result = _resolve_one(item_type, item_id)
+    ok = result.startswith("✅")
+    return {"status": "ok" if ok else "not_found", "message": result}
 
 
-@app.post("/admin/resolve-all-issues")
-async def admin_resolve_all_issues():
-    """標記所有未處理問題為已處理"""
-    pending = issue_store.get_pending()
+@app.post("/admin/resolve-all-pending")
+async def admin_resolve_all_pending():
+    """標記所有未處理項目為已處理"""
     count = 0
-    for p in pending:
-        if issue_store.resolve(p["id"]):
-            count += 1
+    for p in payment_store.get_pending():
+        if payment_store.resolve(p["id"]): count += 1
+    for r in restock_store.get_unresolved():
+        restock_store.update_status(r["id"], "confirmed"); count += 1
+    for d in delivery_store.get_pending():
+        if delivery_store.resolve(d["id"]): count += 1
+    for i in issue_store.get_pending():
+        if issue_store.resolve(i["id"]): count += 1
+    for q in pending_store.get_pending():
+        pending_store.mark_answered(q["id"]); count += 1
     return {"status": "ok", "resolved_count": count}
-
-
-@app.get("/admin/pending-issues")
-async def admin_pending_issues():
-    """取得所有未處理問題"""
-    pending = issue_store.get_pending()
-    # 附上客戶名稱
-    for p in pending:
-        cust = customer_store.get_by_line_id(p["user_id"])
-        p["display_name"] = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
-    return {"issues": pending}
 
 
 @app.get("/admin/takeovers")

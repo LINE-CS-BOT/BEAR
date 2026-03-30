@@ -252,8 +252,9 @@ def _extract_product(text: str) -> str:
     t = re.sub(r"\s*嗎\s*$", "", t)
     t = t.strip()
 
-    # 如果有剝離到東西，就用結果
-    if t and t != text:
+    # 如果有剝離到東西，就用結果（排除太通用的字）
+    _TOO_GENERIC = {"貨", "東西", "商品", "產品", "物", "品", "款", "這", "那", "它"}
+    if t and t != text and t not in _TOO_GENERIC:
         return t
 
     # Step 3：純英數編號 + 問句
