@@ -422,6 +422,19 @@ def handle_checkout(
 
     if slip_no:
         print(f"[ordering] 購物車訂單建立成功: {slip_no} | {cust_code} | {len(cart)} 項")
+        # 預購品自動登記到貨通知
+        from handlers.inventory import _check_preorder
+        from storage.notify import notify_store
+        for item in cart:
+            if _check_preorder(item["prod_cd"]):
+                notify_store.add(
+                    user_id=user_id,
+                    prod_code=item["prod_cd"],
+                    prod_name=item["prod_name"],
+                    source="staff",
+                    qty_wanted=item["qty"],
+                )
+                print(f"[ordering] 預購品自動登記到貨通知: {item['prod_name']} x{item['qty']}")
         cart_store.clear_cart(user_id)
         return tone.checkout_confirmed(cart)
     else:

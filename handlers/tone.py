@@ -411,6 +411,16 @@ def cart_item_added(cart: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _get_bank_info() -> str:
+    """根據日期回傳匯款資訊"""
+    from datetime import datetime
+    day = datetime.now().day
+    if day <= 15:
+        return "將來銀行（823）\n帳號：88651127081188\n戶名：飛宏貿易有限公司"
+    else:
+        return "中國信託（822）\n帳號：369540519377\n戶名：飛宏貿易有限公司"
+
+
 def checkout_confirmed(cart: list[dict]) -> str:
     """結帳成功回覆（不顯示單號）"""
     b = boss()

@@ -969,6 +969,9 @@ def _txt_buf_flush(user_id: str) -> None:
                     _inv_kw  = any(k in combined for k in ["有嗎", "有沒有", "庫存", "缺貨", "還有", "有貨", "剩幾"])
                     _price_kw = any(k in combined for k in ["多少", "幾元", "幾錢", "價格", "價錢", "多少錢", "售價"])
                     _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組)', combined)
+                    # 也支援中文數字（八個、十二箱等）
+                    from handlers.ordering import extract_quantity as _ext_qty
+                    _ext_qty_val = _ext_qty(combined)
 
                     if _delivery_kw:
                         # 問到貨/出貨 → 轉真人處理（Bot 無法查訂單進度）
@@ -1011,13 +1014,13 @@ def _txt_buf_flush(user_id: str) -> None:
                         if reply_text:
                             _send_reply(reply_token, user_id, reply_text, line_api)
                         reply_text = None
-                    elif _qty_m and (_uqty and _uqty > 0):
+                    elif (_qty_m or _ext_qty_val) and (_uqty and _uqty > 0):
                         # 直接說要幾個 + 有貨 → 設 awaiting_quantity，讓 combined text 觸發結帳
-                        _direct_qty = int(_qty_m.group(1))
+                        _direct_qty = _ext_qty_val or int(_qty_m.group(1))
                         print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty}", flush=True)
-                    elif (_qty_m or re.match(r'^\d+$', combined.strip())) and _check_preorder(img_pc):
-                        # 預購品 + 有數量（含純數字）→ 直接下單
-                        _direct_qty = int(_qty_m.group(1)) if _qty_m else int(combined.strip())
+                    elif (_qty_m or _ext_qty_val) and _check_preorder(img_pc):
+                        # 預購品 + 有數量（含中文數字）→ 直接下單
+                        _direct_qty = _ext_qty_val or int(_qty_m.group(1))
                         print(f"[txt-buf] 圖片+文字 → 直接下單(預購) {img_pc} x{_direct_qty}", flush=True)
                         state_manager.set(user_id, {
                             "action":    "awaiting_quantity",
@@ -1062,7 +1065,7 @@ def _txt_buf_flush(user_id: str) -> None:
                     from services.vision import download_image as _dl_img
                     _img_mid = img_e.get("msg_id") or (img_e.get("msg_ids", [None])[0])
                     _img_data = _dl_img(_img_mid) if _img_mid else None
-                    _claude_img_reply = ask_claude_image(_img_data, combined) if _img_data else None
+                    _claude_img_reply = ask_claude_image(_img_data, combined, user_id=user_id) if _img_data else None
                     if _claude_img_reply:
                         reply_text = _claude_img_reply
                         _send_reply(reply_token, user_id, reply_text, line_api)
@@ -1074,6 +1077,10 @@ def _txt_buf_flush(user_id: str) -> None:
                     print(f"[frozen] {user_id[:10]}... 有待處理問題，靜默", flush=True)
                     return
 
+                # 記錄客戶訊息（供 Claude 前後文）
+                from services.claude_ai import add_chat_history
+                add_chat_history(user_id, "user", combined)
+
                 if is_payment_message(combined):
                     reply_text = handle_payment(user_id, combined)
                 elif current_state:
@@ -1083,6 +1090,7 @@ def _txt_buf_flush(user_id: str) -> None:
                     reply_text = _dispatch(user_id, combined, intent, line_api)
 
                 if reply_text:
+                    add_chat_history(user_id, "bot", reply_text)
                     _send_reply(reply_token, user_id, reply_text, line_api)
             except Exception as _ce:
                 print(f"[txt-buf] 1:1 客戶處理例外: {_ce}", flush=True)
@@ -2834,6 +2842,35 @@ async def admin_release(user_id: str):
         print(f"[takeover] 釋放: {user_id[:10]}...")
     return {"status": "ok", "user_id": user_id}
 
+@app.post("/admin/resolve-issue")
+async def admin_resolve_issue(issue_id: int):
+    """標記單一問題為已處理"""
+    ok = issue_store.resolve(issue_id)
+    return {"status": "ok" if ok else "not_found", "issue_id": issue_id}
+
+
+@app.post("/admin/resolve-all-issues")
+async def admin_resolve_all_issues():
+    """標記所有未處理問題為已處理"""
+    pending = issue_store.get_pending()
+    count = 0
+    for p in pending:
+        if issue_store.resolve(p["id"]):
+            count += 1
+    return {"status": "ok", "resolved_count": count}
+
+
+@app.get("/admin/pending-issues")
+async def admin_pending_issues():
+    """取得所有未處理問題"""
+    pending = issue_store.get_pending()
+    # 附上客戶名稱
+    for p in pending:
+        cust = customer_store.get_by_line_id(p["user_id"])
+        p["display_name"] = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
+    return {"issues": pending}
+
+
 @app.get("/admin/takeovers")
 async def admin_list_takeovers():
     """列出目前所有接手中的客戶"""
@@ -3980,12 +4017,7 @@ def _dispatch(
     elif intent == Intent.CREDIT_CARD:
         return "抱歉我們沒有刷卡喔"
     elif intent == Intent.BANK_ACCOUNT:
-        from datetime import datetime as _dt
-        _day = _dt.now().day
-        if _day <= 15:
-            return "匯款資訊如下：\n將來銀行（823）\n帳號：88651127081188\n戶名：飛宏貿易有限公司"
-        else:
-            return "匯款資訊如下：\n中國信託（822）\n帳號：369540519377\n戶名：飛宏貿易有限公司"
+        return f"匯款資訊如下：\n{tone._get_bank_info()}"
     elif intent == Intent.CONFIRMATION:
         # 購物車有東西 → 視為確認下單
         from storage import cart as cart_store
@@ -4042,9 +4074,18 @@ def _dispatch(
             return tone.confirmation_ack()
         return handle_checkout(user_id, line_api)
     else:
+        # 購物車有東西 → 優先處理結帳相關
+        from storage import cart as _cart_chk
+        if not _cart_chk.is_empty(user_id):
+            _cancel_kw = ["不用", "算了", "取消", "不要"]
+            if any(kw in text for kw in _cancel_kw):
+                _cart_chk.clear_cart(user_id)
+                return "好的，已取消訂單～有需要再找我哦"
+            # 其他訊息視為確認結帳
+            return handle_checkout(user_id, line_api)
         # 先問 Claude，失敗才轉真人
         from services.claude_ai import ask_claude_text
-        _claude_reply = ask_claude_text(text)
+        _claude_reply = ask_claude_text(text, user_id=user_id)
         if _claude_reply:
             return _claude_reply
         return handle_unknown(user_id, text, line_api)

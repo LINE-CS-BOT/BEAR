@@ -226,7 +226,7 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
     if not prod_code:
         # pHash + OCR 都失敗 → 嘗試 Claude 辨識
         from services.claude_ai import ask_claude_image
-        _claude_reply = ask_claude_image(image_bytes)
+        _claude_reply = ask_claude_image(image_bytes, user_id=user_id)
         if _claude_reply:
             return _claude_reply
         # Claude 也失敗 → 靜默記錄，納入待處理清單
