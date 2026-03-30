@@ -489,7 +489,7 @@ _txt_buffer_lock = _threading.Lock()
 
 
 def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
-                 reply_token: str | None = None) -> None:
+                 reply_token: str | None = None, quoted_msg_id: str | None = None) -> None:
     """
     新增一行文字到緩衝，並重置 timer（debounce）。
     - 一般訊息：5 秒後觸發
@@ -527,7 +527,11 @@ def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
                 "context":     context,
                 "group_id":    group_id,
                 "reply_token": reply_token,
+                "quoted_msg_id": None,
             }
+        # 記錄引用的訊息 ID（客戶引用圖片下單用）
+        if quoted_msg_id:
+            _txt_buffer[user_id]["quoted_msg_id"] = quoted_msg_id
         timer = _threading.Timer(wait_secs, _txt_buf_flush, args=(user_id,))
         timer.daemon = True
         _txt_buffer[user_id]["timer"] = timer
@@ -606,10 +610,11 @@ def _txt_buf_flush(user_id: str) -> None:
     if not entry:
         return
 
-    combined     = "\n".join(entry["lines"])
-    context      = entry["context"]
-    group_id     = entry.get("group_id")
-    reply_token  = entry.get("reply_token")
+    combined       = "\n".join(entry["lines"])
+    context        = entry["context"]
+    group_id       = entry.get("group_id")
+    reply_token    = entry.get("reply_token")
+    quoted_msg_id  = entry.get("quoted_msg_id")
 
     # ── 圖片緩衝（1:1）/ 媒體緩衝（內部群）：一起處理 ──────────────────
     img_e   = _img_buf_pop(user_id)
@@ -891,6 +896,15 @@ def _txt_buf_flush(user_id: str) -> None:
                 current_state = state_manager.get(user_id)
 
                 # 1:1 圖片識別：優先從文字提取貨號，沒有才辨識圖片
+                # 若客戶引用了某張圖片，把引用的圖片當作 img_e 來辨識
+                if quoted_msg_id and not img_e:
+                    _quoted_pc = _img_identify_from_buf(quoted_msg_id)
+                    if _quoted_pc:
+                        print(f"[quote] 引用圖片辨識成功: {quoted_msg_id} → {_quoted_pc}", flush=True)
+                        img_e = {"msg_id": quoted_msg_id}
+                    else:
+                        print(f"[quote] 引用圖片辨識失敗: {quoted_msg_id}", flush=True)
+
                 img_pcs = []
                 _text_codes = _PROD_CODE_RE.findall(combined) if img_e else []
                 if _text_codes:
@@ -900,7 +914,7 @@ def _txt_buf_flush(user_id: str) -> None:
                         if _tc_upper not in img_pcs:
                             img_pcs.append(_tc_upper)
                 elif img_e:
-                    # 文字沒貨號，才用圖片辨識
+                    # 文字沒貨號，才用圖片辨識（含引用圖片）
                     msg_ids = img_e.get("msg_ids", [img_e["msg_id"]] if img_e.get("msg_id") else [])
                     for _mid in msg_ids:
                         _pc = _img_identify_from_buf(_mid)
@@ -3020,6 +3034,7 @@ def on_message(event: MessageEvent):
 
     user_id = event.source.user_id
     text = event.message.text.strip()
+    quoted_msg_id = getattr(event.message, 'quoted_message_id', None)
 
     with ApiClient(_configuration) as api_client:
         line_api = MessagingApi(api_client)
@@ -3254,7 +3269,8 @@ def on_message(event: MessageEvent):
             return
 
         # ── 1:1 客戶 → 存文字緩衝，5 秒後統一處理（含圖片合併）────────
-        _txt_buf_add(user_id, text, "user", None, reply_token=event.reply_token)
+        _txt_buf_add(user_id, text, "user", None, reply_token=event.reply_token,
+                     quoted_msg_id=quoted_msg_id)
 
 
 @_webhook_handler.add(MessageEvent, message=ImageMessageContent)
