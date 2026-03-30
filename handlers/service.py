@@ -224,7 +224,12 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
             print(f"[image] pHash 弱命中備援 → {prod_code}")
 
     if not prod_code:
-        # OCR 也找不到 → 靜默記錄，納入待處理清單（不回覆客戶）
+        # pHash + OCR 都失敗 → 嘗試 Claude 辨識
+        from services.claude_ai import ask_claude_image
+        _claude_reply = ask_claude_image(image_bytes)
+        if _claude_reply:
+            return _claude_reply
+        # Claude 也失敗 → 靜默記錄，納入待處理清單
         issue_store.add(user_id, "image_query", "（傳來一張圖片，無法辨識）")
         print(f"[image] 辨識失敗 → 靜默進待處理 user={user_id[:10]}...")
         return None

@@ -23,6 +23,7 @@ class Intent(Enum):
     VISIT_STORE = "visit_store"
     CREDIT_CARD = "credit_card"
     ORDER_CHANGE = "order_change"
+    BANK_ACCOUNT = "bank_account"
     UNKNOWN = "unknown"
 
 
@@ -215,6 +216,11 @@ def detect_intent(text: str) -> Intent:
     for kw in _BARGAINING_KEYWORDS:
         if kw in text:
             return Intent.BARGAINING
+
+    # 匯款帳號查詢
+    _BANK_KW = ["帳號", "匯款帳號", "轉帳帳號", "匯到哪", "匯款資訊", "付款帳號", "銀行帳號", "匯哪"]
+    if any(kw in text for kw in _BANK_KW):
+        return Intent.BANK_ACCOUNT
 
     # 運費/免運相關問題 → 直接 UNKNOWN（轉真人靜默）
     _SHIPPING_WORDS = ["運費", "含運", "免運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
