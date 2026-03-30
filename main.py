@@ -1169,7 +1169,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                             issue_store.add(user_id, "image_query", f"（圖片+文字，Claude 無法辨識）{combined[:30]}")
                             _send_reply(reply_token, user_id, "確認中～請稍後～", line_api)
                         from services.claude_ai import add_chat_history
-                        add_chat_history(user_id, "bot", reply_text or _claude_img_reply)
+                        add_chat_history(user_id, "bot", _claude_img_reply)
                         return
                     issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
 
@@ -4210,10 +4210,12 @@ def _dispatch(
         from services.claude_ai import ask_claude_text
         _claude_reply = ask_claude_text(text, user_id=user_id)
         if _claude_reply:
-            # 如果 Claude 回覆裡有產品代碼，設 state 讓下一輪能接住數量
-            _claude_codes = _PROD_CODE_RE.findall(_claude_reply)
-            if _claude_codes:
-                _cc = _claude_codes[0].upper()
+            # Claude 回覆裡的產品代碼
+            _claude_codes_raw = _PROD_CODE_RE.findall(_claude_reply)
+            _claude_codes = list(dict.fromkeys(c.upper() for c in _claude_codes_raw))
+            if len(_claude_codes) == 1:
+                # 單一產品 → 設 state 等數量
+                _cc = _claude_codes[0]
                 from services.ecount import ecount_client as _ec_cl
                 _cl_item = _ec_cl.get_product_cache_item(_cc)
                 _cl_name = (_cl_item.get("name") if _cl_item else None) or _cc
@@ -4224,6 +4226,9 @@ def _dispatch(
                     "prod_name": _cl_name,
                 })
                 print(f"[claude-ai] 設 awaiting_quantity: {_cc} ({_cl_name})", flush=True)
+            elif len(_claude_codes) > 1:
+                # 多個產品 → 不設 state，讓客戶選
+                print(f"[claude-ai] 回覆含多個產品 {_claude_codes}，不設 state", flush=True)
             return _claude_reply
         return handle_unknown(user_id, text, line_api)
 
