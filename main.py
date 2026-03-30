@@ -1125,12 +1125,14 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                     _img_data = _dl_img(_img_mid) if _img_mid else None
                     _claude_img_reply = ask_claude_image(_img_data, combined, user_id=user_id) if _img_data else None
                     if _claude_img_reply:
-                        _ci_codes = _PROD_CODE_RE.findall(_claude_img_reply)
+                        _ci_codes_raw = _PROD_CODE_RE.findall(_claude_img_reply)
+                        # 去重
+                        _ci_codes = list(dict.fromkeys(c.upper() for c in _ci_codes_raw))
                         from handlers.ordering import extract_quantity as _eq_ci
                         _ci_qty = _eq_ci(combined)
-                        if _ci_codes and _ci_qty:
-                            # Claude 辨識出產品 + 客戶有說數量 → 直接加購物車
-                            _ci_cd = _ci_codes[0].upper()
+                        if len(_ci_codes) == 1 and _ci_qty:
+                            # 單一產品 + 有數量 → 直接加購物車
+                            _ci_cd = _ci_codes[0]
                             from services.ecount import ecount_client as _ec_ci
                             _ci_item = _ec_ci.get_product_cache_item(_ci_cd)
                             _ci_name = (_ci_item.get("name") if _ci_item else None) or _ci_cd
@@ -1139,6 +1141,10 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                             reply_text = tone.cart_item_added(_cart_ci.get_cart(user_id))
                             print(f"[claude-ai] 圖片辨識+數量 → 加購物車: {_ci_cd} x{_ci_qty}", flush=True)
                             _send_reply(reply_token, user_id, reply_text, line_api)
+                        elif len(_ci_codes) > 1:
+                            # 多個產品 → 回覆 Claude 的列表讓客戶選，不自動加購物車
+                            print(f"[claude-ai] 圖片辨識出多個產品: {_ci_codes}，讓客戶選", flush=True)
+                            _send_reply(reply_token, user_id, _claude_img_reply, line_api)
                         elif _ci_codes and not _ci_qty:
                             # Claude 辨識出產品但沒數量 → 設 state 等數量
                             _ci_cd = _ci_codes[0].upper()
