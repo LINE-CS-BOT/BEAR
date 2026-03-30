@@ -1023,8 +1023,18 @@ def _txt_buf_flush(user_id: str) -> None:
                         current_state = state_manager.get(user_id)
 
                 elif img_e and not current_state:
+                    print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗，嘗試 Claude", flush=True)
+                    # 嘗試用 Claude 辨識圖片
+                    from services.claude_ai import ask_claude_image
+                    from services.vision import download_image as _dl_img
+                    _img_mid = img_e.get("msg_id") or (img_e.get("msg_ids", [None])[0])
+                    _img_data = _dl_img(_img_mid) if _img_mid else None
+                    _claude_img_reply = ask_claude_image(_img_data, combined) if _img_data else None
+                    if _claude_img_reply:
+                        reply_text = _claude_img_reply
+                        _send_reply(reply_token, user_id, reply_text, line_api)
+                        return
                     issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
-                    print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗", flush=True)
 
                 # ── 凍結判斷：有待處理問題 → 完全靜默，等真人標記完成 ──────
                 if not current_state and issue_store.has_pending_issue(user_id):
@@ -3936,6 +3946,13 @@ def _dispatch(
         return tone.greeting_reply()
     elif intent == Intent.CREDIT_CARD:
         return "抱歉我們沒有刷卡喔"
+    elif intent == Intent.BANK_ACCOUNT:
+        from datetime import datetime as _dt
+        _day = _dt.now().day
+        if _day <= 15:
+            return "匯款資訊如下：\n將來銀行（823）\n帳號：88651127081188\n戶名：飛宏貿易有限公司"
+        else:
+            return "匯款資訊如下：\n中國信託（822）\n帳號：369540519377\n戶名：飛宏貿易有限公司"
     elif intent == Intent.CONFIRMATION:
         # 購物車有東西 → 視為確認下單
         from storage import cart as cart_store
@@ -3992,7 +4009,11 @@ def _dispatch(
             return tone.confirmation_ack()
         return handle_checkout(user_id, line_api)
     else:
-        # 完全不知道 → 通知真人客服
+        # 先問 Claude，失敗才轉真人
+        from services.claude_ai import ask_claude_text
+        _claude_reply = ask_claude_text(text)
+        if _claude_reply:
+            return _claude_reply
         return handle_unknown(user_id, text, line_api)
 
 
