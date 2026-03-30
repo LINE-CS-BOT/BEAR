@@ -579,9 +579,9 @@ def address_change_ack() -> str:
 def complaint_ack() -> str:
     b = boss()
     return random.choice([
-        f"非常抱歉造成{b}的困擾{suffix_light()} 已記錄您的問題，\n客服人員會盡快和您聯繫處理，非常感謝您的反饋",
-        f"不好意思{suffix_light()} 您的問題已記錄，我們客服會盡快聯繫{b}處理，\n造成不便深感抱歉",
-        f"抱歉嘿，問題已記錄{suffix_light()} 客服人員會馬上跟進處理，\n感謝{b}告知我們，非常抱歉",
+        f"非常抱歉{suffix_light()} 問題已記錄，稍等下唷～",
+        f"不好意思{suffix_light()} 已記錄您的問題，馬上幫您處理",
+        f"抱歉嘿，問題已經記錄了，稍等下唷～",
     ])
 
 

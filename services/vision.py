@@ -32,8 +32,8 @@ from config import settings
 #   <= 8  → 高度可信（相同產品同角度）
 #   9-12  → 中度可信（同產品不同角度）
 #   13+   → 不可信（容易誤判，停用）
-HASH_THRESHOLD        = 10   # pHash 直接命中（高可信）
-HASH_THRESHOLD_WEAK   = 15   # 弱命中（OCR 無結果時才採用）
+HASH_THRESHOLD        = 6    # pHash 直接命中（更嚴格避免誤判，其餘走 Claude）
+HASH_THRESHOLD_WEAK   = 10   # 弱命中（OCR 無結果時才採用）
 
 HASH_DB_PATH = Path("data/image_hashes.json")
 
@@ -283,9 +283,8 @@ def _identify_product_raw(image_bytes: bytes) -> tuple[str | None, int]:
                 ch_best_diff = diff_c
                 ch_best_code = entry["code"]
 
-        if ch_best_diff <= 1 and best_diff <= 18:
-            # colorhash 補救：顏色分佈幾乎完全相同（≤1）+ pHash 接近（≤18）
-            # 收緊條件，避免紙箱等無特徵照片被誤判
+        if ch_best_diff <= 1 and best_diff <= HASH_THRESHOLD:
+            # colorhash 補救：顏色完全相同 + pHash 也在高可信範圍才採用
             print(f"[vision] colorHash 補救命中 → {ch_best_code}（色差={ch_best_diff}，pHash={best_diff}）")
             return ch_best_code, ch_best_diff
         elif ch_best_diff <= 2:

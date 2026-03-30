@@ -1069,19 +1069,23 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                             _send_reply(reply_token, user_id, reply_text, line_api)
                         reply_text = None
                     elif (_qty_m or _ext_qty_val) and (_uqty and _uqty > 0):
-                        # 直接說要幾個 + 有貨 → 設 awaiting_quantity，讓 combined text 觸發結帳
+                        # 直接說要幾個 + 有貨 → 加購物車
                         _direct_qty = _ext_qty_val or int(_qty_m.group(1))
                         print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty}", flush=True)
+                        from storage import cart as _cart_direct
+                        _cart_direct.add_item(user_id, img_pc, _un, _direct_qty)
+                        reply_text = tone.cart_item_added(_cart_direct.get_cart(user_id))
+                        _send_reply(reply_token, user_id, reply_text, line_api)
+                        return
                     elif (_qty_m or _ext_qty_val) and _check_preorder(img_pc):
-                        # 預購品 + 有數量（含中文數字）→ 直接下單
+                        # 預購品 + 有數量（含中文數字）→ 加購物車
                         _direct_qty = _ext_qty_val or int(_qty_m.group(1))
                         print(f"[txt-buf] 圖片+文字 → 直接下單(預購) {img_pc} x{_direct_qty}", flush=True)
-                        state_manager.set(user_id, {
-                            "action":    "awaiting_quantity",
-                            "prod_cd":   img_pc,
-                            "prod_name": _un,
-                        })
-                        current_state = state_manager.get(user_id)
+                        from storage import cart as _cart_preorder
+                        _cart_preorder.add_item(user_id, img_pc, _un, _direct_qty)
+                        reply_text = tone.cart_item_added(_cart_preorder.get_cart(user_id))
+                        _send_reply(reply_token, user_id, reply_text, line_api)
+                        return
                     else:
                         # 意圖不明 → 依庫存決定走購物車或缺貨/預購流程
                         if _uqty and _uqty > 0:
@@ -1121,26 +1125,39 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                     _img_data = _dl_img(_img_mid) if _img_mid else None
                     _claude_img_reply = ask_claude_image(_img_data, combined, user_id=user_id) if _img_data else None
                     if _claude_img_reply:
-                        # 如果 Claude 回覆裡有產品代碼，且客戶沒有提到數量 → 設 state 等數量
-                        # 如果客戶已經說了數量（如「15個」），購物車已加，不需要再設 state
+                        _ci_codes = _PROD_CODE_RE.findall(_claude_img_reply)
                         from handlers.ordering import extract_quantity as _eq_ci
-                        _ci_has_qty = bool(_eq_ci(combined))
-                        if not _ci_has_qty:
-                            _ci_codes = _PROD_CODE_RE.findall(_claude_img_reply)
-                            if _ci_codes:
-                                _ci_cd = _ci_codes[0].upper()
-                                from services.ecount import ecount_client as _ec_ci
-                                _ci_item = _ec_ci.get_product_cache_item(_ci_cd)
-                                _ci_name = (_ci_item.get("name") if _ci_item else None) or _ci_cd
-                                state_manager.set(user_id, {
-                                    "action":    "awaiting_quantity",
-                                    "prod_cd":   _ci_cd,
-                                    "prod_name": _ci_name,
-                                })
-                                print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
+                        _ci_qty = _eq_ci(combined)
+                        if _ci_codes and _ci_qty:
+                            # Claude 辨識出產品 + 客戶有說數量 → 直接加購物車
+                            _ci_cd = _ci_codes[0].upper()
+                            from services.ecount import ecount_client as _ec_ci
+                            _ci_item = _ec_ci.get_product_cache_item(_ci_cd)
+                            _ci_name = (_ci_item.get("name") if _ci_item else None) or _ci_cd
+                            from storage import cart as _cart_ci
+                            _cart_ci.add_item(user_id, _ci_cd, _ci_name, _ci_qty)
+                            reply_text = tone.cart_item_added(_cart_ci.get_cart(user_id))
+                            print(f"[claude-ai] 圖片辨識+數量 → 加購物車: {_ci_cd} x{_ci_qty}", flush=True)
+                            _send_reply(reply_token, user_id, reply_text, line_api)
+                        elif _ci_codes and not _ci_qty:
+                            # Claude 辨識出產品但沒數量 → 設 state 等數量
+                            _ci_cd = _ci_codes[0].upper()
+                            from services.ecount import ecount_client as _ec_ci2
+                            _ci_item2 = _ec_ci2.get_product_cache_item(_ci_cd)
+                            _ci_name2 = (_ci_item2.get("name") if _ci_item2 else None) or _ci_cd
+                            state_manager.set(user_id, {
+                                "action":    "awaiting_quantity",
+                                "prod_cd":   _ci_cd,
+                                "prod_name": _ci_name2,
+                            })
+                            print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
+                            _send_reply(reply_token, user_id, _claude_img_reply, line_api)
+                        else:
+                            # Claude 也搞不清楚 → 回覆確認中，靜默轉待處理
+                            issue_store.add(user_id, "image_query", f"（圖片+文字，Claude 無法辨識）{combined[:30]}")
+                            _send_reply(reply_token, user_id, "確認中～請稍後～", line_api)
                         from services.claude_ai import add_chat_history
-                        add_chat_history(user_id, "bot", _claude_img_reply)
-                        _send_reply(reply_token, user_id, _claude_img_reply, line_api)
+                        add_chat_history(user_id, "bot", reply_text or _claude_img_reply)
                         return
                     issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
 
@@ -4134,6 +4151,12 @@ def _dispatch(
     elif intent == Intent.ADDRESS_QUERY:
         return tone.address_query()
     elif intent == Intent.COMPLAINT:
+        # 購物車有東西 + 「不對」「錯了」→ 清購物車 + 靜默待處理
+        from storage import cart as _cart_complaint
+        if not _cart_complaint.is_empty(user_id):
+            _cart_complaint.clear_cart(user_id)
+            issue_store.add(user_id, "complaint", f"（購物車品項有誤）{text}")
+            return "問題已記錄，稍等下唷～"
         return handle_complaint(user_id, text, line_api)
     elif intent == Intent.ORDER_CHANGE:
         issue_store.add(user_id, "order_change", text)
