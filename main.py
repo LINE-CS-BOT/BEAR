@@ -1118,12 +1118,18 @@ def _txt_buf_flush_inner(user_id: str) -> None:
 
                 elif img_e and not current_state:
                     print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗，嘗試 Claude", flush=True)
-                    # 嘗試用 Claude 辨識圖片
+                    # 嘗試用 Claude 辨識圖片（附上 OCR 結果作為提示）
                     from services.claude_ai import ask_claude_image
-                    from services.vision import download_image as _dl_img
+                    from services.vision import download_image as _dl_img, ocr_extract_candidates
                     _img_mid = img_e.get("msg_id") or (img_e.get("msg_ids", [None])[0])
                     _img_data = _dl_img(_img_mid) if _img_mid else None
-                    _claude_img_reply = ask_claude_image(_img_data, combined, user_id=user_id) if _img_data else None
+                    _ocr_hint = ""
+                    if _img_data:
+                        _ocr_candidates = ocr_extract_candidates(_img_data)
+                        if _ocr_candidates:
+                            _ocr_hint = f"\nOCR 讀到的文字：{'、'.join(_ocr_candidates[:20])}"
+                    _claude_combined = combined + _ocr_hint
+                    _claude_img_reply = ask_claude_image(_img_data, _claude_combined, user_id=user_id) if _img_data else None
                     if _claude_img_reply:
                         _ci_codes_raw = _PROD_CODE_RE.findall(_claude_img_reply)
                         # 去重
