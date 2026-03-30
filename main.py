@@ -493,6 +493,8 @@ _TXT_COALESCE_SECS = 5.0
 # value: {"lines": [str], "context": "user"|"group", "group_id": str|None, "timer": Timer}
 _txt_buffer: dict[str, dict] = {}
 _txt_buffer_lock = _threading.Lock()
+_user_flush_locks: dict[str, _threading.Lock] = {}
+_user_flush_locks_lock = _threading.Lock()
 
 
 def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
@@ -504,7 +506,14 @@ def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
     reply_token：最後一則訊息的 reply_token，flush 時優先用 reply_message（不佔月額度）
     """
     _is_upload_cmd = ("上架" in text or "存圖" in text or "加圖" in text or "存文" in text)
-    wait_secs = _MEDIA_COALESCE_SECS if _is_upload_cmd else _TXT_COALESCE_SECS
+    # 含庫存/訂購相關關鍵字 → 可能有圖片跟上，多等幾秒
+    _may_have_image = any(k in text for k in ["有嗎", "有沒有", "還有", "有貨", "要", "個", "箱"])
+    if _is_upload_cmd:
+        wait_secs = _MEDIA_COALESCE_SECS
+    elif _may_have_image:
+        wait_secs = _IMG_COALESCE_SECS + 1  # 7 秒，比圖片的 6 秒多等 1 秒
+    else:
+        wait_secs = _TXT_COALESCE_SECS
 
     # 取消圖片 timer（圖片不要單獨處理，等文字一起）
     with _img_buffer_lock:
@@ -609,6 +618,16 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
 
 
 def _txt_buf_flush(user_id: str) -> None:
+    """per-user 鎖 wrapper：確保同一客戶的 flush 不會並行"""
+    with _user_flush_locks_lock:
+        if user_id not in _user_flush_locks:
+            _user_flush_locks[user_id] = _threading.Lock()
+        user_lock = _user_flush_locks[user_id]
+    with user_lock:
+        _txt_buf_flush_inner(user_id)
+
+
+def _txt_buf_flush_inner(user_id: str) -> None:
     """
     5 秒後觸發：合併所有緩衝文字（+ 圖片若有），統一處理並 push_message 回覆。
     """
@@ -952,6 +971,11 @@ def _txt_buf_flush(user_id: str) -> None:
                     img_pc = None  # 已處理，不走單張流程
 
                 # ── 圖片 + 文字：規則判斷意圖，再決定處理方式 ──────────────
+                # 有圖片時優先處理圖片（清除舊 state，避免被舊狀態阻擋）
+                if img_pc and current_state:
+                    state_manager.clear(user_id)
+                    current_state = None
+                    print(f"[txt-buf] 有圖片，清除舊 state: {current_state}", flush=True)
                 if img_pc and not current_state:
                     from services.ecount import ecount_client as _ec
                     from handlers.inventory import _check_preorder
@@ -982,11 +1006,12 @@ def _txt_buf_flush(user_id: str) -> None:
                         _send_reply(reply_token, user_id, reply_text, line_api)
                         reply_text = None
                     elif _inv_kw:
-                        # 問庫存 → 直接回答，不進購物車流程
+                        # 問庫存 → 直接用辨識到的貨號查（不走 handle_inventory 的文字解析）
                         print(f"[txt-buf] 圖片+文字 → 問庫存 {img_pc}", flush=True)
                         _inv_reply = None
                         if _uqty and _uqty > 0:
-                            _inv_reply = handle_inventory(user_id, img_pc, line_api)
+                            from handlers.inventory import _query_single_product
+                            _inv_reply = _query_single_product(user_id, img_pc, line_api)
                         else:
                             # 沒貨 → 判斷預購或缺貨
                             if _check_preorder(img_pc):
@@ -1067,8 +1092,22 @@ def _txt_buf_flush(user_id: str) -> None:
                     _img_data = _dl_img(_img_mid) if _img_mid else None
                     _claude_img_reply = ask_claude_image(_img_data, combined, user_id=user_id) if _img_data else None
                     if _claude_img_reply:
-                        reply_text = _claude_img_reply
-                        _send_reply(reply_token, user_id, reply_text, line_api)
+                        # 如果 Claude 回覆裡有產品代碼，設 state 讓下一輪接住數量
+                        _ci_codes = _PROD_CODE_RE.findall(_claude_img_reply)
+                        if _ci_codes:
+                            _ci_cd = _ci_codes[0].upper()
+                            from services.ecount import ecount_client as _ec_ci
+                            _ci_item = _ec_ci.get_product_cache_item(_ci_cd)
+                            _ci_name = (_ci_item.get("name") if _ci_item else None) or _ci_cd
+                            state_manager.set(user_id, {
+                                "action":    "awaiting_quantity",
+                                "prod_cd":   _ci_cd,
+                                "prod_name": _ci_name,
+                            })
+                            print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
+                        from services.claude_ai import add_chat_history
+                        add_chat_history(user_id, "bot", _claude_img_reply)
+                        _send_reply(reply_token, user_id, _claude_img_reply, line_api)
                         return
                     issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
 
@@ -1085,6 +1124,10 @@ def _txt_buf_flush(user_id: str) -> None:
                     reply_text = handle_payment(user_id, combined)
                 elif current_state:
                     reply_text = _handle_stateful(user_id, combined, current_state, line_api)
+                    if reply_text is None:
+                        # state 被清除且回 None → 重新走正常 dispatch
+                        intent     = detect_intent(combined)
+                        reply_text = _dispatch(user_id, combined, intent, line_api)
                 else:
                     intent     = detect_intent(combined)
                     reply_text = _dispatch(user_id, combined, intent, line_api)
@@ -4007,6 +4050,22 @@ def _dispatch(
     elif intent == Intent.PRICE:
         return handle_price(user_id, text)
     elif intent == Intent.ORDER_TRACKING:
+        # 先看購物車有沒有未送出的
+        from storage import cart as _cart_ot
+        _ot_cart = _cart_ot.get_cart(user_id)
+        if _ot_cart:
+            lines = ["目前還沒送出的訂單："]
+            for item in _ot_cart:
+                lines.append(f"  • {item['prod_name']} × {item['qty']}")
+            lines.append("\n還有其他要訂的嗎？如果好了就跟我說幫你送出喔")
+            return "\n".join(lines)
+        # 查已建立的訂單（未備貨 + 已備貨未取）
+        _cust = customer_store.get_by_line_id(user_id)
+        _cust_name = (_cust.get("real_name") or _cust.get("display_name") or "").strip() if _cust else ""
+        if _cust_name:
+            _ot_reply = handle_internal_customer_orders(f"{_cust_name}訂單")
+            if _ot_reply:
+                return _ot_reply
         return handle_order_tracking(user_id, text)
     elif intent == Intent.DELIVERY:
         return handle_delivery(user_id, text)
@@ -4087,6 +4146,20 @@ def _dispatch(
         from services.claude_ai import ask_claude_text
         _claude_reply = ask_claude_text(text, user_id=user_id)
         if _claude_reply:
+            # 如果 Claude 回覆裡有產品代碼，設 state 讓下一輪能接住數量
+            _claude_codes = _PROD_CODE_RE.findall(_claude_reply)
+            if _claude_codes:
+                _cc = _claude_codes[0].upper()
+                from services.ecount import ecount_client as _ec_cl
+                _cl_item = _ec_cl.get_product_cache_item(_cc)
+                _cl_name = (_cl_item.get("name") if _cl_item else None) or _cc
+                from storage.state import state_manager as _sm_cl
+                _sm_cl.set(user_id, {
+                    "action":    "awaiting_quantity",
+                    "prod_cd":   _cc,
+                    "prod_name": _cl_name,
+                })
+                print(f"[claude-ai] 設 awaiting_quantity: {_cc} ({_cl_name})", flush=True)
             return _claude_reply
         return handle_unknown(user_id, text, line_api)
 

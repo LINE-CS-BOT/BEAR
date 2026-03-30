@@ -228,6 +228,23 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
         from services.claude_ai import ask_claude_image
         _claude_reply = ask_claude_image(image_bytes, user_id=user_id)
         if _claude_reply:
+            # 如果回覆裡有產品代碼，設 state
+            import re as _re_svc
+            _svc_codes = _re_svc.findall(r'[A-Za-z]{1,3}-?\d{3,6}', _claude_reply)
+            if _svc_codes:
+                _svc_cd = _svc_codes[0].upper()
+                from services.ecount import ecount_client as _ec_svc
+                _svc_item = _ec_svc.get_product_cache_item(_svc_cd)
+                _svc_name = (_svc_item.get("name") if _svc_item else None) or _svc_cd
+                from storage.state import state_manager as _sm_svc
+                _sm_svc.set(user_id, {
+                    "action":    "awaiting_quantity",
+                    "prod_cd":   _svc_cd,
+                    "prod_name": _svc_name,
+                })
+                print(f"[claude-ai] 純圖片辨識後設 awaiting_quantity: {_svc_cd}", flush=True)
+            from services.claude_ai import add_chat_history
+            add_chat_history(user_id, "bot", _claude_reply)
             return _claude_reply
         # Claude 也失敗 → 靜默記錄，納入待處理清單
         issue_store.add(user_id, "image_query", "（傳來一張圖片，無法辨識）")
