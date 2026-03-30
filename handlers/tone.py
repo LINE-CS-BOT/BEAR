@@ -289,6 +289,26 @@ def out_of_stock_ask_qty(name: str) -> str:
     ])
 
 
+def preorder_ask_qty(name: str, po_info: str = "") -> str:
+    """預購品，問客戶要幾個"""
+    b = boss()
+    # 從 PO文提取到貨時間
+    eta = ""
+    if po_info:
+        import re
+        m = re.search(r'(預計|預估|大約|約)?\s*(\d+月[中下旬底]*|\d+/\d+)', po_info)
+        if m:
+            eta = f"，{m.group(0).strip()}到貨"
+        else:
+            m2 = re.search(r'(\d+月\S*到貨)', po_info)
+            if m2:
+                eta = f"，{m2.group(1)}"
+    return random.choice([
+        f"「{name}」目前是預購品{eta}{suffix_light()} 請問{b}要預訂幾個呢？",
+        f"這款「{name}」是預購款{eta}哦～ 請問{b}需要幾個？",
+    ])
+
+
 def restock_inquiry_sent(name: str, qty: int) -> str:
     """已向總公司詢問，回覆客戶（說明已記錄需求，等回覆）"""
     b = boss()

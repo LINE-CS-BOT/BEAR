@@ -28,6 +28,10 @@ def handle_unknown(user_id: str, text: str, line_api: MessagingApi) -> str:
     # 寫入待處理清單（每小時推送給真人看）
     issue_store.add(user_id, "unknown", text)
 
-    print(f"[escalate] 未知訊息 | {cust_label}: {text!r}")
+    try:
+        print(f"[escalate] 未知訊息 | {cust_label}: {text!r}")
+    except UnicodeEncodeError:
+        _safe = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+        print(f"[escalate] 未知訊息 | {cust_label}: {_safe!r}")
 
     return ""  # 不回覆客戶，靜默記錄

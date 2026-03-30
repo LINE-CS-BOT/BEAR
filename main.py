@@ -8,6 +8,12 @@ if _sys.platform == "win32":
         _ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x8000)
     except Exception:
         pass
+    # stdout/stderr 改用 UTF-8，避免 emoji 在 cp950 下 UnicodeEncodeError 導致 thread 崩潰
+    try:
+        _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     # 強制 stdout/stderr 使用 UTF-8，避免 emoji 在 cp950 終端機 crash
     try:
         _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -69,6 +75,7 @@ from handlers.internal import (
     handle_internal_showcase_push,
     handle_internal_label_queue,
     _NEW_PROD_TRIGGER_RE,
+    _PROD_CODE_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
     _UPLOAD_TRIGGERS as _INTERNAL_UPLOAD_TRIGGERS,
@@ -947,6 +954,7 @@ def _txt_buf_flush(user_id: str) -> None:
                 # ── 圖片 + 文字：規則判斷意圖，再決定處理方式 ──────────────
                 if img_pc and not current_state:
                     from services.ecount import ecount_client as _ec
+                    from handlers.inventory import _check_preorder
                     _ui   = _ec.lookup(img_pc)
                     _uqty = _ui.get("qty") if _ui else None
                     _un   = (_ui.get("name") if _ui else None) or img_pc
@@ -977,12 +985,21 @@ def _txt_buf_flush(user_id: str) -> None:
                         if _uqty and _uqty > 0:
                             _inv_reply = handle_inventory(user_id, img_pc, line_api)
                         else:
-                            # 沒貨 → 進缺貨詢問流程
-                            state_manager.set(user_id, {
-                                "action":    "awaiting_restock_qty",
-                                "prod_cd":   img_pc,
-                                "prod_name": _un,
-                            })
+                            # 沒貨 → 判斷預購或缺貨
+                            if _check_preorder(img_pc):
+                                state_manager.set(user_id, {
+                                    "action":    "awaiting_quantity",
+                                    "prod_cd":   img_pc,
+                                    "prod_name": _un,
+                                })
+                                _inv_reply = tone.preorder_ask_qty(_un)
+                                print(f"[txt-buf] 圖片+文字 → 問庫存，預購 {img_pc}", flush=True)
+                            else:
+                                state_manager.set(user_id, {
+                                    "action":    "awaiting_restock_qty",
+                                    "prod_cd":   img_pc,
+                                    "prod_name": _un,
+                                })
                             current_state = state_manager.get(user_id)
                         if _inv_reply:
                             _send_reply(reply_token, user_id, _inv_reply, line_api)
@@ -998,6 +1015,10 @@ def _txt_buf_flush(user_id: str) -> None:
                         # 直接說要幾個 + 有貨 → 設 awaiting_quantity，讓 combined text 觸發結帳
                         _direct_qty = int(_qty_m.group(1))
                         print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty}", flush=True)
+                    elif (_qty_m or re.match(r'^\d+$', combined.strip())) and _check_preorder(img_pc):
+                        # 預購品 + 有數量（含純數字）→ 直接下單
+                        _direct_qty = int(_qty_m.group(1)) if _qty_m else int(combined.strip())
+                        print(f"[txt-buf] 圖片+文字 → 直接下單(預購) {img_pc} x{_direct_qty}", flush=True)
                         state_manager.set(user_id, {
                             "action":    "awaiting_quantity",
                             "prod_cd":   img_pc,
@@ -1005,7 +1026,7 @@ def _txt_buf_flush(user_id: str) -> None:
                         })
                         current_state = state_manager.get(user_id)
                     else:
-                        # 意圖不明 → 依庫存決定走購物車或缺貨流程
+                        # 意圖不明 → 依庫存決定走購物車或缺貨/預購流程
                         if _uqty and _uqty > 0:
                             state_manager.set(user_id, {
                                 "action":    "awaiting_quantity",
@@ -1014,12 +1035,24 @@ def _txt_buf_flush(user_id: str) -> None:
                             })
                             print(f"[txt-buf] 圖片+文字 → 有貨 {img_pc}，等待數量", flush=True)
                         else:
-                            state_manager.set(user_id, {
-                                "action":    "awaiting_restock_qty",
-                                "prod_cd":   img_pc,
-                                "prod_name": _un,
-                            })
-                            print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}", flush=True)
+                            if _check_preorder(img_pc):
+                                # 預購品 → 走預購流程
+                                state_manager.set(user_id, {
+                                    "action":    "awaiting_quantity",
+                                    "prod_cd":   img_pc,
+                                    "prod_name": _un,
+                                })
+                                reply_text = tone.preorder_ask_qty(_un)
+                                _send_reply(reply_token, user_id, reply_text, line_api)
+                                reply_text = None
+                                print(f"[txt-buf] 圖片+文字 → 預購 {img_pc}", flush=True)
+                            else:
+                                state_manager.set(user_id, {
+                                    "action":    "awaiting_restock_qty",
+                                    "prod_cd":   img_pc,
+                                    "prod_name": _un,
+                                })
+                                print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}", flush=True)
                         current_state = state_manager.get(user_id)
 
                 elif img_e and not current_state:
