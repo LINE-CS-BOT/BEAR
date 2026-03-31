@@ -104,3 +104,45 @@ def _is_open_now(now: datetime) -> bool:
     end = now.replace(hour=eh, minute=em, second=0, microsecond=0)
 
     return start <= now <= end
+
+
+_WEEKDAY_NAMES = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "日"}
+
+
+def next_open_reply() -> str:
+    """根據現在時間，回覆下次上班什麼時候會處理"""
+    import pytz
+    now = datetime.now(pytz.timezone(settings.BUSINESS_TZ))
+    today_iso = now.isoweekday()
+    biz_days = settings.business_days_list()
+    sh, _ = map(int, settings.BUSINESS_HOURS_START.split(":"))
+    eh, _ = map(int, settings.BUSINESS_HOURS_END.split(":"))
+
+    if today_iso in biz_days and now.hour < sh:
+        # 今天有上班但還沒開門（例如週二早上）
+        return "下午上班時幫您看看喔～"
+    elif today_iso in biz_days and now.hour >= eh:
+        # 今天已下班
+        # 找明天
+        for i in range(1, 8):
+            next_day = (today_iso % 7) + i
+            if next_day > 7:
+                next_day -= 7
+            if next_day in biz_days:
+                if i == 1:
+                    return "明天上班時幫您確認喔～"
+                else:
+                    return f"週{_WEEKDAY_NAMES[next_day]}上班時幫您確認喔～"
+    else:
+        # 公休日
+        for i in range(1, 8):
+            next_day = (today_iso % 7) + i
+            if next_day > 7:
+                next_day -= 7
+            if next_day in biz_days:
+                if i == 1:
+                    return "明天上班時幫您確認喔～"
+                else:
+                    return f"週{_WEEKDAY_NAMES[next_day]}上班時幫您確認喔～"
+
+    return "上班時幫您確認喔～"

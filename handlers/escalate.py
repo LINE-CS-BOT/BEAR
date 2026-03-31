@@ -34,4 +34,13 @@ def handle_unknown(user_id: str, text: str, line_api: MessagingApi) -> str:
         _safe = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
         print(f"[escalate] 未知訊息 | {cust_label}: {_safe!r}")
 
-    return ""  # 不回覆客戶，靜默記錄
+    # 休息時間 → 回覆下次上班時間
+    from handlers.hours import _is_open_now, next_open_reply
+    from datetime import datetime
+    import pytz
+    from config import settings
+    now = datetime.now(pytz.timezone(settings.BUSINESS_TZ))
+    if not _is_open_now(now):
+        return next_open_reply()
+
+    return ""  # 上班時間靜默記錄，等真人處理
