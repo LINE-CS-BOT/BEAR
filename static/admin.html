@@ -1718,16 +1718,36 @@
       </div>`;
 
       // Approaching / Last month achievers (API 根據日期自動切換)
-      const isFirstHalf = new Date().getDate() < 15;
+      const isFirstHalf = new Date().getDate() <= 15;
       if (isFirstHalf && approaching.achievers) {
-        // 1~14日：顯示上月確定達標
+        // 1~15日：顯示上月確定達標
         if (approaching.achievers.length > 0) {
           html += `<div style="margin-bottom:12px;padding:10px;background:#e8f5e9;border-radius:8px">
             <strong>✅ ${approaching.month} 確定達標（${approaching.achievers.length} 組，共 $${approaching.total_rebate.toLocaleString()}）：</strong>`;
           for (const g of approaching.achievers) {
-            html += `<div style="margin-top:4px">
-              ${g.group_name}　$${g.total.toLocaleString()}　${g.tier}　→ $${g.rebate.toLocaleString()}
-            </div>`;
+            html += `<div style="margin-top:6px">
+              <b>${g.group_name}</b>　$${g.total.toLocaleString()}　${g.tier}　→ <span style="color:#2e7d32">$${g.rebate.toLocaleString()}</span>`;
+            // 顯示分店/成員明細
+            if (g.members && g.members.length > 0) {
+              for (const m of g.members) {
+                if (m.stores && m.stores.length > 0) {
+                  // 合併組（如 WEI丞）：顯示各人+分店
+                  const rebateStr = m.rebate > 0 ? ` → $${m.rebate.toLocaleString()}` : '';
+                  html += `<div style="margin-left:16px;font-size:0.85rem;color:#555">
+                    ${m.name} $${m.amount.toLocaleString()}${rebateStr}`;
+                  for (const s of m.stores) {
+                    html += `<div style="margin-left:16px;color:#888">- ${s.name} $${s.amount.toLocaleString()}</div>`;
+                  }
+                  html += '</div>';
+                } else if (g.members.length > 1) {
+                  // 多地址（如林子翔）
+                  const rebateStr = m.rebate > 0 ? ` → $${m.rebate.toLocaleString()}` : '';
+                  html += `<div style="margin-left:16px;font-size:0.85rem;color:#555">
+                    ${m.name} $${m.amount.toLocaleString()}${rebateStr}</div>`;
+                }
+              }
+            }
+            html += '</div>';
           }
           html += '</div>';
         }
@@ -1743,8 +1763,8 @@
         html += '</div>';
       }
 
-      // Rebate table（15日前不顯示當月明細）
-      if (!isFirstHalf && rebate.groups && rebate.groups.length) {
+      // Rebate table（當月明細）
+      if (rebate.groups && rebate.groups.length) {
         html += `<table class="cust-table">
           <thead><tr>
             <th>客戶</th>
