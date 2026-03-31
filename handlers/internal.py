@@ -3384,6 +3384,13 @@ def handle_internal_upload_finish(user_id: str) -> str:
     if label_result["error"]:
         label_lines.append(f"⚠️ 標籤生成錯誤：{label_result['error']}")
 
+    # 上架完成後更新預購清單（PO文可能新增預購品）
+    try:
+        from handlers.inventory import refresh_preorder_list
+        refresh_preorder_list()
+    except Exception:
+        pass
+
     suffix = "\n" + "\n".join(label_lines) if label_lines else ""
     return "🏁 上架完成！\n" + "\n".join(results) + suffix
 

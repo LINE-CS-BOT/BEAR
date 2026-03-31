@@ -276,13 +276,18 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
         })
         return tone.image_product_found(code=prod_code, name=name, spec=spec)
     else:
-        # ── 沒貨：問客戶要幾個，走詢問總公司流程 ────────────
+        # ── 沒貨：判斷預購 or 一般缺貨，統一走購物車流程 ────
+        from handlers.inventory import _check_preorder
         state_manager.set(user_id, {
-            "action":    "awaiting_restock_qty",
-            "prod_cd":   prod_code,
-            "prod_name": name,
+            "action":     "awaiting_quantity",
+            "prod_cd":    prod_code,
+            "prod_name":  name,
+            "from_image": True,
         })
-        return tone.out_of_stock_ask_qty(name)
+        if _check_preorder(prod_code):
+            return tone.preorder_ask_qty(name)
+        else:
+            return tone.out_of_stock_ask_qty(name)
 
 
 # ── 退換貨 ───────────────────────────────────────────

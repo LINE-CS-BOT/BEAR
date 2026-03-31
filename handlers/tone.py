@@ -421,13 +421,36 @@ def _get_bank_info() -> str:
         return "中國信託（822）\n帳號：369540519377\n戶名：飛宏貿易有限公司"
 
 
-def checkout_confirmed(cart: list[dict]) -> str:
+def checkout_confirmed(cart: list[dict], oos_items: list[dict] | None = None,
+                       po_items: list[dict] | None = None) -> str:
     """結帳成功回覆（不顯示單號）"""
     b = boss()
     lines = [f"收到！幫{b}送出訂單了 📋"]
     for item in cart:
         lines.append(f"  • {item['prod_name']} × {item['qty']}")
-    lines.append(f"感謝{b}的訂購☺️")
+    has_note = False
+    if po_items:
+        has_note = True
+        po_names = "、".join(i["prod_name"] for i in po_items)
+        _po_msg = random.choice([
+            f"「{po_names}」是預購品，到貨後會第一時間通知{b}哦",
+            f"「{po_names}」目前是預購款，到貨馬上通知您～",
+            f"「{po_names}」屬於預購商品，一到貨就會跟{b}說的",
+            f"「{po_names}」是預購品哦，貨到了會立刻通知{b}",
+        ])
+        lines.append(f"\n{_po_msg}")
+    if oos_items:
+        has_note = True
+        oos_names = "、".join(i["prod_name"] for i in oos_items)
+        _oos_msg = random.choice([
+            f"「{oos_names}」目前缺貨，我幫您跟總公司詢問調貨，確認後馬上通知您哦",
+            f"「{oos_names}」目前沒有現貨，已幫{b}向總公司詢問囉，有消息第一時間通知您",
+            f"「{oos_names}」暫時缺貨，我這邊會跟總公司確認調貨，有結果馬上跟{b}說",
+            f"「{oos_names}」目前缺貨中，已經在幫{b}跟總公司調貨囉，確認後會通知您的",
+        ])
+        lines.append(f"\n{_oos_msg}")
+    if not has_note:
+        lines.append(f"感謝{b}的訂購☺️")
     return "\n".join(lines)
 
 

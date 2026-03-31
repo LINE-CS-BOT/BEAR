@@ -230,7 +230,7 @@ def _create_ecount_customer(user_id: str) -> str | None:
     return None
 
 # 數量詞清單（含箱/件批量單位）
-_UNIT_PATTERN = r"(?:個|盒|組|台|條|瓶|套|份|片|包|罐|顆|粒|入|箱|件)"
+_UNIT_PATTERN = r"(?:個|盒|組|台|條|瓶|套|份|片|包|罐|顆|粒|入|箱|件|支|隻)"
 
 # 保留供外部引用（不再轉真人，直接接受為數量）
 BULK_UNITS = ["件", "箱"]
@@ -423,10 +423,13 @@ def handle_checkout(
     if slip_no:
         print(f"[ordering] 購物車訂單建立成功: {slip_no} | {cust_code} | {len(cart)} 項")
         # 預購品自動登記到貨通知
-        from handlers.inventory import _check_preorder
+        from handlers.inventory import _check_preorder, notify_hq_restock
         from storage.notify import notify_store
+        _oos_items = []  # 缺貨品項（需通知總公司調貨）
+        _po_items = []   # 預購品項
         for item in cart:
             if _check_preorder(item["prod_cd"]):
+                _po_items.append(item)
                 notify_store.add(
                     user_id=user_id,
                     prod_code=item["prod_cd"],
@@ -435,14 +438,51 @@ def handle_checkout(
                     qty_wanted=item["qty"],
                 )
                 print(f"[ordering] 預購品自動登記到貨通知: {item['prod_name']} x{item['qty']}")
+            else:
+                # 非預購品 → 檢查是否缺貨
+                _item_info = ecount_client.lookup(item["prod_cd"])
+                _item_qty = _item_info.get("qty") if _item_info else None
+                if not _item_qty or _item_qty <= 0:
+                    _oos_items.append(item)
+        # 缺貨品項 → 一次通知總公司 + 一筆待處理
+        if _oos_items:
+            from storage.issues import issue_store
+            _oos_desc = "、".join(
+                f"{i['prod_name']}（{i['prod_cd']}）×{i['qty']}" for i in _oos_items)
+            issue_store.add(user_id, "restock_inquiry", f"缺貨調貨：{_oos_desc}")
+            _notify_hq_restock_batch(_oos_items, line_api)
+            print(f"[ordering] 缺貨品批次通知總公司: {_oos_desc}")
         cart_store.clear_cart(user_id)
-        return tone.checkout_confirmed(cart)
+        return tone.checkout_confirmed(cart, oos_items=_oos_items, po_items=_po_items)
     else:
         print(f"[ordering] 購物車訂單建立失敗: {cust_code}")
         from storage.issues import issue_store
         desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart)
         issue_store.add(user_id, "order_failed", desc)
         return "⚠️ 訂單處理時發生問題，請稍後再試或聯繫客服。"
+
+
+def _notify_hq_restock_batch(oos_items: list[dict], line_api) -> None:
+    """一次通知總公司群組所有缺貨品項"""
+    from config import settings
+    from linebot.v3.messaging import PushMessageRequest, TextMessage
+
+    if not line_api or not settings.LINE_GROUP_ID_HQ:
+        print(f"[總公司通知] 未設定 LINE_GROUP_ID_HQ，跳過")
+        return
+
+    lines = ["請問一下，以下品項是否有數量可以調貨？如果叫貨需要多久時間？"]
+    for item in oos_items:
+        lines.append(f"📦 {item['prod_name']}（{item['prod_cd']}）× {item['qty']} 個")
+    try:
+        line_api.push_message(
+            PushMessageRequest(
+                to=settings.LINE_GROUP_ID_HQ,
+                messages=[TextMessage(text="\n".join(lines))],
+            )
+        )
+    except Exception as e:
+        print(f"[總公司通知] 批次推送失敗: {e}")
 
 
 def _notify_staff(

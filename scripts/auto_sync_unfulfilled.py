@@ -543,6 +543,13 @@ def main():
         price_str = f"  出庫單價:{d.get('unit_price',0):>8.2f}" if has_price else ""
         print(f"  {code:<15} 可售:{d.get('available',0):>5}  可預購:{d.get('preorder',0):>5}{price_str}")
 
+    # 庫存同步後更新預購清單
+    try:
+        from handlers.inventory import refresh_preorder_list
+        refresh_preorder_list()
+    except Exception as e:
+        print(f"[sync] 更新預購清單失敗: {e}")
+
 
 if __name__ == "__main__":
     main()

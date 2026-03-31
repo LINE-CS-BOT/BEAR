@@ -15,7 +15,7 @@ from storage import cart as cart_store
 # 各狀態的提醒文字
 _REMIND_TEXT = {
     "awaiting_quantity":              "您好～請問您剛才詢問的商品，需要幾個呢？😊",
-    "awaiting_restock_qty":           "您好～請問您需要調貨的數量是多少呢？",
+    "awaiting_restock_qty":           "您好～請問您需要幾個呢？",
     "awaiting_wait_confirm":          "您好～想請問您是否願意等待補貨呢？",
     "awaiting_order_confirm":         "您好～請問您剛才的訂單要確認送出嗎？",
     "awaiting_group_address_confirm": "您好～請問您的收件地址確認了嗎？",

@@ -1021,7 +1021,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                     ])
                     _inv_kw  = any(k in combined for k in ["有嗎", "有沒有", "庫存", "缺貨", "還有", "有貨", "剩幾"])
                     _price_kw = any(k in combined for k in ["多少", "幾元", "幾錢", "價格", "價錢", "多少錢", "售價"])
-                    _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組)', combined)
+                    _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組|支|隻)', combined)
                     # 也支援中文數字（八個、十二箱等）
                     from handlers.ordering import extract_quantity as _ext_qty
                     _ext_qty_val = _ext_qty(combined)
@@ -1053,10 +1053,12 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                                 print(f"[txt-buf] 圖片+文字 → 問庫存，預購 {img_pc}", flush=True)
                             else:
                                 state_manager.set(user_id, {
-                                    "action":    "awaiting_restock_qty",
+                                    "action":    "awaiting_quantity",
                                     "prod_cd":   img_pc,
                                     "prod_name": _un,
                                 })
+                                _inv_reply = tone.out_of_stock_ask_qty(_un)
+                                print(f"[txt-buf] 圖片+文字 → 問庫存，缺貨走購物車 {img_pc}", flush=True)
                         if _inv_reply:
                             _send_reply(reply_token, user_id, _inv_reply, line_api)
                         reply_text = None
@@ -1077,43 +1079,36 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         reply_text = tone.cart_item_added(_cart_direct.get_cart(user_id))
                         _send_reply(reply_token, user_id, reply_text, line_api)
                         return
-                    elif (_qty_m or _ext_qty_val) and _check_preorder(img_pc):
-                        # 預購品 + 有數量（含中文數字）→ 加購物車
+                    elif (_qty_m or _ext_qty_val) and not (_uqty and _uqty > 0):
+                        # 缺貨/預購 + 有數量 → 統一加購物車
                         _direct_qty = _ext_qty_val or int(_qty_m.group(1))
-                        print(f"[txt-buf] 圖片+文字 → 直接下單(預購) {img_pc} x{_direct_qty}", flush=True)
-                        from storage import cart as _cart_preorder
-                        _cart_preorder.add_item(user_id, img_pc, _un, _direct_qty)
-                        reply_text = tone.cart_item_added(_cart_preorder.get_cart(user_id))
+                        _is_po = _check_preorder(img_pc)
+                        print(f"[txt-buf] 圖片+文字 → 直接下單({'預購' if _is_po else '缺貨'}) {img_pc} x{_direct_qty}", flush=True)
+                        from storage import cart as _cart_oos
+                        _cart_oos.add_item(user_id, img_pc, _un, _direct_qty)
+                        reply_text = tone.cart_item_added(_cart_oos.get_cart(user_id))
                         _send_reply(reply_token, user_id, reply_text, line_api)
                         return
                     else:
                         # 意圖不明 → 依庫存決定走購物車或缺貨/預購流程
+                        # 統一走 awaiting_quantity → 購物車，不分調貨/預購
+                        state_manager.set(user_id, {
+                            "action":    "awaiting_quantity",
+                            "prod_cd":   img_pc,
+                            "prod_name": _un,
+                        })
                         if _uqty and _uqty > 0:
-                            state_manager.set(user_id, {
-                                "action":    "awaiting_quantity",
-                                "prod_cd":   img_pc,
-                                "prod_name": _un,
-                            })
                             print(f"[txt-buf] 圖片+文字 → 有貨 {img_pc}，等待數量", flush=True)
+                        elif _check_preorder(img_pc):
+                            reply_text = tone.preorder_ask_qty(_un)
+                            _send_reply(reply_token, user_id, reply_text, line_api)
+                            reply_text = None
+                            print(f"[txt-buf] 圖片+文字 → 預購 {img_pc}", flush=True)
                         else:
-                            if _check_preorder(img_pc):
-                                # 預購品 → 走預購流程
-                                state_manager.set(user_id, {
-                                    "action":    "awaiting_quantity",
-                                    "prod_cd":   img_pc,
-                                    "prod_name": _un,
-                                })
-                                reply_text = tone.preorder_ask_qty(_un)
-                                _send_reply(reply_token, user_id, reply_text, line_api)
-                                reply_text = None
-                                print(f"[txt-buf] 圖片+文字 → 預購 {img_pc}", flush=True)
-                            else:
-                                state_manager.set(user_id, {
-                                    "action":    "awaiting_restock_qty",
-                                    "prod_cd":   img_pc,
-                                    "prod_name": _un,
-                                })
-                                print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}", flush=True)
+                            reply_text = tone.out_of_stock_ask_qty(_un)
+                            _send_reply(reply_token, user_id, reply_text, line_api)
+                            reply_text = None
+                            print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}，走購物車", flush=True)
                         current_state = state_manager.get(user_id)
 
                 elif img_e and not current_state:
@@ -3695,17 +3690,17 @@ def _handle_stateful(
                 f"{prod_name}（{prod_cd}）× {qty} 個"
             )
 
-    # ── 等待數量（缺貨調貨）：問客戶要幾個，再通知總公司 ─────
+    # ── 等待數量（缺貨）：舊 state 相容 → 轉為購物車流程 ─────
     elif action == "awaiting_restock_qty":
         qty = extract_quantity(text)
         if qty:
             prod_name = state.get("prod_name", "此商品")
             prod_cd = state.get("prod_cd", "")
             state_manager.clear(user_id)
-            from storage.restock import restock_store
-            restock_store.add(user_id, prod_name, prod_cd, qty)
-            notify_hq_restock(prod_name, qty, line_api)
-            return tone.restock_inquiry_sent(prod_name, qty)
+            # 加入購物車（統一走訂單流程）
+            from storage import cart as _cart_restock
+            _cart_restock.add_item(user_id, prod_cd, prod_name, qty)
+            return tone.cart_item_added(_cart_restock.get_cart(user_id))
         elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用",
                                        "收到", "好", "好的", "知道了", "了解",
                                        "知道", "ok", "OK", "謝謝", "感謝"]):
