@@ -1,6 +1,7 @@
 {
   "cust_list_prgid": "E010101",
   "inventory_hash": "#menuType=MENUTREE_000004&menuSeq=MENUTREE_000212&groupSeq=MENUTREE_000035&prgId=E040701&depth=4",
-  "last_updated": "2026-03-31T19:42:23.207398",
-  "sale_detail_hash": "#menuType=MENUTREE_000002&prgId=BA006B&depth=3"
+  "last_updated": "2026-03-31T23:57:22.045112",
+  "sale_detail_hash": "#menuType=MENUTREE_000004&menuSeq=MENUTREE_000494&groupSeq=MENUTREE_000030&prgId=E040207&depth=4",
+  "inventory_change_hash": "#menuType=MENUTREE_000004&menuSeq=MENUTREE_001713&groupSeq=MENUTREE_000035&prgId=E040719&depth=4"
 }
