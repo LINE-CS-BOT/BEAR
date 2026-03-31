@@ -206,24 +206,75 @@ _img_buffer: dict[str, dict] = {}
 _img_buffer_lock = _threading.Lock()
 
 
-def _send_reply(reply_token: str | None, to: str, text: str, line_api) -> None:
+# ── 已發送圖片 → 產品代碼對應表（客戶 tag 圖片時查詢）──
+_sent_image_map: dict[str, str] = {}  # message_id → product_code
+_sent_image_map_lock = _threading.Lock()
+
+
+def _store_sent_image_ids(sent_messages, image_codes: list[str]) -> None:
+    """記錄 reply 回傳的 message_id → product_code"""
+    with _sent_image_map_lock:
+        # sent_messages[0] = 文字，[1:] = 圖片
+        for i, code in enumerate(image_codes):
+            idx = i + 1  # 跳過第一則文字
+            if idx < len(sent_messages):
+                msg_id = sent_messages[idx].id
+                _sent_image_map[msg_id] = code
+                print(f"[send_reply] 記錄圖片 msg_id={msg_id} → {code}", flush=True)
+        # 清理超過 500 筆的舊記錄
+        if len(_sent_image_map) > 500:
+            keys = list(_sent_image_map.keys())
+            for k in keys[:len(keys) - 300]:
+                _sent_image_map.pop(k, None)
+
+
+def lookup_sent_image(msg_id: str) -> str | None:
+    """查詢已發送圖片的產品代碼"""
+    with _sent_image_map_lock:
+        return _sent_image_map.get(msg_id)
+
+
+def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
     """
     優先用 reply_message（免費，不佔月額度），
     token 不存在或已過期才 fallback 到 push_message。
+    支援 tuple: (text, image_urls) → 文字 + 圖片一起 reply
     """
+    from linebot.v3.messaging import ImageMessage
+
+    image_urls = []
+    image_codes = []
+    if isinstance(text, tuple):
+        text, image_urls = text[0], text[1]
+        # 從 URL 提取產品代碼
+        import re as _re_sr
+        for url in image_urls:
+            m = _re_sr.search(r'/([A-Za-z]{1,3}-?\d{3,6})[A-Z]?\.\w+$', url)
+            if m:
+                image_codes.append(m.group(1).upper())
+
     # LINE 訊息上限 5000 字元
     if len(text) > 4990:
         text = text[:4950] + "\n\n...（內容過長，已截斷）"
+
+    # 組合訊息（文字 + 圖片，reply 最多 5 則）
+    messages = [TextMessage(text=text)]
+    for url in image_urls[:4]:  # 最多 4 張圖（文字佔 1 則，共 5 則上限）
+        messages.append(ImageMessage(
+            original_content_url=url, preview_image_url=url))
+
     if reply_token:
         try:
-            line_api.reply_message(ReplyMessageRequest(
+            resp = line_api.reply_message(ReplyMessageRequest(
                 reply_token=reply_token,
-                messages=[TextMessage(text=text)],
+                messages=messages,
             ))
+            # 記錄送出的圖片 message_id → product_code
+            if image_codes and hasattr(resp, 'sent_messages') and resp.sent_messages:
+                _store_sent_image_ids(resp.sent_messages, image_codes)
             return
         except Exception as _re:
             print(f"[send_reply] reply_message 失敗: {_re}", flush=True)
-            # token 過期或已用過，fallback
     else:
         print(f"[send_reply] 無 reply_token，直接 push to={to[:10]}...", flush=True)
     if _push_quota_exhausted:
@@ -231,7 +282,7 @@ def _send_reply(reply_token: str | None, to: str, text: str, line_api) -> None:
         return
     try:
         line_api.push_message(PushMessageRequest(
-            to=to, messages=[TextMessage(text=text)]))
+            to=to, messages=messages))
     except Exception as _pe:
         if _is_quota_429(_pe):
             _mark_push_exhausted()
@@ -960,7 +1011,13 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         print(f"[quote] 引用圖片辨識成功: {quoted_msg_id} → {_quoted_pc}", flush=True)
                         img_e = {"msg_id": quoted_msg_id}
                     else:
-                        print(f"[quote] 引用圖片辨識失敗: {quoted_msg_id}", flush=True)
+                        # 可能是 bot 發的圖片（無法下載）→ 查對應表
+                        _sent_pc = lookup_sent_image(quoted_msg_id)
+                        if _sent_pc:
+                            print(f"[quote] 引用 bot 發的圖片: {quoted_msg_id} → {_sent_pc}", flush=True)
+                            img_e = {"msg_id": quoted_msg_id, "bot_sent_code": _sent_pc}
+                        else:
+                            print(f"[quote] 引用圖片辨識失敗: {quoted_msg_id}", flush=True)
 
                 img_pcs = []
                 _text_codes = _PROD_CODE_RE.findall(combined) if img_e else []
@@ -970,6 +1027,9 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         _tc_upper = _tc.upper()
                         if _tc_upper not in img_pcs:
                             img_pcs.append(_tc_upper)
+                elif img_e and img_e.get("bot_sent_code"):
+                    # bot 發的圖片被 tag → 直接用已記錄的產品代碼
+                    img_pcs.append(img_e["bot_sent_code"])
                 elif img_e:
                     # 文字沒貨號，才用圖片辨識（含引用圖片）
                     msg_ids = img_e.get("msg_ids", [img_e["msg_id"]] if img_e.get("msg_id") else [])
@@ -1735,6 +1795,10 @@ _STATIC_DIR = _BASE_DIR / "static"
 _PRODUCTS_IMG_DIR = _STATIC_DIR / "products"
 _PRODUCTS_IMG_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+# 產品照片靜態路由（供 LINE push image 用）
+_PRODUCT_PHOTO_STATIC = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品照片")
+if _PRODUCT_PHOTO_STATIC.exists():
+    app.mount("/product-photo", StaticFiles(directory=str(_PRODUCT_PHOTO_STATIC)), name="product-photo")
 
 
 # ── Admin 介面密碼保護（HTTP Basic Auth）─────────────
@@ -4121,11 +4185,213 @@ def _handle_stateful(
         return handle_unknown(user_id, text, line_api)
 
 
+_PRODUCT_PHOTO_DIR = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品照片")
+
+
+def _push_product_images(user_id: str, prod_codes: list[str], line_api) -> None:
+    """找到產品照片後 push 給客戶（最多每個產品 1 張，總共最多 5 張）"""
+    from linebot.v3.messaging import PushMessageRequest, ImageMessage
+    from config import settings as _cfg
+
+    if not _PRODUCT_PHOTO_DIR.exists() or _push_quota_exhausted:
+        print(f"[recommend] 跳過 push: dir={_PRODUCT_PHOTO_DIR.exists()} quota={_push_quota_exhausted}", flush=True)
+        return
+
+    images = []
+    for code in prod_codes:
+        if len(images) >= 5:
+            break
+        # 找第一張 jpg（A 版優先）
+        for suffix in ["A.jpg", "B.jpg", "C.jpg", ".jpg", "A.png", ".png"]:
+            p = _PRODUCT_PHOTO_DIR / f"{code}{suffix}"
+            if p.exists():
+                # 需要一個公開 URL → 用 server 的靜態路由提供
+                url = f"https://xmnline.duckdns.org/product-photo/{code}{suffix}"
+                images.append(ImageMessage(
+                    original_content_url=url,
+                    preview_image_url=url,
+                ))
+                break
+
+    if not images:
+        print(f"[recommend] 找不到圖片: {prod_codes}", flush=True)
+        return
+    print(f"[recommend] 準備 push {len(images)} 張圖: {prod_codes}", flush=True)
+    try:
+        line_api.push_message(PushMessageRequest(
+            to=user_id, messages=images,
+        ))
+        print(f"[recommend] push {len(images)} 張產品圖給 {user_id[:10]}...", flush=True)
+    except Exception as e:
+        if _is_quota_429(e):
+            _mark_push_exhausted()
+        else:
+            print(f"[recommend] push 圖片失敗: {e}", flush=True)
+
+
+def _get_product_image_urls(prod_codes: list[str], max_images: int = 5) -> list[str]:
+    """找產品照片 URL（最多 max_images 張）"""
+    urls = []
+    if not _PRODUCT_PHOTO_DIR.exists():
+        return urls
+    for code in prod_codes:
+        if len(urls) >= max_images:
+            break
+        for suffix in ["A.jpg", "B.jpg", "C.jpg", ".jpg", "A.png", ".png"]:
+            p = _PRODUCT_PHOTO_DIR / f"{code}{suffix}"
+            if p.exists():
+                urls.append(f"https://xmnline.duckdns.org/product-photo/{code}{suffix}")
+                break
+    return urls
+
+
+_RECOMMEND_EXCLUDE_KW = {"泡澡球", "洗衣球", "衛生紙", "抽取式", "面紙"}
+
+
+def _is_recommend_excluded(code: str, name: str) -> bool:
+    """排除不推薦的品項"""
+    if code.upper().startswith("HH"):
+        return True
+    for kw in _RECOMMEND_EXCLUDE_KW:
+        if kw in name:
+            return True
+    return False
+
+
+def _get_recommend_hint() -> str:
+    """取得推薦品項提示：最新5個有現貨 + 庫存最多3個 + 預購品"""
+    import json
+    from services.ecount import ecount_client
+    from handlers.inventory import _load_preorder_cache
+
+    avail_path = Path(__file__).parent / "data" / "available.json"
+    if not avail_path.exists():
+        return ""
+    # 超過 30 分鐘未更新 → 先同步
+    import time as _t
+    if _t.time() - avail_path.stat().st_mtime > 30 * 60:
+        try:
+            from services.ecount import ecount_client
+            ecount_client._ensure_available()
+        except Exception:
+            pass
+    try:
+        avail = json.loads(avail_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    # 建立品名查詢
+    def _get_name(code):
+        info = ecount_client.get_product_cache_item(code)
+        return (info.get("name") if info else None) or code
+
+    # ── 最新 10 個有現貨的（從 PO文尾端找，給 Claude 選）──
+    po_path = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品PO文.txt")
+    newest = []
+    if po_path.exists():
+        try:
+            text = po_path.read_text(encoding="utf-8")
+            blocks = re.split(r"\n{2,}", text)
+            for block in reversed(blocks):
+                if len(newest) >= 10:
+                    break
+                m = re.search(r"([A-Za-z]{1,3}-?\d{3,6})", block)
+                if not m:
+                    continue
+                code = m.group(1).upper()
+                if code in [c for c, _ in newest]:
+                    continue
+                qty = 0
+                if code in avail:
+                    d = avail[code]
+                    qty = d.get("available", 0) if isinstance(d, dict) else d
+                if qty <= 0:
+                    continue
+                name = _get_name(code)
+                if _is_recommend_excluded(code, name):
+                    continue
+                newest.append((code, name))
+        except Exception:
+            pass
+
+    # ── 庫存最多 3 個 ──
+    stock_items = []
+    for code, data in avail.items():
+        qty = data.get("available", 0) if isinstance(data, dict) else data
+        if qty <= 0:
+            continue
+        name = _get_name(code)
+        if _is_recommend_excluded(code, name):
+            continue
+        stock_items.append((code, name, qty))
+    stock_items.sort(key=lambda x: x[2], reverse=True)
+    top_stock = [(c, n) for c, n, _ in stock_items[:10]]
+
+    # ── 預購品 ──
+    po_cache = _load_preorder_cache()
+    preorder = []
+    for code, info in po_cache.items():
+        name = info.get("name", code) if isinstance(info, dict) else code
+        eta = info.get("eta", "") if isinstance(info, dict) else ""
+        if not _is_recommend_excluded(code, name):
+            preorder.append((code, name, eta))
+
+    # 組合
+    parts = []
+    if newest:
+        lines = ["【最新上架有現貨（從中挑 5 個推薦）】"]
+        for code, name in newest:
+            lines.append(f"{code}: {name}（有現貨）")
+        parts.append("\n".join(lines))
+    if top_stock:
+        lines = ["【庫存充足的熱門品項（從中挑 3 個推薦）】"]
+        for code, name in top_stock:
+            lines.append(f"{code}: {name}（庫存充足）")
+        parts.append("\n".join(lines))
+    if preorder:
+        lines = ["【預購品（全部推薦，註明預購和到貨時間）】"]
+        for code, name, eta in preorder:
+            eta_str = f"，{eta}" if eta else ""
+            lines.append(f"{code}: {name}（預購{eta_str}）")
+        parts.append("\n".join(lines))
+
+    return "\n\n".join(parts)
+
+
+def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
+    """推薦/新貨查詢 → 交給 Claude 回答，附帶產品圖"""
+    from services.claude_ai import ask_claude_text, add_chat_history
+
+    # 額外附上推薦品項提示，讓 Claude 推薦
+    hint = _get_recommend_hint()
+    if hint:
+        enhanced_text = f"{text}\n\n⚠️ 嚴格規定：只能從以下清單中推薦，不要推薦清單以外的商品！\n\n{hint}"
+    else:
+        enhanced_text = text
+
+    reply = ask_claude_text(enhanced_text, user_id=user_id)
+    if not reply:
+        return "讓我看看有什麼好東西，稍等一下唷～"
+
+    add_chat_history(user_id, "bot", reply)
+
+    # 從 Claude 回覆中提取貨號 → 附帶產品圖
+    codes_raw = _PROD_CODE_RE.findall(reply)
+    codes = list(dict.fromkeys(c.upper() for c in codes_raw))
+    image_urls = _get_product_image_urls(codes) if codes else []
+
+    if image_urls:
+        return (reply, image_urls)
+    return reply
+
+
 def _dispatch(
     user_id: str, text: str, intent: Intent, line_api: MessagingApi
 ) -> str:
     """根據意圖分發到對應 handler"""
-    if intent == Intent.INVENTORY:
+    if intent == Intent.RECOMMENDATION:
+        return _handle_recommendation(user_id, text, line_api)
+    elif intent == Intent.INVENTORY:
         return handle_inventory(user_id, text, line_api)
     elif intent == Intent.PRICE:
         return handle_price(user_id, text)
@@ -4255,6 +4521,11 @@ def _dispatch(
             elif len(_claude_codes) > 1:
                 # 多個產品 → 不設 state，讓客戶選
                 print(f"[claude-ai] 回覆含多個產品 {_claude_codes}，不設 state", flush=True)
+            # 有貨號 → 附上產品圖片
+            if _claude_codes:
+                _img_urls = _get_product_image_urls(_claude_codes)
+                if _img_urls:
+                    return (_claude_reply, _img_urls)
             return _claude_reply
         return handle_unknown(user_id, text, line_api)
 
