@@ -143,7 +143,7 @@ def handle_machine_query(
 
     # 背景推送每個產品的 PO文 + 圖片
     def _push_products():
-        base_url = _cfg.BASE_URL or ""
+        base_url = "https://xmnline.duckdns.org/product-photo"
         for sp, qty in in_stock:
             code = sp.get("code", "")
             po_text = _format_po(code) or (
