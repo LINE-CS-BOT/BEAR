@@ -4540,6 +4540,19 @@ def _dispatch(
                 _img_urls = _get_product_image_urls(_claude_codes)
                 if _img_urls:
                     return (_claude_reply, _img_urls)
+            # Claude 回覆「確認一下」「稍後回覆」→ 代表無法回答
+            _unsure_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍等"]
+            if any(k in _claude_reply for k in _unsure_kw):
+                issue_store.add(user_id, "claude_unsure", f"Claude 無法回答：{text[:50]}")
+                print(f"[claude-ai] 回覆含不確定語氣，記待處理: {text[:30]!r}", flush=True)
+                # 休息時間 → 改回覆下次上班時間
+                from handlers.hours import _is_open_now, next_open_reply
+                from datetime import datetime as _dt_cl
+                import pytz as _pz_cl
+                from config import settings as _cfg_cl
+                _now_cl = _dt_cl.now(_pz_cl.timezone(_cfg_cl.BUSINESS_TZ))
+                if not _is_open_now(_now_cl):
+                    _claude_reply = next_open_reply()
             return _claude_reply
         return handle_unknown(user_id, text, line_api)
 
