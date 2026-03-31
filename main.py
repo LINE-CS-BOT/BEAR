@@ -112,7 +112,7 @@ import storage.queue as queue_store
 _RESOLVE_TRIGGER_RE = re.compile(r"[✅☑️√v]|已處理|已完成|全部已處理")
 _RESOLVE_ITEM_RE    = re.compile(r"([PRDIQprdiq])\s*(\d+)")
 _RESOLVE_RANGE_RE   = re.compile(r"([PRDIQprdiq])\s*(\d+)\s*[-~–]\s*(?:[PRDIQprdiq]\s*)?(\d+)", re.IGNORECASE)
-_RESOLVE_ALL_RE     = re.compile(r"全部已處理|全部\s*(?:已處理|完成|標記)")
+_RESOLVE_ALL_RE     = re.compile(r"全部已處理|已全部處理|全部\s*(?:已處理|完成|標記)")
 
 # 內部群組呼叫 bot 名字的指令（到貨通知代客登記）
 _BOT_NAME_RE = re.compile(r"^(新北小蠻牛|小蠻牛)\s*")
@@ -2368,13 +2368,29 @@ async def update_customer_ecount_code(line_user_id: str, ecount_cust_cd: str = "
     from storage.customers import DB_PATH as _CUST_DB
     val = ecount_cust_cd.strip() or None
     with _sq.connect(str(_CUST_DB)) as _conn:
+        # 更新主表
         cur = _conn.execute(
             "UPDATE customers SET ecount_cust_cd=? WHERE line_user_id=?",
             (val, line_user_id)
         )
+        if not cur.rowcount:
+            raise HTTPException(status_code=404, detail=f"找不到 line_user_id={line_user_id}")
+        # 同步更新子表（下單讀子表優先）
+        if val:
+            cust_id = _conn.execute(
+                "SELECT id FROM customers WHERE line_user_id=?", (line_user_id,)
+            ).fetchone()
+            if cust_id:
+                existing = _conn.execute(
+                    "SELECT id FROM customer_ecount_codes WHERE customer_id=? AND ecount_cust_cd=?",
+                    (cust_id[0], val)
+                ).fetchone()
+                if not existing:
+                    _conn.execute(
+                        "INSERT INTO customer_ecount_codes (customer_id, ecount_cust_cd, address_label, cust_name) VALUES (?, ?, '', '')",
+                        (cust_id[0], val)
+                    )
         _conn.commit()
-    if not cur.rowcount:
-        raise HTTPException(status_code=404, detail=f"找不到 line_user_id={line_user_id}")
     print(f"[admin] Ecount 代碼更新: {line_user_id} → ecount_cust_cd={val!r}")
     return {"status": "ok", "line_user_id": line_user_id, "ecount_cust_cd": val}
 
@@ -2396,6 +2412,19 @@ async def admin_customers(q: str = ""):
                 "SELECT id, line_user_id, display_name, chat_label, real_name, phone, ecount_cust_cd, tags "
                 "FROM customers ORDER BY last_seen DESC LIMIT 50"
             ).fetchall()]
+    # 補上子表的 ecount codes（主表沒有時用子表）
+    from storage.customers import DB_PATH as _CUST_DB2
+    import sqlite3 as _sq2
+    with _sq2.connect(str(_CUST_DB2)) as _conn2:
+        for r in rows:
+            cid = r.get("id")
+            if cid and not (r.get("ecount_cust_cd") or "").strip():
+                sub_codes = _conn2.execute(
+                    "SELECT ecount_cust_cd FROM customer_ecount_codes WHERE customer_id=?",
+                    (cid,)
+                ).fetchall()
+                if sub_codes:
+                    r["ecount_cust_cd"] = sub_codes[0][0]
     return {"customers": rows, "count": len(rows)}
 
 
