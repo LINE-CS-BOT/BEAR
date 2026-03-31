@@ -13,7 +13,8 @@ _SALES_PATH = _BASE / "data" / "rebate_sales.json"
 
 # 特殊合併組：這些名稱視為同一組
 _MERGE_GROUPS = {
-    "WEI丞": ["WEI", "丞"],  # group_name: [member names]
+    "WEI丞": ["WEI", "丞"],
+    "舒老闆": ["舒老闆", "寧寧", "冬冬", "夾鬥陣"],
 }
 
 # 回饋金級距
