@@ -69,7 +69,7 @@ class IssueStore:
             return cur.rowcount > 0
 
     # 這些類型的待處理不會觸發 bot 靜默（客戶仍可正常互動）
-    _NO_SILENCE_TYPES = {"restock_inquiry"}
+    _NO_SILENCE_TYPES = {"restock_inquiry", "payment_screenshot"}
 
     def has_pending_issue(self, user_id: str) -> bool:
         """檢查該客戶是否有需要靜默的未處理問題（restock_inquiry 不算）"""

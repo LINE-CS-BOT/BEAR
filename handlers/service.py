@@ -193,6 +193,7 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
     # ── 轉帳截圖偵測（優先判斷）──────────────────────────
     if is_transfer_screenshot(image_bytes):
         print(f"[image] 偵測到轉帳截圖 → user={user_id}")
+        issue_store.add(user_id, "payment_screenshot", "客戶傳了匯款截圖，待確認")
         now = datetime.now(pytz.timezone(_settings.BUSINESS_TZ))
         if _is_open_now(now):
             return "等等有空查詢確認喔～"
