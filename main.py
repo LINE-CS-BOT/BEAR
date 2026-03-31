@@ -3148,9 +3148,14 @@ async def webhook(request: Request):
         _payload = _json.loads(body)
         for _ev in _payload.get("events", []):
             _ev_type = _ev.get("type", "")
-            # 記錄所有非 message 事件，方便除錯
+            # 記錄所有事件，方便除錯
             if _ev_type != "message":
                 print(f"[webhook] 非message事件: type={_ev_type} ev={_json.dumps(_ev, ensure_ascii=False)[:300]}", flush=True)
+            else:
+                _msg = _ev.get("message", {})
+                _msg_type = _msg.get("type", "")
+                if _msg_type not in ("text", "image", "video"):
+                    print(f"[webhook] 未處理的message類型: {_msg_type} ev={_json.dumps(_ev, ensure_ascii=False)[:300]}", flush=True)
             if _ev_type == "chat_mode_changed":
                 _src  = _ev.get("source") or {}
                 _uid  = _src.get("userId", "") or _src.get("groupId", "") or _src.get("roomId", "")
