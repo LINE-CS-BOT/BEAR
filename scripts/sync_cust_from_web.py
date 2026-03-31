@@ -116,6 +116,25 @@ async def _navigate_to_cust_list(page, ec_sid: str) -> bool:
     1. ERP 主頁（about:blank 完全重載）→ 點選 SITE MAP「客戶/供應商列表」連結（真實點擊）
     2. 全失敗 → 提示手動導航
     """
+    # ── 策略 0：用已存的 prgId 直接導航 ──────────────────────────
+    saved_id = _load_saved_prgid()
+    if saved_id:
+        try:
+            direct_url = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}#prgId={saved_id}"
+            print(f"  嘗試用已存 prgId={saved_id} 直接導航...")
+            await page.goto("about:blank", timeout=5000)
+            await page.goto(direct_url, timeout=25000)
+            await page.wait_for_load_state("networkidle", timeout=15000)
+            await page.wait_for_timeout(3000)
+            if await page.query_selector("#grid-main"):
+                headers = await _get_headers(page)
+                if _is_customer_list_headers(headers):
+                    print(f"  ✅ 用 prgId={saved_id} 直接導航成功")
+                    return True
+            print(f"  [warn] prgId={saved_id} 導航後找不到客戶表格，嘗試其他方式")
+        except Exception as e:
+            print(f"  [warn] prgId={saved_id} 導航失敗: {e}")
+
     # ── 策略 1：先導到 ERP 主頁（about:blank 確保 SPA 完全重載）──────
     try:
         url_base = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}"
