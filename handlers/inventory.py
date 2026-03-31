@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from linebot.v3.messaging import MessagingApi, PushMessageRequest, TextMessage
 
 from config import settings
@@ -8,27 +9,164 @@ from storage.state import state_manager
 from handlers import tone
 
 
+_PREORDER_PATH = Path(__file__).parent.parent / "data" / "preorder.json"
+_preorder_cache: dict[str, dict] = {}   # code → {"name": "...", "eta": "..."}
+_preorder_loaded: float = 0.0
+
+
+def _extract_eta(po_block: str) -> str:
+    """從 PO文 block 提取預計到貨時間"""
+    # 優先：具體日期（預計4/10到貨、預計4月底到貨、預計第三季到貨）
+    m = re.search(r"預計\s*(.{2,20}?到貨)", po_block)
+    if m:
+        return m.group(1).strip()
+    # 次之：X月底前到貨
+    m = re.search(r"(\d+月[中下旬底]*前?到貨)", po_block)
+    if m:
+        return m.group(1)
+    # 再次：預購N天到貨
+    m = re.search(r"預購\s*(\d+)\s*天到貨", po_block)
+    if m:
+        return f"{m.group(1)}天到貨"
+    # 最後：14-21天
+    m = re.search(r"(\d+-\d+)\s*(?:工作)?天", po_block)
+    if m:
+        return f"{m.group(1)}工作天"
+    return ""
+
+
+def _load_preorder_cache() -> dict[str, dict]:
+    """從 preorder.json 載入快取"""
+    global _preorder_cache, _preorder_loaded
+    import time
+    if time.time() - _preorder_loaded < 60 and _preorder_cache:
+        return _preorder_cache
+    if _PREORDER_PATH.exists():
+        try:
+            import json
+            data = json.loads(_PREORDER_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _preorder_cache = data
+            elif isinstance(data, list):
+                _preorder_cache = {c: {} for c in data}
+            _preorder_loaded = time.time()
+        except Exception:
+            pass
+    return _preorder_cache
+
+
 def _check_preorder(prod_cd: str) -> bool:
-    """檢查 PO文 或品名是否含「預購」，判斷是否為預購商品"""
-    from storage import specs as spec_store
-    spec = spec_store.get_by_code(prod_cd)
-    if spec:
-        name = spec.get("name", "")
-        if "預購" in name:
-            return True
-    # 也檢查 Ecount 品名
-    cache = ecount_client.get_product_cache_item(prod_cd)
-    if cache and "預購" in (cache.get("name") or ""):
-        return True
-    # 檢查原始 PO文
-    try:
-        from handlers.internal import _get_raw_po_block
-        raw = _get_raw_po_block(prod_cd)
-        if raw and "預購" in raw:
-            return True
-    except Exception:
-        pass
-    return False
+    """預購 = preorder.json 快取中有此貨號（快取已排除有庫存的）"""
+    return prod_cd.upper() in _load_preorder_cache()
+
+
+def refresh_preorder_list() -> int:
+    """
+    重新掃描：PO文/品名含「預購」且庫存 <= 0 → 寫入 data/preorder.json。
+    到貨（有庫存）自動篩除。保留預購日期記錄。
+    回傳預購品數量。在庫存同步後 / 上架完成後呼叫。
+    """
+    import json
+    from datetime import datetime
+
+    # 讀取現有快取（保留歷史日期）
+    existing: dict[str, dict] = {}
+    if _PREORDER_PATH.exists():
+        try:
+            data = json.loads(_PREORDER_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                existing = data
+        except Exception:
+            pass
+
+    # 收集所有 PO文含「預購」的貨號 + 品名
+    candidates: dict[str, str] = {}  # code → name
+
+    # 1. specs 品名
+    specs_path = Path(__file__).parent.parent / "data" / "specs.json"
+    if specs_path.exists():
+        try:
+            specs = json.loads(specs_path.read_text(encoding="utf-8"))
+            for code, s in specs.items():
+                if "預購" in s.get("name", ""):
+                    candidates[code.upper()] = s.get("name", "")
+        except Exception:
+            pass
+
+    # 2. Ecount 品名快取（優先用 Ecount 品名，較正式）
+    ecount_names: dict[str, str] = {}
+    ecount_client._ensure_product_cache()
+    for item in (ecount_client._product_cache or []):
+        name = item.get("name") or ""
+        code = (item.get("code") or "").upper()
+        if code:
+            ecount_names[code] = name
+            if "預購" in name:
+                candidates.setdefault(code, name)
+
+    # 3. PO文
+    po_etas: dict[str, str] = {}  # code → 到貨時間描述
+    po_path = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品PO文.txt")
+    if po_path.exists():
+        try:
+            text = po_path.read_text(encoding="utf-8")
+            blocks = re.split(r"\n{2,}", text)
+            for block in blocks:
+                if "預購" in block:
+                    m = re.search(r"([A-Za-z]{1,3}-?\d{3,6})", block)
+                    if m:
+                        code = m.group(1).upper()
+                        if code not in candidates:
+                            first_line = block.strip().split("\n")[0][:40]
+                            candidates[code] = first_line
+                        # 提取到貨時間
+                        eta = _extract_eta(block)
+                        if eta:
+                            po_etas[code] = eta
+        except Exception:
+            pass
+
+    # 4. 過濾掉有庫存的（有貨 = 已到貨，不算預購）
+    avail_path = Path(__file__).parent.parent / "data" / "available.json"
+    avail = {}
+    if avail_path.exists():
+        try:
+            avail = json.loads(avail_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    result: dict[str, dict] = {}
+    for code in sorted(candidates):
+        qty = 0
+        if code in avail:
+            d = avail[code]
+            qty = d.get("available", 0) if isinstance(d, dict) else d
+        if qty <= 0:
+            eta = po_etas.get(code, "")
+            # 「14-21天」「15天到貨」等純天數是通用缺貨說明，不算真正預購品
+            if not eta or re.match(r"^\d+(-\d+)?(?:工作)?天(?:到貨)?$", eta):
+                continue
+            best_name = ecount_names.get(code) or candidates[code]
+            result[code] = {
+                "name": best_name,
+                "eta": eta,
+            }
+
+    # 5. 寫入
+    _PREORDER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PREORDER_PATH.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # 更新記憶體快取
+    global _preorder_cache, _preorder_loaded
+    import time
+    _preorder_cache = result
+    _preorder_loaded = time.time()
+
+    print(f"[preorder] 更新預購清單：{len(result)} 筆")
+    return len(result)
 
 
 def handle_inventory(user_id: str, text: str, line_api: MessagingApi) -> str:
@@ -208,7 +346,7 @@ def _query_single_product(user_id: str, prod_cd: str, line_api: MessagingApi = N
             })
             return tone.preorder_ask_qty(name)
         state_manager.set(user_id, {
-            "action":    "awaiting_restock_qty",
+            "action":    "awaiting_quantity",
             "prod_name": name,
             "prod_cd":   item["code"],
         })

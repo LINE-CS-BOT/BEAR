@@ -68,12 +68,17 @@ class IssueStore:
             )
             return cur.rowcount > 0
 
+    # 這些類型的待處理不會觸發 bot 靜默（客戶仍可正常互動）
+    _NO_SILENCE_TYPES = {"restock_inquiry"}
+
     def has_pending_issue(self, user_id: str) -> bool:
-        """檢查該客戶是否有任何未處理問題 → bot 凍結，靜默等待真人處理"""
+        """檢查該客戶是否有需要靜默的未處理問題（restock_inquiry 不算）"""
+        placeholders = ",".join("?" for _ in self._NO_SILENCE_TYPES)
         with sqlite3.connect(DB_PATH) as conn:
             row = conn.execute(
-                "SELECT 1 FROM issues WHERE user_id=? AND status='pending' LIMIT 1",
-                (user_id,),
+                f"SELECT 1 FROM issues WHERE user_id=? AND status='pending'"
+                f" AND type NOT IN ({placeholders}) LIMIT 1",
+                (user_id, *self._NO_SILENCE_TYPES),
             ).fetchone()
         return row is not None
 
