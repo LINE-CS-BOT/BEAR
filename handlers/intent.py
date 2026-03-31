@@ -24,11 +24,20 @@ class Intent(Enum):
     CREDIT_CARD = "credit_card"
     ORDER_CHANGE = "order_change"
     BANK_ACCOUNT = "bank_account"
+    RECOMMENDATION = "recommendation"
     UNKNOWN = "unknown"
 
 
 _MACHINE_SIZE_KEYWORDS = [
     "標準", "中巨", "巨無霸", "小k", "k霸", "小K", "K霸", "迷你機",
+]
+
+_RECOMMENDATION_KEYWORDS = [
+    "有什麼推薦", "推薦什麼", "推薦一下", "有什麼好東西", "有什麼新的",
+    "最近有什麼", "新貨", "新品", "新到", "有什麼新貨", "有什麼新品",
+    "有沒有推薦", "什麼好賣", "什麼好跑", "什麼比較好賣", "什麼賣最好",
+    "有什麼不錯", "有什麼可以選", "有什麼好的", "介紹一下",
+    "最近什麼好", "最新的", "新上架",
 ]
 
 # ── 新場景關鍵字 ──────────────────────────────────────
@@ -248,6 +257,11 @@ def detect_intent(text: str) -> Intent:
     for kw in _NOTIFY_REQUEST_KEYWORDS:
         if kw in text:
             return Intent.NOTIFY_REQUEST
+
+    # 推薦/新貨（在庫存之前判，避免「有什麼」被當庫存查詢）
+    for kw in _RECOMMENDATION_KEYWORDS:
+        if kw in text:
+            return Intent.RECOMMENDATION
 
     # 排除「有沒有空/時間/人/機會」等非庫存語境
     _INV_EXCLUDE = ["有沒有空", "有沒有時間", "有沒有人", "有沒有機會", "有沒有辦法", "有沒有問題"]
