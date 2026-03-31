@@ -74,6 +74,7 @@ from handlers.internal import (
     handle_internal_customer_orders,
     handle_internal_showcase_push,
     handle_internal_label_queue,
+    handle_internal_cart,
     _NEW_PROD_TRIGGER_RE,
     _PROD_CODE_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
@@ -607,7 +608,7 @@ def _handle_missing_ecount_name(text: str) -> str | None:
     return f"⚠️ Ecount 無品名（{len(missing)} 筆）：\n" + "\n".join(missing)
 
 
-def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str | None:
+def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id: str = "") -> str | None:
     """內部群組 fallback dispatch chain"""
     # 含 @ tag 的訊息是對話，不需要 bot 回覆
     if "@" in combined:
@@ -631,6 +632,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api) -> str |
         or handle_ambiguous_resolve(group_id, combined)
         or handle_name_order_confirm(group_id, combined)
         or handle_new_customer_confirm(group_id, combined)
+        or handle_internal_cart(combined, line_api, staff_id=staff_id)
         or handle_internal_order(combined, line_api, group_id=group_id)
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
@@ -919,7 +921,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         # 有圖片但辨識失敗 → 靜默，不把 PO 文當指令 dispatch
                         ack = None
                     else:
-                        ack = _dispatch_internal_fallback(combined, group_id, line_api)
+                        ack = _dispatch_internal_fallback(combined, group_id, line_api, staff_id=user_id)
             else:
                 try:
                     # ── 新增品項觸發 ──
@@ -936,7 +938,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     else:
                         print(f"[txt-buf] dispatch_internal_fallback 開始: {combined!r}", flush=True)
-                        ack = _dispatch_internal_fallback(combined, group_id, line_api)
+                        ack = _dispatch_internal_fallback(combined, group_id, line_api, staff_id=user_id)
                         print(f"[txt-buf] dispatch_internal_fallback 結果: {ack!r}", flush=True)
                 except Exception as _ge:
                     print(f"[txt-buf] 內部群處理例外: {type(_ge).__name__}: {_ge}", flush=True)
@@ -1162,7 +1164,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         else:
                             # Claude 也搞不清楚 → 回覆確認中，靜默轉待處理
                             issue_store.add(user_id, "image_query", f"（圖片+文字，Claude 無法辨識）{combined[:30]}")
-                            _send_reply(reply_token, user_id, "確認中～請稍後～", line_api)
+                            _send_reply(reply_token, user_id, tone.image_unrecognized(), line_api)
                         from services.claude_ai import add_chat_history
                         add_chat_history(user_id, "bot", _claude_img_reply)
                         return
@@ -1234,6 +1236,25 @@ def _in_quiet_hours() -> bool:
 _QUIET_HOURS_DIRECT_INTENTS = {
     Intent.BUSINESS_HOURS,   # 營業時間（客戶問今天有開嗎，隨時可回）
 }
+
+
+async def _cart_cleanup_loop():
+    """每天 23:00 清理超過 48 小時的購物車"""
+    while True:
+        now = datetime.now()
+        # 計算到今天（或明天）23:00 的秒數
+        target = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        wait_secs = (target - now).total_seconds()
+        await asyncio.sleep(wait_secs)
+        try:
+            from storage import cart as _cart_clean
+            removed = _cart_clean.cleanup_expired(max_age_hours=48)
+            if removed:
+                print(f"[cart-cleanup] 清理 {removed} 個過期購物車", flush=True)
+        except Exception as e:
+            print(f"[cart-cleanup] 清理失敗: {e}", flush=True)
 
 
 async def _refresh_data_loop():
@@ -1626,6 +1647,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_sync_ecount_customers_loop())
     asyncio.create_task(_sync_cust_ecount_loop())
     asyncio.create_task(_sync_failure_notify_loop())
+    asyncio.create_task(_cart_cleanup_loop())
     # 啟動時若已過 10:00 且佇列有待處理訊息，立刻補發（防止 server 重啟後錯過 10:00 觸發）
     if datetime.now().hour >= 10 and queue_store.count_unprocessed() > 0:
         print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")
@@ -4197,15 +4219,19 @@ def _dispatch(
             return tone.confirmation_ack()
         return handle_checkout(user_id, line_api)
     else:
-        # 購物車有東西 → 優先處理結帳相關
+        # 購物車有東西 → 判斷客戶意圖
         from storage import cart as _cart_chk
         if not _cart_chk.is_empty(user_id):
             _cancel_kw = ["不用", "算了", "取消", "不要"]
             if any(kw in text for kw in _cancel_kw):
                 _cart_chk.clear_cart(user_id)
                 return "好的，已取消訂單～有需要再找我哦"
-            # 其他訊息視為確認結帳
-            return handle_checkout(user_id, line_api)
+            # 純數量（三個、10個）→ 可能要追加，不自動結帳
+            from handlers.ordering import extract_quantity as _eq_cart
+            if _eq_cart(text):
+                return f"請問要訂什麼商品呢？或是跟我說「好了」幫您送出目前的訂單唷"
+            # 其他不明訊息 → 不自動結帳，交給 Claude 回覆
+            pass
         # 先問 Claude，失敗才轉真人
         from services.claude_ai import ask_claude_text
         _claude_reply = ask_claude_text(text, user_id=user_id)
