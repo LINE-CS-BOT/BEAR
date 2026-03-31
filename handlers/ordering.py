@@ -439,11 +439,13 @@ def handle_checkout(
                 )
                 print(f"[ordering] 預購品自動登記到貨通知: {item['prod_name']} x{item['qty']}")
             else:
-                # 非預購品 → 檢查是否缺貨
+                # 非預購品 → 檢查庫存是否足夠
                 _item_info = ecount_client.lookup(item["prod_cd"])
                 _item_qty = _item_info.get("qty") if _item_info else None
-                if not _item_qty or _item_qty <= 0:
-                    _oos_items.append(item)
+                if not _item_qty or _item_qty < item["qty"]:
+                    # 庫存不足（包含 0 和不夠的情況）
+                    _short = item["qty"] - (_item_qty or 0)
+                    _oos_items.append({**item, "short": _short, "stock": _item_qty or 0})
         # 缺貨品項 → 一次通知總公司 + 一筆待處理
         if _oos_items:
             from storage.issues import issue_store
@@ -471,9 +473,10 @@ def _notify_hq_restock_batch(oos_items: list[dict], line_api) -> None:
         print(f"[總公司通知] 未設定 LINE_GROUP_ID_HQ，跳過")
         return
 
-    lines = ["請問一下，以下品項是否有數量可以調貨？如果叫貨需要多久時間？"]
+    lines = ["⚠️ 客戶已下單，以下品項庫存不足，麻煩盡快確認調貨："]
     for item in oos_items:
-        lines.append(f"📦 {item['prod_name']}（{item['prod_cd']}）× {item['qty']} 個")
+        short = item.get("short", item["qty"])
+        lines.append(f"📦 {item['prod_name']}（{item['prod_cd']}）需調 {short} 個")
     try:
         line_api.push_message(
             PushMessageRequest(

@@ -545,6 +545,153 @@ def _do_order(
         return f"❌ {cust_label}{new_tag}｜訂單建立失敗"
 
 
+# ── 內部群：客戶購物車管理 ─────────────────────────────────────
+# 「購物車 賴柏舟」→ 進入 session：查看 + 後續可直接 T0101*6 加購 / 送出
+# 「加購 賴柏舟 S0633*24」→ 不用 session 也能加購
+# 「代結帳 賴柏舟」→ 不用 session 也能結帳
+_CART_VIEW_RE = re.compile(r"^購物車\s*(\S+)$")
+_CART_ADD_RE = re.compile(r"^加購\s*(\S+)\s+([A-Za-z]{1,3}-?\d{3,6})\s*[*×xX]\s*(\d+)$")
+_CART_CHECKOUT_RE = re.compile(r"^代結帳\s*(\S+)$")
+# session 中的快速指令
+_CART_QUICK_ADD_RE = re.compile(r"^(?:加購\s*)?([A-Za-z]{1,3}-?\d{3,6})\s*[*×xX]\s*(\d+)$")
+_CART_QUICK_SUBMIT = {"送出", "結帳", "好了", "確認"}
+
+# 購物車管理 session（per 內部群使用者）
+import threading as _cart_threading
+_cart_session: dict[str, dict] = {}  # staff_user_id → {"line_id": ..., "label": ..., "ts": ...}
+_cart_session_lock = _cart_threading.Lock()
+_CART_SESSION_TIMEOUT = 300  # 5 分鐘無操作自動結束
+
+
+def _get_cart_session(staff_id: str) -> dict | None:
+    """取得有效的購物車 session"""
+    import time
+    with _cart_session_lock:
+        s = _cart_session.get(staff_id)
+        if s and time.time() - s["ts"] < _CART_SESSION_TIMEOUT:
+            return s
+        _cart_session.pop(staff_id, None)
+    return None
+
+
+def _set_cart_session(staff_id: str, line_id: str, label: str) -> None:
+    import time
+    with _cart_session_lock:
+        _cart_session[staff_id] = {"line_id": line_id, "label": label, "ts": time.time()}
+
+
+def _touch_cart_session(staff_id: str) -> None:
+    import time
+    with _cart_session_lock:
+        if staff_id in _cart_session:
+            _cart_session[staff_id]["ts"] = time.time()
+
+
+def _clear_cart_session(staff_id: str) -> None:
+    with _cart_session_lock:
+        _cart_session.pop(staff_id, None)
+
+
+def _resolve_customer_line_id(name: str) -> tuple[str | None, str]:
+    """用客戶名找 line_user_id，回傳 (line_id, display_label)"""
+    from storage.customers import customer_store
+    results = customer_store.search_by_name(name, real_name_only=True)
+    if not results:
+        results = customer_store.search_by_name(name)
+    if not results:
+        return None, name
+    cust = results[0]
+    line_id = cust.get("line_user_id", "")
+    label = cust.get("real_name") or cust.get("display_name") or name
+    return line_id, label
+
+
+def _format_cart(label: str, cart: list[dict]) -> str:
+    """格式化購物車顯示"""
+    lines = [f"📋 {label} 的購物車："]
+    for item in cart:
+        lines.append(f"  • {item['prod_name']}（{item['prod_cd']}）× {item['qty']}")
+    lines.append(f"\n直接輸入「貨號*數量」加購，「送出」結帳")
+    return "\n".join(lines)
+
+
+def handle_internal_cart(text: str, line_api=None, staff_id: str = "") -> str | None:
+    """處理內部群購物車管理指令"""
+    from storage import cart as cart_store
+    from services.ecount import ecount_client
+    t = text.strip()
+
+    # ── 查看購物車（進入 session）──
+    m = _CART_VIEW_RE.match(t)
+    if m:
+        name = m.group(1)
+        line_id, label = _resolve_customer_line_id(name)
+        if not line_id:
+            return f"❌ 找不到客戶「{name}」"
+        _set_cart_session(staff_id or "default", line_id, label)
+        cart = cart_store.get_cart(line_id)
+        if not cart:
+            return f"📋 {label} 的購物車是空的\n直接輸入「貨號*數量」加購"
+        return _format_cart(label, cart)
+
+    # ── 加購品項（指定客戶名）──
+    m = _CART_ADD_RE.match(t)
+    if m:
+        name, code, qty_str = m.group(1), m.group(2).upper(), int(m.group(3))
+        line_id, label = _resolve_customer_line_id(name)
+        if not line_id:
+            return f"❌ 找不到客戶「{name}」"
+        _set_cart_session(staff_id or "default", line_id, label)
+        info = ecount_client.lookup(code)
+        prod_name = (info.get("name") if info else None) or code
+        cart = cart_store.add_item(line_id, code, prod_name, qty_str)
+        return f"✅ 已加購 {prod_name} × {qty_str}\n" + _format_cart(label, cart)
+
+    # ── 代結帳（指定客戶名）──
+    m = _CART_CHECKOUT_RE.match(t)
+    if m:
+        name = m.group(1)
+        line_id, label = _resolve_customer_line_id(name)
+        if not line_id:
+            return f"❌ 找不到客戶「{name}」"
+        cart = cart_store.get_cart(line_id)
+        if not cart:
+            return f"❌ {label} 的購物車是空的，無法結帳"
+        _clear_cart_session(staff_id or "default")
+        from handlers.ordering import handle_checkout
+        result = handle_checkout(line_id, line_api)
+        return f"【代 {label} 結帳】\n{result}"
+
+    # ── Session 快速操作 ──
+    session = _get_cart_session(staff_id or "default")
+    if session:
+        line_id = session["line_id"]
+        label = session["label"]
+
+        # 快速加購：T0101*6
+        m = _CART_QUICK_ADD_RE.match(t)
+        if m:
+            code, qty_str = m.group(1).upper(), int(m.group(2))
+            _touch_cart_session(staff_id or "default")
+            info = ecount_client.lookup(code)
+            prod_name = (info.get("name") if info else None) or code
+            cart = cart_store.add_item(line_id, code, prod_name, qty_str)
+            return f"✅ 已加購 {prod_name} × {qty_str}\n" + _format_cart(label, cart)
+
+        # 快速送出
+        if t in _CART_QUICK_SUBMIT:
+            cart = cart_store.get_cart(line_id)
+            if not cart:
+                _clear_cart_session(staff_id or "default")
+                return f"❌ {label} 的購物車是空的"
+            _clear_cart_session(staff_id or "default")
+            from handlers.ordering import handle_checkout
+            result = handle_checkout(line_id, line_api)
+            return f"【代 {label} 結帳】\n{result}"
+
+    return None
+
+
 def handle_internal_order(
     text: str,
     line_api: MessagingApi,

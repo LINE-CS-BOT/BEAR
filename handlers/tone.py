@@ -431,12 +431,21 @@ def checkout_confirmed(cart: list[dict], oos_items: list[dict] | None = None,
     has_note = False
     if po_items:
         has_note = True
-        po_names = "、".join(i["prod_name"] for i in po_items)
+        from handlers.inventory import _load_preorder_cache
+        _po_cache = _load_preorder_cache()
+        _po_parts = []
+        for i in po_items:
+            eta = (_po_cache.get(i["prod_cd"], {}) or {}).get("eta", "")
+            if eta:
+                _po_parts.append(f"「{i['prod_name']}」{eta}")
+            else:
+                _po_parts.append(f"「{i['prod_name']}」")
+        _po_list = "、".join(_po_parts)
         _po_msg = random.choice([
-            f"「{po_names}」是預購品，到貨後會第一時間通知{b}哦",
-            f"「{po_names}」目前是預購款，到貨馬上通知您～",
-            f"「{po_names}」屬於預購商品，一到貨就會跟{b}說的",
-            f"「{po_names}」是預購品哦，貨到了會立刻通知{b}",
+            f"{_po_list}是預購品，到貨後會第一時間通知{b}哦",
+            f"{_po_list}目前是預購款，到貨馬上通知您～",
+            f"{_po_list}屬於預購商品，一到貨就會跟{b}說的",
+            f"{_po_list}是預購品哦，貨到了會立刻通知{b}",
         ])
         lines.append(f"\n{_po_msg}")
     if oos_items:
@@ -706,6 +715,19 @@ def image_not_recognized() -> str:
 # ── 圖片下載失敗 ──────────────────────────────────────
 def image_download_failed() -> str:
     return f"不好意思，圖片讀取失敗{suffix_light()} 可以重新傳一次嗎？"
+
+
+def image_unrecognized() -> str:
+    """圖片無法辨識時的回覆"""
+    b = boss()
+    return random.choice([
+        f"確認中～請{b}稍等一下唷～",
+        f"我先幫您確認一下這款商品，稍等嘿",
+        f"收到圖片了！讓我查一下，等我一下唷",
+        f"好的～我先幫{b}確認看看，稍後回覆您",
+        f"我來查一下這個商品，{b}請稍等",
+        f"圖片收到囉，我確認一下馬上回覆您",
+    ])
 
 
 # ── 到貨通知登記 ────────────────────────────────────────
