@@ -807,20 +807,33 @@ def handle_internal_order(
             results.append(res)
         return "\n".join(results)
 
-    # ── 格式C：「姓名 產品代碼 數量個 [備註]」（單行，無「訂」關鍵字）──
-    if len(lines) == 1:
-        m_c = _STAFF_ORDER_DIRECT_RE.match(lines[0])
-        if m_c:
-            _prod_cd_c = m_c.group(2).strip()
-            _qty_c     = _parse_qty(m_c.group(3))
-            _unit_c    = m_c.group(4) if m_c.lastindex >= 4 else None
-            _note_c    = m_c.group(5).strip() if m_c.lastindex >= 5 else ""
-            return _do_order(
-                cust_name_query=m_c.group(1).strip(),
-                items_raw=[_apply_unit(_prod_cd_c, _qty_c, _unit_c)],
-                note=_note_c,
-                group_id=group_id,
-            )
+    # ── 格式C：「姓名 產品代碼*數量」（支援多行，第一行有姓名+品項，後續行只有品項）──
+    # 例：林銘宇 Z3251*1
+    #      HH008-022*3
+    m_c = _STAFF_ORDER_DIRECT_RE.match(lines[0])
+    if m_c:
+        _cust_name_c = m_c.group(1).strip()
+        _prod_cd_c = m_c.group(2).strip()
+        _qty_c     = _parse_qty(m_c.group(3))
+        _unit_c    = m_c.group(4) if m_c.lastindex >= 4 else None
+        _note_c    = m_c.group(5).strip() if m_c.lastindex >= 5 else ""
+        _items_c = [_apply_unit(_prod_cd_c, _qty_c, _unit_c)]
+        # 後續行：只有品項（無姓名）
+        for _lc in lines[1:]:
+            _im_c = _STAFF_ORDER_ITEM_RE.search(_lc)
+            if _im_c:
+                _cd = _im_c.group(1).strip()
+                _q  = _parse_qty(_im_c.group(2))
+                _u  = _im_c.group(3) if _im_c.lastindex >= 3 else None
+                _items_c.append(_apply_unit(_cd, _q, _u))
+            elif re.match(r'^備[註誌记]\s*[:：]?\s*', _lc):
+                _note_c = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _lc).strip()
+        return _do_order(
+            cust_name_query=_cust_name_c,
+            items_raw=_items_c,
+            note=_note_c,
+            group_id=group_id,
+        )
 
     # ── 格式D：「姓名 要/訂/下單 商品名 數量」（品名搜尋下單，無需先查庫存）──
     # 例：「曹竣智 要 洗衣球 5」、「幫曹竣智 訂 洗衣球 5個」

@@ -3710,24 +3710,9 @@ def _handle_stateful(
     if action == "awaiting_quantity":
         qty = extract_quantity(text)
         if qty:
-            if state.get("from_image"):
-                # 圖片識別下單 → 先顯示確認框，等待「確認」才建單
-                prod_cd   = state.get("prod_cd", "")
-                prod_name = state.get("prod_name", "此商品")
-                state_manager.set(user_id, {
-                    "action":    "awaiting_image_order_confirm",
-                    "prod_cd":   prod_cd,
-                    "prod_name": prod_name,
-                    "qty":       qty,
-                })
-                return (
-                    f"確認是這款對吧～\n"
-                    f"{prod_name}（{prod_cd}）× {qty} 個"
-                )
-            else:
-                # 一般文字下單 → 直接加購物車
-                state_manager.clear(user_id)
-                return handle_order_quantity(user_id, text, state, line_api)
+            # 統一直接加購物車（不再多一步確認，避免 state 被覆蓋）
+            state_manager.clear(user_id)
+            return handle_order_quantity(user_id, text, state, line_api)
         elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用"]):
             state_manager.clear(user_id)
             return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
