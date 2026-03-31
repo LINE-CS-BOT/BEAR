@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>銷售分析儀表板</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; }
+.header { background: linear-gradient(135deg, #1a73e8, #0d47a1); color: #fff; padding: 20px 24px; }
+.header h1 { font-size: 1.4rem; }
+.header small { opacity: 0.8; }
+.container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; }
+.card-title { padding: 14px 18px; font-weight: 700; font-size: 1rem; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 8px; }
+.card-body { padding: 12px 18px; max-height: 420px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th { text-align: left; padding: 6px 8px; color: #666; font-weight: 600; border-bottom: 2px solid #eee; white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid #f5f5f5; }
+tr:hover td { background: #f8f9ff; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+.badge-red { background: #fde8e8; color: #c62828; }
+.badge-yellow { background: #fff8e1; color: #f57f17; }
+.badge-green { background: #e8f5e9; color: #2e7d32; }
+.badge-blue { background: #e3f2fd; color: #1565c0; }
+.bar-wrap { width: 100%; background: #eee; border-radius: 4px; height: 18px; position: relative; }
+.bar { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #42a5f5, #1565c0); min-width: 2px; }
+.bar-label { position: absolute; right: 4px; top: 1px; font-size: 0.7rem; color: #333; }
+.spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #ddd; border-top-color: #1a73e8; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tab { padding: 8px 16px; border-radius: 8px; cursor: pointer; background: #fff; border: 1px solid #ddd; font-size: 0.9rem; }
+.tab.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+.full-width { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📊 銷售分析儀表板</h1>
+  <small id="update-time">載入中...</small>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <div class="tab active" onclick="loadAll()">全部</div>
+    <div class="tab" onclick="loadSection('top_sellers')">銷售排行</div>
+    <div class="tab" onclick="loadSection('forecast')">補貨預測</div>
+    <div class="tab" onclick="loadSection('slow_movers')">滯銷品</div>
+    <div class="tab" onclick="loadSection('price_bands')">價位分析</div>
+    <div class="tab" onclick="loadSection('categories')">品類分析</div>
+    <div class="tab" onclick="loadSection('customers')">客戶分析</div>
+  </div>
+
+  <div class="grid" id="dashboard">
+    <div class="card"><div class="card-body" style="text-align:center;padding:40px"><div class="spinner"></div></div></div>
+  </div>
+</div>
+
+<script>
+let DATA = {};
+
+async function fetchData(report) {
+  const r = await fetch('/admin/analytics/data?report=' + report);
+  return await r.json();
+}
+
+function setTabs(active) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  if (active === 'all') {
+    document.querySelector('.tab').classList.add('active');
+  } else {
+    document.querySelectorAll('.tab').forEach(t => {
+      if (t.textContent.includes(active === 'top_sellers' ? '銷售' : active === 'forecast' ? '補貨' : active === 'slow_movers' ? '滯銷' : active === 'price_bands' ? '價位' : active === 'categories' ? '品類' : '客戶'))
+        t.classList.add('active');
+    });
+  }
+}
+
+async function loadAll() {
+  setTabs('all');
+  CURRENT_SECTION = 'all';
+  document.getElementById('dashboard').innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:40px"><div class="spinner"></div></div></div>';
+  DATA = await fetchData('all');
+  document.getElementById('update-time').textContent = '更新時間：' + new Date().toLocaleString('zh-TW');
+  render();
+}
+
+let CURRENT_SECTION = 'all';
+
+async function loadSection(key) {
+  setTabs(key);
+  CURRENT_SECTION = key;
+  if (!DATA[key]) {
+    const d = await fetchData(key);
+    DATA = {...DATA, ...d};
+  }
+  render();
+}
+
+function render() {
+  const el = document.getElementById('dashboard');
+  let html = '';
+  const s = CURRENT_SECTION;
+
+  // 銷售排行
+  if (DATA.top_sellers && (s === 'all' || s === 'top_sellers')) {
+    const max = DATA.top_sellers[0]?.total_out || 1;
+    html += `<div class="card"><div class="card-title">🔥 近30天銷售排行</div><div class="card-body"><table>
+      <tr><th>#</th><th>貨號</th><th>品名</th><th>品類</th><th class="num">出庫</th><th class="num">日均</th><th style="width:100px">佔比</th></tr>
+      ${DATA.top_sellers.map((p,i) => `<tr>
+        <td>${i+1}</td><td>${p.code}</td><td>${p.name.substring(0,15)}</td>
+        <td><span class="badge badge-blue">${p.category}</span></td>
+        <td class="num">${p.total_out}</td><td class="num">${p.daily_avg}</td>
+        <td><div class="bar-wrap"><div class="bar" style="width:${(p.total_out/max*100).toFixed(0)}%"></div></div></td>
+      </tr>`).join('')}
+    </table></div></div>`;
+  }
+
+  // 補貨預測
+  if (DATA.forecast && (s === 'all' || s === 'forecast')) {
+    html += `<div class="card"><div class="card-title">🚨 補貨預測</div><div class="card-body"><table>
+      <tr><th>狀態</th><th>貨號</th><th>品名</th><th class="num">庫存</th><th class="num">日出</th><th class="num">剩餘天</th></tr>
+      ${DATA.forecast.slice(0,20).map(p => {
+        const badge = p.days_left <= 7 ? 'badge-red' : p.days_left <= 14 ? 'badge-yellow' : 'badge-green';
+        const label = p.days_left <= 7 ? '急' : p.days_left <= 14 ? '注意' : '安全';
+        return `<tr>
+          <td><span class="badge ${badge}">${label}</span></td>
+          <td>${p.code}</td><td>${p.name.substring(0,15)}</td>
+          <td class="num">${p.stock}</td><td class="num">${p.daily_avg_out}</td>
+          <td class="num">${p.days_left}天</td>
+        </tr>`;
+      }).join('')}
+    </table></div></div>`;
+  }
+
+  // 滯銷品
+  if (DATA.slow_movers && (s === 'all' || s === 'slow_movers')) {
+    html += `<div class="card"><div class="card-title">⚠️ 滯銷品（60天無出庫）共 ${DATA.slow_movers.length} 項</div><div class="card-body"><table>
+      <tr><th>貨號</th><th>品名</th><th>品類</th><th class="num">庫存</th><th>最後出庫</th></tr>
+      ${DATA.slow_movers.map(p => `<tr>
+        <td>${p.code}</td><td>${p.name.substring(0,18)}</td>
+        <td><span class="badge badge-blue">${p.category}</span></td>
+        <td class="num">${p.stock}</td><td>${p.last_sale}</td>
+      </tr>`).join('')}
+    </table></div></div>`;
+  }
+
+  // 價位帶
+  if (DATA.price_bands && (s === 'all' || s === 'price_bands')) {
+    const maxAmt = Math.max(...DATA.price_bands.map(b => b.total_amount));
+    html += `<div class="card"><div class="card-title">💰 價位帶分析（近90天）</div><div class="card-body"><table>
+      <tr><th>價位</th><th class="num">品項數</th><th class="num">出庫數</th><th class="num">金額</th><th style="width:120px">佔比</th><th>冠軍</th></tr>
+      ${DATA.price_bands.map(b => `<tr>
+        <td><b>${b.band}</b></td>
+        <td class="num">${b.product_count}</td><td class="num">${b.total_qty.toLocaleString()}</td>
+        <td class="num">$${b.total_amount.toLocaleString()}</td>
+        <td><div class="bar-wrap"><div class="bar" style="width:${(b.total_amount/maxAmt*100).toFixed(0)}%"></div></div></td>
+        <td>${b.top3[0]?.name?.substring(0,12) || ''}</td>
+      </tr>`).join('')}
+    </table></div></div>`;
+  }
+
+  // 品類
+  if (DATA.categories && (s === 'all' || s === 'categories')) {
+    html += `<div class="card"><div class="card-title">📦 品類銷售佔比（近90天）</div><div class="card-body"><table>
+      <tr><th>品類</th><th class="num">品項</th><th class="num">出庫</th><th class="num">金額</th><th class="num">佔比</th><th style="width:120px"></th></tr>
+      ${DATA.categories.map(c => `<tr>
+        <td><b>${c.category}</b></td>
+        <td class="num">${c.product_count}</td><td class="num">${c.total_qty.toLocaleString()}</td>
+        <td class="num">$${c.total_amount.toLocaleString()}</td>
+        <td class="num">${c.pct}%</td>
+        <td><div class="bar-wrap"><div class="bar" style="width:${c.pct}%;background:linear-gradient(90deg,#66bb6a,#2e7d32)"></div></div></td>
+      </tr>`).join('')}
+    </table></div></div>`;
+  }
+
+  // 客戶
+  if (DATA.customers && (s === 'all' || s === 'customers')) {
+    html += `<div class="card full-width"><div class="card-title">👥 客戶分析 TOP 20（近90天）</div><div class="card-body"><table>
+      <tr><th>客戶</th><th class="num">總金額</th><th class="num">訂單次</th><th>回購頻率</th><th>偏好品類</th><th>常買品項</th></tr>
+      ${DATA.customers.map(c => {
+        const interval = c.avg_interval_days > 0 ? `每${c.avg_interval_days}天` : '單次';
+        const topItems = c.top_items.map(t => t.name.substring(0,10)).join('、');
+        return `<tr>
+          <td><b>${c.name}</b></td>
+          <td class="num">$${c.total_amount.toLocaleString()}</td>
+          <td class="num">${c.order_count}</td>
+          <td><span class="badge ${c.avg_interval_days <= 7 ? 'badge-green' : c.avg_interval_days <= 14 ? 'badge-yellow' : 'badge-red'}">${interval}</span></td>
+          <td><span class="badge badge-blue">${c.fav_category}</span></td>
+          <td style="font-size:0.8rem;color:#666">${topItems}</td>
+        </tr>`;
+      }).join('')}
+    </table></div></div>`;
+  }
+
+  el.innerHTML = html || '<div class="card"><div class="card-body">暫無資料</div></div>';
+}
+
+loadAll();
+</script>
+</body>
+</html>

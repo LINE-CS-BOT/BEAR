@@ -3346,22 +3346,15 @@ async def admin_rebate(sync: bool = False):
                 print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
         except Exception as e:
             print(f"[rebate] 同步失敗: {e}")
-    day = datetime.now().day
-    if day <= 15:
-        # 1~15日：顯示上個月達標
-        from services.rebate import get_last_month_achievers
-        return await asyncio.to_thread(get_last_month_achievers)
-    else:
-        # 16~31日：顯示這個月快達標
-        from services.rebate import get_approaching_customers
-        return await asyncio.to_thread(get_approaching_customers)
+    from services.rebate import calculate_rebates
+    return await asyncio.to_thread(calculate_rebates)
 
 @app.get("/admin/rebate/approaching")
 async def admin_rebate_approaching():
-    """1~14日：上月達標客戶；15日起：當月快接近達成"""
+    """1~15日：上月達標客戶；16日起：當月快接近達成"""
     from datetime import datetime as _dt
     day = _dt.now().day
-    if day < 15:
+    if day <= 15:
         from services.rebate import get_last_month_achievers
         return await asyncio.to_thread(get_last_month_achievers)
     else:
