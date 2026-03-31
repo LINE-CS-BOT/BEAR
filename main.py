@@ -659,13 +659,99 @@ def _handle_missing_ecount_name(text: str) -> str | None:
     return f"⚠️ Ecount 無品名（{len(missing)} 筆）：\n" + "\n".join(missing)
 
 
+_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析)$")
+_NEW_PROD_SUGGEST_RE = re.compile(r"^新品建議\s+(.+?)\s+(\d+)元?$")
+
+
+def _handle_analytics_command(text: str) -> str | None:
+    t = text.strip()
+    m = _ANALYTICS_RE.match(t)
+    if m:
+        from services.analytics import (
+            full_report, top_sellers, slow_movers, restock_forecast,
+            price_band_analysis, category_analysis, customer_analysis,
+        )
+        cmd = m.group(1)
+        if cmd == "分析報告":
+            return full_report()
+        elif cmd == "銷售排行":
+            top = top_sellers(30, 15)
+            if not top:
+                return "沒有銷售資料"
+            lines = ["🔥 近30天銷售排行 TOP 15"]
+            for i, p in enumerate(top, 1):
+                lines.append(f"{i:2}. {p['code']} {p['name'][:18]} 出{p['total_out']}個 日均{p['daily_avg']} [{p['category']}]")
+            return "\n".join(lines)
+        elif cmd == "滯銷品":
+            slow = slow_movers(60, 10)
+            if not slow:
+                return "沒有滯銷品"
+            lines = [f"⚠️ 滯銷品（60天無出庫，庫存≥10）共 {len(slow)} 項"]
+            for p in slow[:15]:
+                lines.append(f"  {p['code']} {p['name'][:18]} 庫存{p['stock']} 上次{p['last_sale']} [{p['category']}]")
+            return "\n".join(lines)
+        elif cmd == "補貨預測":
+            forecast = restock_forecast(30)
+            if not forecast:
+                return "沒有補貨預測資料"
+            lines = ["🚨 補貨預測（按剩餘天數排序）"]
+            for p in forecast[:15]:
+                emoji = "🔴" if p["days_left"] <= 7 else "🟡" if p["days_left"] <= 14 else "🟢"
+                lines.append(f"{emoji} {p['code']} {p['name'][:15]} 庫存{p['stock']} 日出{p['daily_avg_out']} 剩{p['days_left']}天")
+            return "\n".join(lines)
+        elif cmd == "價位分析":
+            pb = price_band_analysis(90)
+            if not pb:
+                return "沒有價位資料"
+            lines = ["💰 價位帶表現（近90天）"]
+            for b in pb:
+                top_name = b["top3"][0]["name"][:12] if b["top3"] else ""
+                lines.append(f"  {b['band']:>8}  {b['product_count']}品  出{b['total_qty']}個  ${b['total_amount']:,}  冠軍:{top_name}")
+            return "\n".join(lines)
+        elif cmd == "品類分析":
+            cats = category_analysis(90)
+            if not cats:
+                return "沒有品類資料"
+            lines = ["📦 品類銷售（近90天）"]
+            for c in cats:
+                lines.append(f"  {c['category']:>10}  {c['product_count']}品  {c['pct']}%  ${c['total_amount']:,}")
+            return "\n".join(lines)
+        elif cmd == "客戶分析":
+            custs = customer_analysis(90, 15)
+            if not custs:
+                return "沒有客戶資料"
+            lines = ["👥 客戶 TOP 15（近90天）"]
+            for c in custs:
+                interval = f"每{c['avg_interval_days']}天" if c['avg_interval_days'] > 0 else "單次"
+                lines.append(f"  {c['name'][:8]}  ${c['total_amount']:,}  {c['order_count']}次  {interval}  愛買:{c['fav_category']}")
+            return "\n".join(lines)
+
+    m = _NEW_PROD_SUGGEST_RE.match(t)
+    if m:
+        from services.analytics import new_product_suggestion
+        cat, price = m.group(1), int(m.group(2))
+        s = new_product_suggestion(cat, price)
+        lines = [f"📋 新品建議：{cat} {price}元"]
+        lines.append(f"同品類 {s['same_category_count']} 個品項，月均銷量 {s['same_category_avg_monthly']} 個")
+        lines.append(f"同價位 {s['same_priceband_count']} 個品項，月均銷量 {s['same_priceband_avg_monthly']} 個")
+        lines.append(f"\n💡 建議首批進貨：{s['suggested_qty']} 個")
+        if s["top_in_category"]:
+            lines.append(f"\n同品類熱銷：")
+            for p in s["top_in_category"][:3]:
+                lines.append(f"  {p['code']} {p['name'][:15]} {p['price']}元 銷{p['qty']}個")
+        return "\n".join(lines)
+
+    return None
+
+
 def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id: str = "") -> str | None:
     """內部群組 fallback dispatch chain"""
     # 含 @ tag 的訊息是對話，不需要 bot 回覆
     if "@" in combined:
         return None
     return (
-        handle_spec_inquiry_reply(group_id, combined, line_api)
+        _handle_analytics_command(combined)
+        or handle_spec_inquiry_reply(group_id, combined, line_api)
         or handle_spec_inquiry_qty(group_id, combined, line_api)
         or handle_ad_update_trigger(combined, group_id, line_api)
         or _handle_pending_list_command(combined)
@@ -2586,6 +2672,35 @@ async def root():
     return RedirectResponse(url="/admin")
 
 # ── 管理介面 HTML ────────────────────────────────────
+@app.get("/admin/analytics")
+async def admin_analytics_page():
+    """分析儀表板 HTML 頁面"""
+    return FileResponse(str(_STATIC_DIR / "analytics.html"))
+
+
+@app.get("/admin/analytics/data")
+async def admin_analytics_data(report: str = "all"):
+    """分析 API — 回傳 JSON"""
+    from services.analytics import (
+        top_sellers, slow_movers, customer_analysis,
+        restock_forecast, price_band_analysis, category_analysis,
+    )
+    result = {}
+    if report in ("all", "top_sellers"):
+        result["top_sellers"] = top_sellers(30, 20)
+    if report in ("all", "slow_movers"):
+        result["slow_movers"] = slow_movers(60, 10)
+    if report in ("all", "customers"):
+        result["customers"] = customer_analysis(90, 20)
+    if report in ("all", "forecast"):
+        result["forecast"] = restock_forecast(30)
+    if report in ("all", "price_bands"):
+        result["price_bands"] = price_band_analysis(90)
+    if report in ("all", "categories"):
+        result["categories"] = category_analysis(90)
+    return result
+
+
 @app.get("/admin")
 async def admin_ui():
     """管理介面首頁"""
@@ -3231,8 +3346,15 @@ async def admin_rebate(sync: bool = False):
                 print(proc.stdout.decode("utf-8", errors="replace"), flush=True)
         except Exception as e:
             print(f"[rebate] 同步失敗: {e}")
-    from services.rebate import calculate_rebates
-    return await asyncio.to_thread(calculate_rebates)
+    day = datetime.now().day
+    if day <= 15:
+        # 1~15日：顯示上個月達標
+        from services.rebate import get_last_month_achievers
+        return await asyncio.to_thread(get_last_month_achievers)
+    else:
+        # 16~31日：顯示這個月快達標
+        from services.rebate import get_approaching_customers
+        return await asyncio.to_thread(get_approaching_customers)
 
 @app.get("/admin/rebate/approaching")
 async def admin_rebate_approaching():
