@@ -49,6 +49,13 @@ class IssueStore:
             )
             return cur.lastrowid
 
+    def get_by_id(self, issue_id: int) -> dict | None:
+        """取得單筆問題記錄"""
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM issues WHERE id=?", (issue_id,)).fetchone()
+        return dict(row) if row else None
+
     def get_pending(self) -> list[dict]:
         """取得所有待處理問題"""
         with sqlite3.connect(DB_PATH) as conn:

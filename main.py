@@ -1373,9 +1373,8 @@ def _img_identify_from_buf(msg_id: str) -> str | None:
 
 # ── 離峰時段判斷（00:00 ~ 10:00）──────────────────────
 def _in_quiet_hours() -> bool:
-    """是否在離峰時段（00:00 ~ 10:00，靜默收集訊息，10:00 自動補處理）"""
-    now = datetime.now()
-    return now.hour < 10   # 00:00 ~ 09:59
+    """離峰時段已停用，永遠回傳 False"""
+    return False
 
 
 # 離峰時段仍直接回覆的意圖（只有營業時間查詢，其餘全部靜默入佇列）
@@ -1954,7 +1953,12 @@ def _resolve_one(kind: str, item_id: int) -> str:
         ok = delivery_store.resolve(item_id)
         return f"✅ #D{item_id} 配送詢問處理完成" if ok else f"⚠️ #D{item_id} 找不到（可能已處理過）"
     elif kind == "I":
+        # 先取 user_id，標記對話紀錄
+        _issue = issue_store.get_by_id(item_id)
         ok = issue_store.resolve(item_id)
+        if ok and _issue:
+            from services.claude_ai import add_chat_history
+            add_chat_history(_issue.get("user_id", ""), "bot", "（以上問題已由真人客服處理完成）")
         return f"✅ #I{item_id} 問題處理完成" if ok else f"⚠️ #I{item_id} 找不到（可能已處理過）"
     elif kind == "Q":
         ok = pending_store.mark_answered(item_id)
@@ -3160,6 +3164,8 @@ async def admin_takeover(user_id: str, display_name: str = ""):
         "taken_at":     _time.time(),
         "display_name": display_name,
     })
+    from services.claude_ai import add_chat_history
+    add_chat_history(user_id, "bot", "（以下由真人客服接手處理，之前的問題不需要再回覆）")
     print(f"[takeover] 接手: {display_name}（{user_id[:10]}...）")
     return {"status": "ok", "user_id": user_id}
 
@@ -3169,6 +3175,9 @@ async def admin_release(user_id: str):
     st = state_manager.get(user_id) or {}
     if st.get("action") == "human_takeover":
         state_manager.clear(user_id)
+        # 在對話紀錄標記：人工已處理，前面的問題不用再回覆
+        from services.claude_ai import add_chat_history
+        add_chat_history(user_id, "bot", "（以上問題已由真人客服處理完成，不需要再回覆之前的問題）")
         print(f"[takeover] 釋放: {user_id[:10]}...")
     return {"status": "ok", "user_id": user_id}
 
@@ -3388,6 +3397,8 @@ async def webhook(request: Request):
                 if _uid:
                     if _mode == "standby":
                         state_manager.set(_uid, {"action": "human_takeover"})
+                        from services.claude_ai import add_chat_history as _ach
+                        _ach(_uid, "bot", "（以下由真人客服接手處理，之前的問題不需要再回覆）")
                         print(f"[chat_mode] 員工接手 {_uid[:10]}... → bot 靜默")
                     elif _mode == "active":
                         if (state_manager.get(_uid) or {}).get("action") == "human_takeover":
@@ -3669,7 +3680,10 @@ def on_message(event: MessageEvent):
         # ── 真人介入中 → 凍結 bot，不進緩衝 ────────────────────────
         _check_id = group_id if source_type == "group" else user_id
         if (state_manager.get(_check_id) or {}).get("action") == "human_takeover":
-            print(f"[escalate] 真人介入中（群組），靜默 | {_check_id[:10]}...: {text!r}")
+            # 雖然靜默，但記錄客戶訊息（讓 Claude 知道接手期間客戶說了什麼）
+            from services.claude_ai import add_chat_history as _ach_tk
+            _ach_tk(user_id, "user", text)
+            print(f"[escalate] 真人介入中，靜默（已記錄）| {_check_id[:10]}...: {text!r}")
             return
         if source_type == "user" and (
             issue_store.has_pending_issue(user_id)
