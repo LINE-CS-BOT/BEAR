@@ -504,7 +504,12 @@ def _do_order(
 
     # 3. 查詢產品，組成 items
     order_items = []
-    for prod_query, qty in items_raw:
+    for entry in items_raw:
+        if len(entry) >= 3:
+            prod_query, qty, item_note = entry[0], entry[1], entry[2]
+        else:
+            prod_query, qty = entry[0], entry[1]
+            item_note = note  # 全域備註 fallback
         item = ecount_client.lookup(prod_query)
         if not item:
             return f"❌ 找不到產品「{prod_query}」"
@@ -512,7 +517,7 @@ def _do_order(
             "prod_cd":   item["code"],
             "prod_name": item["name"] or item["code"],
             "qty":       qty,
-            "note":      note,
+            "note":      item_note,
         })
 
     # 4. 建立訂單
@@ -765,45 +770,56 @@ def handle_internal_order(
         if not _STAFF_ORDER_LINE_RE.search(lines[0]):
             cust_name = header_m.group(1).strip()
             items_raw = []
-            note_b    = ""
+            _pending_note = ""  # 獨立行備註，歸給上一個品項
             for l in lines[1:]:
                 im = _STAFF_ORDER_ITEM_RE.search(l)
                 if im:
+                    # 先把上一行的獨立備註補給上一個品項
+                    if _pending_note and items_raw:
+                        prev = items_raw[-1]
+                        items_raw[-1] = (prev[0], prev[1], _pending_note)
+                        _pending_note = ""
                     prod_cd = im.group(1).strip()
                     qty     = _parse_qty(im.group(2))
                     unit    = im.group(3) if im.lastindex >= 3 else None
                     _cd, _q = _apply_unit(prod_cd, qty, unit)
-                    items_raw.append((_cd, _q))
-                    # 檢查同行是否有備註
+                    # 檢查同行備註
                     _rest = l[im.end():].strip()
                     _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip() if re.search(r'備[註誌记]', _rest) else ""
-                    if _inline_note and not note_b:
-                        note_b = _inline_note
+                    items_raw.append((_cd, _q, _inline_note))
                 elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
-                    note_b = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
+                    _pending_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
+            # 最後一個獨立備註
+            if _pending_note and items_raw:
+                prev = items_raw[-1]
+                items_raw[-1] = (prev[0], prev[1], _pending_note)
             if items_raw:
-                return _do_order(cust_name, items_raw, note=note_b, group_id=group_id)
+                return _do_order(cust_name, items_raw, group_id=group_id)
 
     # ── 格式B2：第一行只有姓名（無「訂」），後續行有貨號+數量 ──
     # 例：鄭鉅耀\nZ3340 10個\nZ3338 20個\n備註 送松山
     if len(lines) > 1 and not _PROD_CODE_RE.search(lines[0]) and not _STAFF_ORDER_HEADER_RE.match(lines[0]):
         items_b2 = []
-        note_b2  = ""
+        _pending_note_b2 = ""
         for l in lines[1:]:
             im = _STAFF_ORDER_ITEM_RE.search(l)
             if im:
-                # 檢查同行是否有備註（如「Z3616*2 備註:紅色*1粉色*1」）
+                if _pending_note_b2 and items_b2:
+                    prev = items_b2[-1]
+                    items_b2[-1] = (prev[0], prev[1], _pending_note_b2)
+                    _pending_note_b2 = ""
                 _rest = l[im.end():].strip()
                 _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip() if re.search(r'備[註誌记]', _rest) else ""
-                if _inline_note and not note_b2:
-                    note_b2 = _inline_note
                 prod_cd = im.group(1).strip()
                 qty     = _parse_qty(im.group(2))
                 unit    = im.group(3) if im.lastindex >= 3 else None
                 _cd2, _q2 = _apply_unit(prod_cd, qty, unit)
-                items_b2.append((_cd2, _q2))
+                items_b2.append((_cd2, _q2, _inline_note))
             elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
-                note_b2 = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
+                _pending_note_b2 = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
+        if _pending_note_b2 and items_b2:
+            prev = items_b2[-1]
+            items_b2[-1] = (prev[0], prev[1], _pending_note_b2)
         if items_b2:
             cust_name_b2 = lines[0].strip()
             return _do_order(cust_name_b2, items_b2, note=note_b2, group_id=group_id)
@@ -836,21 +852,35 @@ def handle_internal_order(
         _qty_c     = _parse_qty(m_c.group(3))
         _unit_c    = m_c.group(4) if m_c.lastindex >= 4 else None
         _note_c    = m_c.group(5).strip() if m_c.lastindex >= 5 else ""
-        _items_c = [_apply_unit(_prod_cd_c, _qty_c, _unit_c)]
-        # 後續行：只有品項（無姓名）
+        # 備註處理：group(5) 可能含「備註:XXX」
+        if re.search(r'備[註誌记]', _note_c):
+            _note_c = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _note_c).strip()
+        _cd_c, _q_c = _apply_unit(_prod_cd_c, _qty_c, _unit_c)
+        _items_c = [(_cd_c, _q_c, _note_c)]
+        # 後續行
+        _pending_note_c = ""
         for _lc in lines[1:]:
             _im_c = _STAFF_ORDER_ITEM_RE.search(_lc)
             if _im_c:
+                if _pending_note_c and _items_c:
+                    prev = _items_c[-1]
+                    _items_c[-1] = (prev[0], prev[1], _pending_note_c)
+                    _pending_note_c = ""
                 _cd = _im_c.group(1).strip()
                 _q  = _parse_qty(_im_c.group(2))
                 _u  = _im_c.group(3) if _im_c.lastindex >= 3 else None
-                _items_c.append(_apply_unit(_cd, _q, _u))
+                _rest_c = _lc[_im_c.end():].strip()
+                _inline_c = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest_c).strip() if re.search(r'備[註誌记]', _rest_c) else ""
+                _cd2, _q2 = _apply_unit(_cd, _q, _u)
+                _items_c.append((_cd2, _q2, _inline_c))
             elif re.match(r'^備[註誌记]\s*[:：]?\s*', _lc):
-                _note_c = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _lc).strip()
+                _pending_note_c = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _lc).strip()
+        if _pending_note_c and _items_c:
+            prev = _items_c[-1]
+            _items_c[-1] = (prev[0], prev[1], _pending_note_c)
         return _do_order(
             cust_name_query=_cust_name_c,
             items_raw=_items_c,
-            note=_note_c,
             group_id=group_id,
         )
 
