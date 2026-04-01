@@ -139,7 +139,7 @@ def handle_machine_query(
     # 按庫存量排序，取前 10 項
     in_stock.sort(key=lambda x: -x[1])
     total_count = len(in_stock)
-    in_stock = in_stock[:10]
+    in_stock = in_stock[:2]
 
     # 背景推送每個產品的 PO文 + 圖片
     def _push_products():
