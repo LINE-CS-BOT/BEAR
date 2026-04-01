@@ -1930,7 +1930,7 @@ async def lifespan(app: FastAPI):
     _restore_txt_buffer()           # 恢復 reload 前未處理的文字 buffer
     asyncio.create_task(_refresh_data_loop())
     asyncio.create_task(_queue_processor_loop())
-    asyncio.create_task(_restock_notify_loop())
+    # asyncio.create_task(_restock_notify_loop())  # 已停用，改用 14:00 _pickup_notify_loop
     asyncio.create_task(_followup_loop())
     asyncio.create_task(_midnight_inventory_check_loop())
     asyncio.create_task(_rebate_sync_loop())
