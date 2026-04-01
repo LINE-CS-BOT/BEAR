@@ -1538,6 +1538,143 @@ async def _sync_ecount_customers_loop():
             _notify_sync_failure("Ecount 客戶名單同步", str(e))
 
 
+async def _pickup_notify_loop():
+    """每天下午 14:00 檢查：客戶訂單全部備好 → 通知取貨"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=14, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            await asyncio.to_thread(_check_and_notify_pickup)
+        except Exception as e:
+            print(f"[pickup-notify] 失敗: {e}", flush=True)
+
+
+def _check_and_notify_pickup():
+    """掃描所有客戶：全部已備貨未取 + 沒有未備貨 → 通知"""
+    from handlers.internal import _load_unfulfilled, _load_unclaimed
+    from handlers.internal import _unfulfilled_needs_refresh, _refresh_unfulfilled
+    from handlers.internal import _unclaimed_needs_refresh, _refresh_unclaimed
+    from storage.customers import customer_store
+    from config import settings, _configuration
+    from linebot.v3.messaging import MessagingApi, PushMessageRequest, TextMessage, ApiClient
+    from collections import defaultdict
+    import random
+
+    # 確保資料最新
+    if _unfulfilled_needs_refresh():
+        _refresh_unfulfilled()
+    if _unclaimed_needs_refresh():
+        _refresh_unclaimed()
+
+    unfulfilled = _load_unfulfilled()
+    unclaimed = _load_unclaimed()
+
+    if not unclaimed:
+        print("[pickup-notify] 沒有已備貨未取的訂單", flush=True)
+        return
+
+    # 按客戶分組
+    uf_by_cust = defaultdict(list)
+    for o in unfulfilled:
+        uf_by_cust[o.get("customer", "")].append(o)
+
+    uc_by_cust = defaultdict(list)
+    for o in unclaimed:
+        uc_by_cust[o.get("customer", "")].append(o)
+
+    # 找「全部備好」的客戶（有已備貨未取 + 沒有未備貨）
+    # 用 base name 合併（如 翁敬恩-饒河 和 翁敬恩-永和 算同一人）
+    from services.rebate import _get_base_name
+    base_uf = set()
+    for cust in uf_by_cust:
+        base_uf.add(_get_base_name(cust))
+
+    ready_customers = {}  # base_name → [unclaimed items]
+    for cust, items in uc_by_cust.items():
+        base = _get_base_name(cust)
+        if base not in base_uf:
+            ready_customers.setdefault(base, []).extend(items)
+
+    if not ready_customers:
+        print("[pickup-notify] 沒有需要通知的客戶", flush=True)
+        return
+
+    print(f"[pickup-notify] {len(ready_customers)} 位客戶全部備好，準備通知...", flush=True)
+
+    # 記錄已通知過的（避免每天重複通知）
+    from pathlib import Path
+    notified_path = Path(__file__).parent / "data" / "_pickup_notified.json"
+    import json
+    today = datetime.now().strftime("%Y-%m-%d")
+    notified_today = set()
+    if notified_path.exists():
+        try:
+            nd = json.loads(notified_path.read_text(encoding="utf-8"))
+            if nd.get("date") == today:
+                notified_today = set(nd.get("names", []))
+        except Exception:
+            pass
+
+    no_line_id = []  # 沒有 LINE ID 的客戶
+
+    with ApiClient(_configuration) as api_client:
+        line_api = MessagingApi(api_client)
+
+        for base_name, items in ready_customers.items():
+            if base_name in notified_today:
+                continue
+
+            # 找 LINE ID
+            cust_matches = customer_store.search_by_name(base_name, real_name_only=True)
+            if not cust_matches:
+                cust_matches = customer_store.search_by_name(base_name)
+            uid = cust_matches[0].get("line_user_id", "") if cust_matches else ""
+
+            item_list = "\n".join(f"  • {o.get('product', '')[:20]} × {o.get('qty', 0):g}" for o in items)
+            notify_msg = random.choice([
+                f"老闆您好～您的訂單都備好囉！\n{item_list}\n\n方便的時候可以來取貨哦",
+                f"您好～通知您一下，以下品項都備好了：\n{item_list}\n\n有空過來拿就可以囉～",
+                f"老闆～您的貨都準備好了！\n{item_list}\n\n歡迎隨時來取貨",
+            ])
+
+            if uid:
+                try:
+                    line_api.push_message(PushMessageRequest(
+                        to=uid, messages=[TextMessage(text=notify_msg)]
+                    ))
+                    print(f"[pickup-notify] ✅ 通知 {base_name}", flush=True)
+                    notified_today.add(base_name)
+                except Exception as e:
+                    print(f"[pickup-notify] ❌ 通知 {base_name} 失敗: {e}", flush=True)
+            else:
+                no_line_id.append((base_name, items))
+                notified_today.add(base_name)
+
+        # 沒有 LINE ID 的推到內部群
+        if no_line_id and settings.LINE_GROUP_ID:
+            lines = ["📦 以下客戶訂單已備好，但無 LINE ID 無法通知："]
+            for name, items in no_line_id:
+                item_str = "、".join(f"{o.get('product', '')[:15]}×{o.get('qty', 0):g}" for o in items)
+                lines.append(f"  • {name}：{item_str}")
+            try:
+                line_api.push_message(PushMessageRequest(
+                    to=settings.LINE_GROUP_ID,
+                    messages=[TextMessage(text="\n".join(lines))]
+                ))
+            except Exception as e:
+                print(f"[pickup-notify] 內部群通知失敗: {e}", flush=True)
+
+    # 存今天已通知的
+    notified_path.write_text(
+        json.dumps({"date": today, "names": list(notified_today)}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"[pickup-notify] 完成，共通知 {len(notified_today)} 位", flush=True)
+
+
 async def _sync_cust_ecount_loop():
     """每日 13:10 自動同步 Ecount ↔ customers.db（手機比對、自動建 Ecount 客戶）"""
     while True:
@@ -1793,6 +1930,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_sync_cust_ecount_loop())
     asyncio.create_task(_sync_failure_notify_loop())
     asyncio.create_task(_cart_cleanup_loop())
+    asyncio.create_task(_pickup_notify_loop())
     # 啟動時若已過 10:00 且佇列有待處理訊息，立刻補發（防止 server 重啟後錯過 10:00 觸發）
     if datetime.now().hour >= 10 and queue_store.count_unprocessed() > 0:
         print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")
