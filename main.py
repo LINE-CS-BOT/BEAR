@@ -1557,110 +1557,120 @@ async def _pickup_notify_loop():
 
 
 def _check_and_notify_pickup():
-    """掃描所有客戶：全部已備貨未取 + 沒有未備貨 → 通知"""
-    from handlers.internal import _load_unfulfilled, _load_unclaimed
-    from handlers.internal import _unfulfilled_needs_refresh, _refresh_unfulfilled
-    from handlers.internal import _unclaimed_needs_refresh, _refresh_unclaimed
+    """
+    掃 notify_store 裡每個客戶的登記品項，檢查庫存是否到齊：
+    - 可售庫存 > 0 → 到貨 ✓
+    - 可售庫存 = 0 且 未出貨 = 庫存數量（貨在倉庫被訂單佔住）→ 到貨 ✓
+    全部品項都到齊 → 通知客戶取貨
+    有 LINE ID → push 客戶，沒有 → 推內部群
+    """
+    from storage.notify import notify_store
     from storage.customers import customer_store
     from config import settings, _configuration
     from linebot.v3.messaging import MessagingApi, PushMessageRequest, TextMessage, ApiClient
     from collections import defaultdict
-    import random
+    import json, random
 
-    # 確保資料最新
-    if _unfulfilled_needs_refresh():
-        _refresh_unfulfilled()
-    if _unclaimed_needs_refresh():
-        _refresh_unclaimed()
-
-    unfulfilled = _load_unfulfilled()
-    unclaimed = _load_unclaimed()
-
-    if not unclaimed:
-        print("[pickup-notify] 沒有已備貨未取的訂單", flush=True)
+    # 確保庫存資料新鮮
+    avail_path = Path(__file__).parent / "data" / "available.json"
+    if not avail_path.exists():
+        print("[pickup-notify] available.json 不存在，跳過", flush=True)
         return
-
-    # 按客戶分組
-    uf_by_cust = defaultdict(list)
-    for o in unfulfilled:
-        uf_by_cust[o.get("customer", "")].append(o)
-
-    uc_by_cust = defaultdict(list)
-    for o in unclaimed:
-        uc_by_cust[o.get("customer", "")].append(o)
-
-    # 找「全部備好」的客戶（有已備貨未取 + 沒有未備貨）
-    # 用 base name 合併（如 翁敬恩-饒河 和 翁敬恩-永和 算同一人）
-    from services.rebate import _get_base_name
-    base_uf = set()
-    for cust in uf_by_cust:
-        base_uf.add(_get_base_name(cust))
-
-    ready_customers = {}  # base_name → [unclaimed items]
-    for cust, items in uc_by_cust.items():
-        base = _get_base_name(cust)
-        if base not in base_uf:
-            ready_customers.setdefault(base, []).extend(items)
-
-    if not ready_customers:
-        print("[pickup-notify] 沒有需要通知的客戶", flush=True)
-        return
-
-    print(f"[pickup-notify] {len(ready_customers)} 位客戶全部備好，準備通知...", flush=True)
-
-    # 記錄已通知過的（避免每天重複通知）
-    from pathlib import Path
-    notified_path = Path(__file__).parent / "data" / "_pickup_notified.json"
-    import json
-    today = datetime.now().strftime("%Y-%m-%d")
-    notified_ever = set()
-    if notified_path.exists():
+    import time as _t
+    if _t.time() - avail_path.stat().st_mtime > 30 * 60:
         try:
-            nd = json.loads(notified_path.read_text(encoding="utf-8"))
-            notified_ever = set(nd.get("names", []))
+            from services.ecount import ecount_client
+            ecount_client._ensure_available()
         except Exception:
             pass
+    avail = json.loads(avail_path.read_text(encoding="utf-8"))
 
-    no_line_id = []  # 沒有 LINE ID 的客戶
+    # 取所有待通知的登記
+    pending = notify_store.get_pending(source=None)
+    if not pending:
+        print("[pickup-notify] 沒有待通知的登記", flush=True)
+        return
+
+    # 按 user_id 分組
+    by_user = defaultdict(list)
+    for p in pending:
+        by_user[p["user_id"]].append(p)
+
+    def _is_ready(prod_cd: str) -> bool:
+        d = avail.get(prod_cd.upper())
+        if not d:
+            return False
+        if isinstance(d, dict):
+            available = d.get("available", 0)
+            unfilled = d.get("unfilled", 0)
+            balance = d.get("balance", 0)
+        else:
+            return d > 0
+        if available > 0:
+            return True
+        if available == 0 and balance > 0 and unfilled == balance:
+            return True
+        return False
+
+    print(f"[pickup-notify] 檢查 {len(by_user)} 位客戶的 {len(pending)} 筆登記...", flush=True)
+
+    no_line_id = []
+    notified_count = 0
 
     with ApiClient(_configuration) as api_client:
         line_api = MessagingApi(api_client)
 
-        for base_name, items in ready_customers.items():
-            if base_name in notified_ever:
+        for uid, items in by_user.items():
+            # 檢查每個登記品項庫存是否到齊
+            all_ready = all(_is_ready(p["prod_code"]) for p in items)
+            if not all_ready:
                 continue
 
-            # 找 LINE ID
-            cust_matches = customer_store.search_by_name(base_name, real_name_only=True)
-            if not cust_matches:
-                cust_matches = customer_store.search_by_name(base_name)
-            uid = cust_matches[0].get("line_user_id", "") if cust_matches else ""
+            # 檢查客戶是否還有未備貨訂單（有的話不通知，還沒全部好）
+            from handlers.internal import _load_unfulfilled, _unfulfilled_needs_refresh, _refresh_unfulfilled
+            if _unfulfilled_needs_refresh():
+                _refresh_unfulfilled()
+            unfulfilled = _load_unfulfilled()
+            cust = customer_store.get_by_line_id(uid)
+            cust_name_check = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
+            has_unfulfilled = any(cust_name_check and cust_name_check in o.get("customer", "") for o in unfulfilled)
+            if has_unfulfilled:
+                continue
 
-            item_list = "\n".join(f"  • {o.get('product', '')[:20]} × {o.get('qty', 0):g}" for o in items)
+            # 全部到齊 → 通知
+            cust = customer_store.get_by_line_id(uid)
+            cust_name = (cust.get("real_name") or cust.get("display_name") or uid[:10]) if cust else uid[:10]
+
+            item_list = "\n".join(
+                f"  • {p['prod_name'][:20]} × {p.get('qty_wanted', 1)}" for p in items
+            )
             notify_msg = random.choice([
-                f"老闆您好～您的訂單都備好囉！\n{item_list}\n\n方便的時候可以來取貨哦",
-                f"您好～通知您一下，以下品項都備好了：\n{item_list}\n\n有空過來拿就可以囉～",
-                f"老闆～您的貨都準備好了！\n{item_list}\n\n歡迎隨時來取貨",
+                f"老闆您好～您訂的貨都到齊囉！\n{item_list}\n\n方便的時候可以來取貨哦",
+                f"您好～通知您一下，以下品項都到貨了：\n{item_list}\n\n有空過來拿就可以囉～",
+                f"老闆～您等的貨都到了！\n{item_list}\n\n歡迎隨時來取貨",
             ])
 
-            if uid:
+            if uid and not uid.startswith("_"):
                 try:
                     line_api.push_message(PushMessageRequest(
                         to=uid, messages=[TextMessage(text=notify_msg)]
                     ))
-                    print(f"[pickup-notify] ✅ 通知 {base_name}", flush=True)
-                    notified_ever.add(base_name)
+                    print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(items)} 品項）", flush=True)
+                    notified_count += 1
+                    for p in items:
+                        notify_store.mark_notified(p["id"])
                 except Exception as e:
-                    print(f"[pickup-notify] ❌ 通知 {base_name} 失敗: {e}", flush=True)
+                    print(f"[pickup-notify] ❌ 通知 {cust_name} 失敗: {e}", flush=True)
             else:
-                no_line_id.append((base_name, items))
-                notified_today.add(base_name)
+                no_line_id.append((cust_name, items))
+                for p in items:
+                    notify_store.mark_notified(p["id"])
 
         # 沒有 LINE ID 的推到內部群
         if no_line_id and settings.LINE_GROUP_ID:
-            lines = ["📦 以下客戶訂單已備好，但無 LINE ID 無法通知："]
+            lines = ["📦 以下客戶貨已到齊，但無 LINE ID："]
             for name, items in no_line_id:
-                item_str = "、".join(f"{o.get('product', '')[:15]}×{o.get('qty', 0):g}" for o in items)
+                item_str = "、".join(f"{p['prod_name'][:15]}×{p.get('qty_wanted',1)}" for p in items)
                 lines.append(f"  • {name}：{item_str}")
             try:
                 line_api.push_message(PushMessageRequest(
@@ -1670,17 +1680,7 @@ def _check_and_notify_pickup():
             except Exception as e:
                 print(f"[pickup-notify] 內部群通知失敗: {e}", flush=True)
 
-    # 清掉已不在已備貨未取的（代表已取貨，下次有新訂單可以再通知）
-    current_uc_names = set(_get_base_name(c) for c in uc_by_cust)
-    notified_ever = {n for n in notified_ever if n in current_uc_names}
-
-    # 存已通知名單
-    notified_path.write_text(
-        json.dumps({"names": list(notified_ever)}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    new_notified = len(notified_ever) - len(notified_ever - set(ready_customers.keys()))
-    print(f"[pickup-notify] 完成，本次通知 {new_notified} 位，累計 {len(notified_ever)} 位", flush=True)
+    print(f"[pickup-notify] 完成，通知 {notified_count} 位客戶", flush=True)
 
 
 async def _sync_cust_ecount_loop():
