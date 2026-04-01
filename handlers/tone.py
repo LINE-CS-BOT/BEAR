@@ -416,9 +416,9 @@ def _get_bank_info() -> str:
     from datetime import datetime
     day = datetime.now().day
     if day <= 15:
-        return "將來銀行（823）\n帳號：88651127081188\n戶名：飛宏貿易有限公司"
+        return "將來銀行（823）\n帳號：88651127081188"
     else:
-        return "中國信託（822）\n帳號：369540519377\n戶名：飛宏貿易有限公司"
+        return "中國信託（822）\n帳號：369540519378\n戶名：飛宏貿易有限公司"
 
 
 def checkout_confirmed(cart: list[dict], oos_items: list[dict] | None = None,

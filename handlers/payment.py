@@ -25,9 +25,16 @@ _BANK_QUERY_EXCLUDE = ["到哪", "帳號", "怎麼匯", "怎麼付", "匯哪", "
 
 def is_payment_message(text: str) -> bool:
     """判斷是否為轉帳確認訊息（排除問帳號的情境）"""
+    import re
+    has_payment_kw = any(kw in text for kw in _PAYMENT_KW)
+    # 有金額（$數字 或 數字元）+ 轉/匯動作 = 付款確認
+    has_amount = bool(re.search(r'[\$＄]\s*[\d,]+|[\d,]+\s*元', text))
+    has_transfer_action = bool(re.search(r'[轉匯付].*[\$＄\d]|[\$＄\d].*[轉匯付]', text))
+    if (has_payment_kw and has_amount) or (has_transfer_action and has_amount):
+        return True
     if any(kw in text for kw in _BANK_QUERY_EXCLUDE):
         return False
-    return any(kw in text for kw in _PAYMENT_KW)
+    return has_payment_kw
 
 
 def handle_payment(user_id: str, text: str) -> str:

@@ -2654,7 +2654,7 @@ def _build_media_messages(prod_code: str, files: list[Path], base_url: str) -> l
     any_img_url = ""
     for f in files:
         if f.suffix.lower() in _IMG_EXTS:
-            url = f"{base}/product-media/{f.name}"
+            url = f"{base}/{f.name}"
             stem_to_img_url[f.stem.upper()] = url
             if not any_img_url:
                 any_img_url = url
@@ -2662,7 +2662,7 @@ def _build_media_messages(prod_code: str, files: list[Path], base_url: str) -> l
     messages = []
     for f in files:
         ext = f.suffix.lower()
-        media_url = f"{base}/product-media/{f.name}"
+        media_url = f"{base}/{f.name}"
         if ext in _IMG_EXTS:
             messages.append(ImageMessage(
                 original_content_url=media_url,
