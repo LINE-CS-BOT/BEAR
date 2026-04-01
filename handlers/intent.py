@@ -219,10 +219,12 @@ def detect_intent(text: str) -> Intent:
         if kw in text:
             return Intent.URGENT_ORDER
 
-    # 正式查單
-    for kw in _ORDER_KEYWORDS:
-        if kw in text:
-            return Intent.ORDER_TRACKING
+    # 正式查單（排除通知語氣：「跟你說一下」「讓你知道」等）
+    _NOTIFY_TONE = ["跟你說", "通知你", "讓你知道", "告訴你", "跟您說", "通知您"]
+    if not any(nt in text for nt in _NOTIFY_TONE):
+        for kw in _ORDER_KEYWORDS:
+            if kw in text:
+                return Intent.ORDER_TRACKING
 
     # 砍價（在價格之前判）
     for kw in _BARGAINING_KEYWORDS:
