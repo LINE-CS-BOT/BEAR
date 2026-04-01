@@ -21,6 +21,7 @@ PERSISTENT_ACTIONS = {
     "awaiting_order_confirm",
     "awaiting_group_address_confirm",
     "awaiting_order_id",
+    "human_takeover",
 }
 
 REMIND_AFTER_HOURS  = 24   # 超過 N 小時沒回 → 提醒
