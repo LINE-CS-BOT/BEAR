@@ -1546,6 +1546,10 @@ async def _pickup_notify_loop():
         if now >= target:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
+        # 公休日不跑
+        if datetime.now().isoweekday() not in settings.business_days_list():
+            print("[pickup-notify] 今天公休，跳過", flush=True)
+            continue
         try:
             await asyncio.to_thread(_check_and_notify_pickup)
         except Exception as e:
@@ -1609,12 +1613,11 @@ def _check_and_notify_pickup():
     notified_path = Path(__file__).parent / "data" / "_pickup_notified.json"
     import json
     today = datetime.now().strftime("%Y-%m-%d")
-    notified_today = set()
+    notified_ever = set()
     if notified_path.exists():
         try:
             nd = json.loads(notified_path.read_text(encoding="utf-8"))
-            if nd.get("date") == today:
-                notified_today = set(nd.get("names", []))
+            notified_ever = set(nd.get("names", []))
         except Exception:
             pass
 
@@ -1624,7 +1627,7 @@ def _check_and_notify_pickup():
         line_api = MessagingApi(api_client)
 
         for base_name, items in ready_customers.items():
-            if base_name in notified_today:
+            if base_name in notified_ever:
                 continue
 
             # 找 LINE ID
@@ -1646,7 +1649,7 @@ def _check_and_notify_pickup():
                         to=uid, messages=[TextMessage(text=notify_msg)]
                     ))
                     print(f"[pickup-notify] ✅ 通知 {base_name}", flush=True)
-                    notified_today.add(base_name)
+                    notified_ever.add(base_name)
                 except Exception as e:
                     print(f"[pickup-notify] ❌ 通知 {base_name} 失敗: {e}", flush=True)
             else:
@@ -1667,12 +1670,17 @@ def _check_and_notify_pickup():
             except Exception as e:
                 print(f"[pickup-notify] 內部群通知失敗: {e}", flush=True)
 
-    # 存今天已通知的
+    # 清掉已不在已備貨未取的（代表已取貨，下次有新訂單可以再通知）
+    current_uc_names = set(_get_base_name(c) for c in uc_by_cust)
+    notified_ever = {n for n in notified_ever if n in current_uc_names}
+
+    # 存已通知名單
     notified_path.write_text(
-        json.dumps({"date": today, "names": list(notified_today)}, ensure_ascii=False),
+        json.dumps({"names": list(notified_ever)}, ensure_ascii=False),
         encoding="utf-8",
     )
-    print(f"[pickup-notify] 完成，共通知 {len(notified_today)} 位", flush=True)
+    new_notified = len(notified_ever) - len(notified_ever - set(ready_customers.keys()))
+    print(f"[pickup-notify] 完成，本次通知 {new_notified} 位，累計 {len(notified_ever)} 位", flush=True)
 
 
 async def _sync_cust_ecount_loop():
