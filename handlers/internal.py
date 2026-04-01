@@ -58,7 +58,26 @@ _PROD_CODE_PAT = r'[A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?'
 
 # ── 正則 ──────────────────────────────────────────────────────────────
 # 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-1、-2 等），例：T1202、BB-232、Q0312-1
-_PROD_CODE_RE = re.compile(rf'(?<![A-Za-z])({_PROD_CODE_PAT})(?!\d)')
+# 排除常見非貨號（PD=充電協議、USB、LED、MAX等）
+_NOT_PROD_CODE = {"PD", "USB", "LED", "MAX", "MAH", "LCD", "RGB", "GPS", "SOS", "DIY", "ABS", "TPU", "BTS"}
+_PROD_CODE_RE_RAW = re.compile(rf'(?<![A-Za-z])({_PROD_CODE_PAT})(?!\d)')
+class _ProdCodeFinder:
+    """findall/search 時自動排除非貨號"""
+    def findall(self, text):
+        return [m for m in _PROD_CODE_RE_RAW.findall(text)
+                if m[:2].upper() not in _NOT_PROD_CODE and m[:3].upper() not in _NOT_PROD_CODE]
+    def search(self, text):
+        for m in _PROD_CODE_RE_RAW.finditer(text):
+            code = m.group(1)
+            if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
+                return m
+        return None
+    def finditer(self, text):
+        for m in _PROD_CODE_RE_RAW.finditer(text):
+            code = m.group(1)
+            if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
+                yield m
+_PROD_CODE_RE = _ProdCodeFinder()
 
 # 到貨觸發詞
 _ARRIVAL_KW = ["到貨", "到了", "到齊", "收到了", "進來了", "到貨了", "貨到了", "貨到"]
@@ -3040,7 +3059,8 @@ def _append_po_text(content: str) -> bool:
     """
     try:
         _PO_FILE.parent.mkdir(parents=True, exist_ok=True)
-        new_block = content.strip()
+        # 刪除空白行（保留單行換行）
+        new_block = "\n".join(line for line in content.splitlines() if line.strip())
 
         # 抓新內容的貨號（如有）
         m_code = _PROD_CODE_RE.search(new_block)
@@ -3232,6 +3252,11 @@ def _split_po_by_code(text: str) -> list[str]:
     備援：無空白行時（分開送的訊息被合併），逐行掃描貨號，貨號換了就換段。
           用 search（非 match），貨號可在行中任意位置（如「編號：T1198」）。
     """
+    # 只有一個貨號 → 不拆分（整段就是一筆 PO文）
+    all_codes = list(dict.fromkeys(c.upper() for c in _PROD_CODE_RE.findall(text)))
+    if len(all_codes) <= 1:
+        return [text] if all_codes else []
+
     # ── 優先：空白行分段 ────────────────────────────────────────────────
     paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
     if len(paragraphs) > 1:
