@@ -3153,7 +3153,7 @@ async def admin_delete_new_product(item_id: int):
 
 
 # ── 接手面板 API ──────────────────────────────────────────────────────────
-_TAKEOVER_EXPIRE_MINUTES = 60  # 60 分鐘後自動恢復
+_TAKEOVER_EXPIRE_MINUTES = 0  # 0 = 不自動過期，只能手動釋放
 
 @app.post("/admin/takeover")
 async def admin_takeover(user_id: str, display_name: str = ""):
@@ -3216,10 +3216,13 @@ async def admin_list_takeovers():
         if st.get("action") == "human_takeover":
             taken_at  = st.get("taken_at", now)
             elapsed   = int((now - taken_at) / 60)
-            remaining = max(0, _TAKEOVER_EXPIRE_MINUTES - elapsed)
-            if remaining == 0:
-                state_manager.clear(uid)
-                continue
+            if _TAKEOVER_EXPIRE_MINUTES > 0:
+                remaining = max(0, _TAKEOVER_EXPIRE_MINUTES - elapsed)
+                if remaining == 0:
+                    state_manager.clear(uid)
+                    continue
+            else:
+                remaining = -1  # 不過期
             cust = customer_store.get_by_line_id(uid)
             results.append({
                 "user_id":       uid,
