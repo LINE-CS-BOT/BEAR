@@ -1872,23 +1872,40 @@ def _check_and_notify_pickup():
     """
     from storage.notify import notify_store
     from storage.customers import customer_store
-    from config import settings, _configuration
+    from config import settings
     from linebot.v3.messaging import MessagingApi, PushMessageRequest, TextMessage, ApiClient
     from collections import defaultdict
     import json, random
 
-    # 確保庫存資料新鮮
+    # 通知前先更新所有資料
+    print("[pickup-notify] 更新資料中...", flush=True)
+    import time as _t
+
+    # 1. 庫存
     avail_path = Path(__file__).parent / "data" / "available.json"
     if not avail_path.exists():
         print("[pickup-notify] available.json 不存在，跳過", flush=True)
         return
-    import time as _t
     if _t.time() - avail_path.stat().st_mtime > 30 * 60:
         try:
             from services.ecount import ecount_client
             ecount_client._ensure_available()
         except Exception:
             pass
+
+    # 2. 未備貨 + 已備貨未取
+    try:
+        import subprocess as _sp_pn
+        _python_pn = _sys.executable
+        _root_pn = str(Path(__file__).parent)
+        _flags_pn = _sp_pn.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
+        _sp_pn.run([_python_pn, "-m", "scripts.sync_unfulfilled"],
+                   cwd=_root_pn, timeout=120, creationflags=_flags_pn,
+                   capture_output=True)
+        print("[pickup-notify] 未備貨+未取已更新", flush=True)
+    except Exception as _e_sync:
+        print(f"[pickup-notify] 同步失敗: {_e_sync}", flush=True)
+
     avail = json.loads(avail_path.read_text(encoding="utf-8"))
 
     # 取所有待通知的登記
@@ -1923,7 +1940,9 @@ def _check_and_notify_pickup():
     no_line_id = []
     notified_count = 0
 
-    with ApiClient(_configuration) as api_client:
+    from linebot.v3.messaging import Configuration as _MsgConfig
+    _cfg_pickup = _MsgConfig(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
+    with ApiClient(_cfg_pickup) as api_client:
         line_api = MessagingApi(api_client)
 
         # 預載未備貨+預購資料（避免每個客戶重複查）
