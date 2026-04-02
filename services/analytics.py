@@ -101,24 +101,25 @@ def _classify(prod_name: str) -> str:
 # ── 1. 銷售速度排行 ──────────────────────────────────
 
 def top_sellers(days: int = 30, limit: int = 20) -> list[dict]:
-    """最近 N 天出庫最多的品項"""
+    """最近 N 天銷量最多的品項（用銷貨明細，不含調撥退貨）"""
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     with _conn() as conn:
         rows = conn.execute("""
-            SELECT prod_cd, prod_name, SUM(qty_out) as total_out,
+            SELECT prod_cd, prod_name, SUM(qty) as total_out,
                    COUNT(DISTINCT date) as active_days
-            FROM inventory_changes
-            WHERE date >= ? AND qty_out > 0
+            FROM sales_detail
+            WHERE date >= ? AND customer NOT LIKE '%民享%'
             GROUP BY prod_cd
             ORDER BY total_out DESC
             LIMIT ?
-        """, (cutoff, limit)).fetchall()
-    return [
+        """, (cutoff, limit * 2)).fetchall()
+    results = [
         {"code": r[0], "name": r[1], "total_out": int(r[2]),
          "active_days": r[3], "daily_avg": round(r[2] / max(r[3], 1), 1),
          "category": _classify(r[1])}
         for r in rows if not _is_excluded_product(r[0])
     ]
+    return results[:limit]
 
 
 # ── 2. 滯銷品偵測 ──────────────────────────────────
@@ -133,17 +134,17 @@ def slow_movers(no_sale_days: int = 60, min_stock: int = 10) -> list[dict]:
 
     cutoff = (datetime.now() - timedelta(days=no_sale_days)).strftime("%Y-%m-%d")
     with _conn() as conn:
-        # 最近有出庫的品項
+        # 最近有銷售的品項（用銷貨明細）
         active = set(r[0] for r in conn.execute(
-            "SELECT DISTINCT prod_cd FROM inventory_changes WHERE date >= ? AND qty_out > 0",
+            "SELECT DISTINCT prod_cd FROM sales_detail WHERE date >= ? AND customer NOT LIKE '%民享%'",
             (cutoff,)
         ).fetchall())
 
-        # 有入庫紀錄但最近沒出庫的
+        # 有銷售紀錄但最近沒賣的
         all_products = conn.execute("""
-            SELECT prod_cd, prod_name, MAX(date) as last_out
-            FROM inventory_changes
-            WHERE qty_out > 0
+            SELECT prod_cd, prod_name, MAX(date) as last_sale
+            FROM sales_detail
+            WHERE customer NOT LIKE '%民享%'
             GROUP BY prod_cd
         """).fetchall()
 
@@ -161,6 +162,20 @@ def slow_movers(no_sale_days: int = 60, min_stock: int = 10) -> list[dict]:
             continue
         if code in recently_restocked:
             continue  # 最近才進貨，不是滯銷
+
+        # 檢查：以前賣到沒庫存 → 最近才補貨（庫存變更沒記到的情況）
+        # 如果歷史上 balance 曾經 <= 0 且現在庫存很多 → 跳過
+        with _conn() as _c_slow:
+            _was_zero = _c_slow.execute(
+                "SELECT 1 FROM inventory_changes WHERE prod_cd=? AND balance <= 0",
+                (code,)
+            ).fetchone()
+        if _was_zero:
+            _d_avail = avail.get(code)
+            _cur_stock = _d_avail.get("available", 0) if isinstance(_d_avail, dict) else (_d_avail or 0)
+            if _cur_stock > 30:
+                continue  # 曾斷貨 + 現在庫存多 = 最近補貨，不是滯銷
+
         stock = 0
         if code in avail:
             d = avail[code]
@@ -242,7 +257,7 @@ def customer_analysis(days: int = 90, limit: int = 20) -> list[dict]:
 # ── 4. 補貨預測 ──────────────────────────────────
 
 def restock_forecast(days_history: int = 30) -> list[dict]:
-    """根據最近出庫速度預測幾天後斷貨"""
+    """根據最近銷售速度預測幾天後斷貨（用銷貨明細）"""
     import json
     avail_path = Path(__file__).parent.parent / "data" / "available.json"
     if not avail_path.exists():
@@ -252,9 +267,9 @@ def restock_forecast(days_history: int = 30) -> list[dict]:
     cutoff = (datetime.now() - timedelta(days=days_history)).strftime("%Y-%m-%d")
     with _conn() as conn:
         rows = conn.execute("""
-            SELECT prod_cd, prod_name, SUM(qty_out) as total_out
-            FROM inventory_changes
-            WHERE date >= ? AND qty_out > 0
+            SELECT prod_cd, prod_name, SUM(qty) as total_out
+            FROM sales_detail
+            WHERE date >= ? AND customer NOT LIKE '%民享%'
             GROUP BY prod_cd
             HAVING total_out > 0
         """, (cutoff,)).fetchall()
@@ -439,7 +454,7 @@ def product_trend(days: int = 90) -> dict:
 # ── 9. 庫存周轉率 ──────────────────────────────────
 
 def stock_turnover(days: int = 90) -> list[dict]:
-    """庫存周轉率：出庫量 ÷ 平均庫存，越高代表賣得越快"""
+    """庫存周轉率：銷量 ÷ 目前庫存，越高代表賣得越快（用銷貨明細）"""
     import json
     avail_path = Path(__file__).parent.parent / "data" / "available.json"
     if not avail_path.exists():
@@ -449,9 +464,9 @@ def stock_turnover(days: int = 90) -> list[dict]:
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     with _conn() as conn:
         rows = conn.execute("""
-            SELECT prod_cd, prod_name, SUM(qty_out) as total_out
-            FROM inventory_changes
-            WHERE date >= ? AND qty_out > 0
+            SELECT prod_cd, prod_name, SUM(qty) as total_out
+            FROM sales_detail
+            WHERE date >= ? AND customer NOT LIKE '%民享%'
             GROUP BY prod_cd
         """, (cutoff,)).fetchall()
 
