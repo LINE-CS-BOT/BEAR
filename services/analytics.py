@@ -574,11 +574,40 @@ def do_not_restock() -> list[dict]:
             except Exception:
                 pass
 
+        # 檢查是否「之前斷貨 → 最近才補貨」的情況
+        # 方式1：庫存變更有近期入庫
+        with _conn() as conn2:
+            _recent_in = conn2.execute(
+                "SELECT MIN(date) FROM inventory_changes WHERE prod_cd=? AND qty_in > 0 AND date >= ?",
+                (code, mid)
+            ).fetchone()
+        if _recent_in and _recent_in[0]:
+            try:
+                _restock_date = datetime.strptime(_recent_in[0], "%Y-%m-%d")
+                _days_in_stock = (datetime.now() - _restock_date).days
+                if _days_in_stock < 30:
+                    continue
+            except Exception:
+                pass
+
+        # 方式2：以前有賣但中間斷貨（old_qty > 0 但 recent_qty 很低），且現在庫存突然很多
+        # → 代表最近才補貨，不是賣不動
+        if old_qty > 20 and recent_qty < 5 and stock > old_qty * 0.5:
+            # 以前賣得不錯，最近沒賣，但庫存很多 → 可能剛補貨
+            # 再查是否中間有斷貨（庫存變更中 balance 曾 <= 0）
+            with _conn() as conn3:
+                _was_zero = conn3.execute(
+                    "SELECT 1 FROM inventory_changes WHERE prod_cd=? AND balance <= 0 AND date >= ?",
+                    (code, old_start)
+                ).fetchone()
+            if _was_zero:
+                continue  # 確認中間斷過貨，跳過
+
         # 評分：越高越不建議叫
         score = 0
         reasons = []
 
-        # 銷量大幅衰退
+        # 銷量大幅衰退（前提：以前有賣過且現在有庫存）
         if old_qty > 20 and recent_qty < old_qty * 0.3:
             score += 3
             reasons.append(f"銷量衰退{round((1-recent_qty/old_qty)*100)}%")
@@ -594,7 +623,7 @@ def do_not_restock() -> list[dict]:
             score += 2
             reasons.append(f"庫存{stock}近90天出{recent_qty}個")
 
-        # 很久沒出貨
+        # 很久沒出貨（但要有庫存超過 30 天才算）
         if days_since > 90:
             score += 2
             reasons.append(f"已{days_since}天沒出貨")
