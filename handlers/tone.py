@@ -689,7 +689,7 @@ def image_product_found(
     - 缺貨情形由 service.py 改走 out_of_stock_ask_qty 流程
     """
     b = boss()
-    lines = [f"這款是「{name}」{suffix_light()}"]
+    lines = [f"這款是「{name}」（{code}）{suffix_light()}"]
     lines.append(random.choice(["有貨嘿", "有唷", "有的嘿", "有喔"]))
 
     # 規格資訊（若有）
@@ -702,6 +702,17 @@ def image_product_found(
             lines.append(f"🎮 適用台型：{'、'.join(spec['machine'])}")
         if spec.get("price"):
             lines.append(f"💰 售價：{spec['price']}")
+    elif code:
+        # specs 沒有但可以從 available.json 取單價
+        try:
+            import json
+            from pathlib import Path
+            _avail = json.loads((Path(__file__).parent.parent / "data" / "available.json").read_text(encoding="utf-8"))
+            _d = _avail.get(code)
+            if isinstance(_d, dict) and _d.get("unit_price", 0) > 0:
+                lines.append(f"💰 單價：{int(_d['unit_price'])}元")
+        except Exception:
+            pass
 
     lines.append(f"\n{b}需要幾個呢？")
     return "\n".join(lines)
