@@ -1308,9 +1308,9 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                             print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
                             _send_reply(reply_token, user_id, _claude_img_reply, line_api)
                         else:
-                            # Claude 也搞不清楚 → 回覆確認中，靜默轉待處理
+                            # Claude 也辨識不出貨號 → 靜默，記待處理
                             issue_store.add(user_id, "image_query", f"（圖片+文字，Claude 無法辨識）{combined[:30]}")
-                            _send_reply(reply_token, user_id, tone.image_unrecognized(), line_api)
+                            print(f"[claude-ai] 圖片無貨號，靜默記待處理", flush=True)
                         from services.claude_ai import add_chat_history
                         add_chat_history(user_id, "bot", _claude_img_reply)
                         return
