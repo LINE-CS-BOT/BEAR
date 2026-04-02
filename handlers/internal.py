@@ -1668,7 +1668,7 @@ def handle_internal_image(state_key: str, message_id: str, line_api: MessagingAp
     prod_name = (item["name"] if item else "") or prod_code
 
     po           = _format_po(prod_code)
-    stock_detail = _fmt_stock_lines(item)
+    stock_detail = _fmt_stock_lines(item, prod_code)
 
     return f"{po}\n{stock_detail}"
 
@@ -2033,9 +2033,24 @@ def _fmt_inv_block(item: dict, prod_code: str) -> str:
     if balance is None and item.get("stock") is not None:
         balance = item.get("stock")
 
+    # 出庫價格（從 available.json 讀）
+    unit_price = None
+    try:
+        import json as _j
+        _avail_path = Path(__file__).parent.parent / "data" / "available.json"
+        if _avail_path.exists():
+            _avail = _j.loads(_avail_path.read_text(encoding="utf-8"))
+            _d = _avail.get(prod_code)
+            if isinstance(_d, dict):
+                unit_price = _d.get("unit_price")
+    except Exception:
+        pass
+
     lines = [f"📦 {name}（{prod_code}）"]
     mid_lines = []
 
+    if unit_price and unit_price > 0:
+        mid_lines.append(f"出庫單價：${unit_price:,.0f}")
     if balance is not None:
         mid_lines.append(f"倉庫庫存：{balance} 個")
     if unfilled is not None:
@@ -2058,15 +2073,9 @@ def _fmt_inv_block(item: dict, prod_code: str) -> str:
     return "\n".join(lines)
 
 
-def _fmt_stock_lines(item: dict) -> str:
+def _fmt_stock_lines(item: dict, prod_code: str = "") -> str:
     """
     回傳庫存明細純文字（不含產品名稱標題），供 PO文 + 庫存格式使用。
-    格式：
-      倉庫庫存：X 個
-       ERP未出：X 個
-       總公司未到：X 個
-       可售庫存：X 個
-       可預購：X 個
     """
     if not item:
         return "可售庫存：查詢失敗"
@@ -2078,7 +2087,23 @@ def _fmt_stock_lines(item: dict) -> str:
     qty      = item.get("qty")
     preorder = item.get("preorder")
 
+    # 出庫單價
+    unit_price = None
+    if prod_code:
+        try:
+            import json as _j
+            _avail_path = Path(__file__).parent.parent / "data" / "available.json"
+            if _avail_path.exists():
+                _avail = _j.loads(_avail_path.read_text(encoding="utf-8"))
+                _d = _avail.get(prod_code.upper())
+                if isinstance(_d, dict):
+                    unit_price = _d.get("unit_price")
+        except Exception:
+            pass
+
     lines = []
+    if unit_price and unit_price > 0:
+        lines.append(f"出庫單價：${unit_price:,.0f}")
     if balance is not None:
         lines.append(f"倉庫庫存：{balance} 個")
     if unfilled is not None:
@@ -2155,7 +2180,7 @@ def handle_internal_product_info(text: str, state_key: str | None = None) -> str
             results.append(f"⚠️ {prod_code}：查詢失敗（{e}）")
             continue
         prod_name = (item.get("name") if item else "") or prod_code
-        stock_detail = _fmt_stock_lines(item)
+        stock_detail = _fmt_stock_lines(item, prod_code)
         results.append(f"{po}\n{stock_detail}")
         last_code, last_name = prod_code, prod_name
 
@@ -2209,7 +2234,7 @@ def handle_internal_product_info_by_name(text: str, state_key: str | None = None
             results.append(f"⚠️ {prod_code}：查詢失敗（{e}）")
             continue
         prod_name = (item.get("name") if item else "") or prod_code
-        stock_detail = _fmt_stock_lines(item)
+        stock_detail = _fmt_stock_lines(item, prod_code)
         results.append(f"{po}\n{stock_detail}")
         last_code, last_name = prod_code, prod_name
 
