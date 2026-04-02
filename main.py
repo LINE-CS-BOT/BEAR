@@ -1926,34 +1926,54 @@ def _check_and_notify_pickup():
     with ApiClient(_configuration) as api_client:
         line_api = MessagingApi(api_client)
 
+        # 預載未備貨+預購資料（避免每個客戶重複查）
+        from handlers.internal import _load_unfulfilled, _unfulfilled_needs_refresh, _refresh_unfulfilled
+        from handlers.inventory import _check_preorder
+        if _unfulfilled_needs_refresh():
+            _refresh_unfulfilled()
+        unfulfilled = _load_unfulfilled()
+
         for uid, items in by_user.items():
-            # 檢查每個登記品項庫存是否到齊
-            all_ready = all(_is_ready(p["prod_code"]) for p in items)
-            if not all_ready:
+            # 分離：預購品 vs 非預購品
+            preorder_items = [p for p in items if _check_preorder(p["prod_code"])]
+            non_preorder_items = [p for p in items if not _check_preorder(p["prod_code"])]
+
+            # 沒有非預購品 → 全是預購，等到貨再說
+            if not non_preorder_items:
                 continue
 
-            # 檢查客戶是否還有未備貨訂單（有的話不通知，還沒全部好）
-            from handlers.internal import _load_unfulfilled, _unfulfilled_needs_refresh, _refresh_unfulfilled
-            if _unfulfilled_needs_refresh():
-                _refresh_unfulfilled()
-            unfulfilled = _load_unfulfilled()
+            # 檢查非預購品是否全部到齊
+            all_non_preorder_ready = all(_is_ready(p["prod_code"]) for p in non_preorder_items)
+            if not all_non_preorder_ready:
+                continue
+
+            # 檢查客戶是否還有非預購的未備貨訂單
             cust = customer_store.get_by_line_id(uid)
             cust_name_check = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
-            has_unfulfilled = any(cust_name_check and cust_name_check in o.get("customer", "") for o in unfulfilled)
-            if has_unfulfilled:
+            non_preorder_uf = [
+                o for o in unfulfilled
+                if cust_name_check and cust_name_check in o.get("customer", "")
+                and not _check_preorder(o.get("code", ""))
+            ]
+            if non_preorder_uf:
                 continue
 
-            # 全部到齊 → 通知
-            cust = customer_store.get_by_line_id(uid)
+            # 非預購品全部到齊 → 通知（只列非預購品，預購品留著等）
             cust_name = (cust.get("real_name") or cust.get("display_name") or uid[:10]) if cust else uid[:10]
 
+            # 只列非預購品項
             item_list = "\n".join(
-                f"  • {p['prod_name'][:20]} × {p.get('qty_wanted', 1)}" for p in items
+                f"  • {p['prod_name'][:20]} × {p.get('qty_wanted', 1)}" for p in non_preorder_items
             )
+            # 如果還有預購品，加提示
+            po_note = ""
+            if preorder_items:
+                po_names = "、".join(p['prod_name'][:10] for p in preorder_items)
+                po_note = f"\n\n（{po_names} 是預購品，到貨會再通知您）"
             notify_msg = random.choice([
-                f"老闆您好～您訂的貨都到齊囉！\n{item_list}\n\n方便的時候可以來取貨哦",
-                f"您好～通知您一下，以下品項都到貨了：\n{item_list}\n\n有空過來拿就可以囉～",
-                f"老闆～您等的貨都到了！\n{item_list}\n\n歡迎隨時來取貨",
+                f"老闆您好～您訂的貨都到齊囉！\n{item_list}\n\n方便的時候可以來取貨哦{po_note}",
+                f"您好～通知您一下，以下品項都到貨了：\n{item_list}\n\n有空過來拿就可以囉～{po_note}",
+                f"老闆～您等的貨都到了！\n{item_list}\n\n歡迎隨時來取貨{po_note}",
             ])
 
             if uid and not uid.startswith("_"):
@@ -1961,15 +1981,16 @@ def _check_and_notify_pickup():
                     line_api.push_message(PushMessageRequest(
                         to=uid, messages=[TextMessage(text=notify_msg)]
                     ))
-                    print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(items)} 品項）", flush=True)
+                    print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(non_preorder_items)} 品項）", flush=True)
                     notified_count += 1
-                    for p in items:
+                    # 只標記非預購品，預購品留著等到貨
+                    for p in non_preorder_items:
                         notify_store.mark_notified(p["id"])
                 except Exception as e:
                     print(f"[pickup-notify] ❌ 通知 {cust_name} 失敗: {e}", flush=True)
             else:
-                no_line_id.append((cust_name, items))
-                for p in items:
+                no_line_id.append((cust_name, non_preorder_items))
+                for p in non_preorder_items:
                     notify_store.mark_notified(p["id"])
 
         # 沒有 LINE ID 的推到內部群
