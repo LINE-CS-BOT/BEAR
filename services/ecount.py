@@ -515,6 +515,7 @@ class EcountClient:
                         "name":    r.get("PROD_DES", "").strip(),
                         "price":   float(r.get("OUT_PRICE") or 0),
                         "unit":    r.get("UNIT", "").strip(),
+                        "size_des": r.get("SIZE_DES", "").strip(),  # 規格（如 100個/箱）
                         "box_qty": int(float(r.get("EXCH_RATE") or 0)),  # 裝箱數
                     }
                     for r in results
