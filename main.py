@@ -930,6 +930,28 @@ def _analyze_purchase(po_text: str) -> str:
                 )
                 break
 
+    # 搜蝦皮市場價格
+    try:
+        import httpx
+        _search_name = _re.sub(r'[（）\(\)\[\]【】]', ' ', prod_name).strip()
+        _search_q = f"蝦皮 {_search_name}"
+        _resp = httpx.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": _search_q},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        _prices = _re.findall(r'\$\s*([\d,]+)', _resp.text)
+        _prices += _re.findall(r'(\d{2,6})\s*元', _resp.text)
+        _price_nums = sorted(set(int(p.replace(",", "")) for p in _prices if 10 < int(p.replace(",", "")) < 10000))
+        if _price_nums:
+            _price_range = f"${min(_price_nums):,} ~ ${max(_price_nums):,}（找到 {len(_price_nums)} 個價格）"
+            data_parts.append(f"【蝦皮市場零售價搜尋結果】\n搜尋：{_search_q}\n價格範圍：{_price_range}")
+        else:
+            data_parts.append(f"【蝦皮市場零售價】\n搜尋「{_search_q}」未找到具體價格")
+    except Exception as _e:
+        data_parts.append(f"【蝦皮市場零售價】\n搜尋失敗：{_e}")
+
     analytics_context = "\n\n".join(data_parts)
 
     # 呼叫 Claude 分析師
@@ -945,6 +967,7 @@ def _analyze_purchase(po_text: str) -> str:
 {analytics_context}
 
 請分析：
+0. 市場零售價對比（資料已提供在下方）
 1. 這個品類和價位的市場表現如何
 2. 同類產品的銷售速度（重點看熱銷品的實際銷量，不要只看平均值）
 3. 建議首批進貨數量（具體數字，參考同品類+同價位帶的熱銷品銷量，不要太保守）
@@ -963,7 +986,7 @@ def _analyze_purchase(po_text: str) -> str:
         result = subprocess.run(
             [_CLAUDE_CMD, "-p", "-", "--tools", ""],
             input=prompt.encode("utf-8"),
-            capture_output=True, timeout=_TIMEOUT, env=env,
+            capture_output=True, timeout=120, env=env,
             cwd="C:\\Users\\bear\\AppData\\Local\\Temp",
         )
         answer = result.stdout.decode("utf-8", errors="replace").strip()
