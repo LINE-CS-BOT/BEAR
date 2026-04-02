@@ -803,7 +803,10 @@ def _analyze_purchase(po_text: str) -> str:
     prod_name = name_m.group(1).strip() if name_m else po_text.split('\n')[0][:20]
     price = int(price_m.group(1)) if price_m else 0
 
-    category = _classify(prod_name)
+    # 用整段 PO 文分類（品名可能跨行，如「品名：最強品牌\nC3膠囊行動電源」）
+    category = _classify(po_text)
+    if category == "其他":
+        category = _classify(prod_name)
 
     # 收集分析數據
     data_parts = []
@@ -1250,6 +1253,11 @@ def _txt_buf_flush_inner(user_id: str) -> None:
         else:
             try:
                 current_state = state_manager.get(user_id)
+
+                # 文字含收據/明細等 → 不走圖片辨識（收據上有貨號會誤匹配）
+                _DOC_KW = ["收據", "明細", "發票", "對帳", "帳單"]
+                if any(kw in combined for kw in _DOC_KW):
+                    img_e = None  # 清掉圖片，不辨識
 
                 # 1:1 圖片識別：優先從文字提取貨號，沒有才辨識圖片
                 # 若客戶引用了某張圖片，把引用的圖片當作 img_e 來辨識
