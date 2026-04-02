@@ -814,11 +814,15 @@ def _analyze_purchase(po_text: str) -> str:
     # 同品類分析
     if category != "其他":
         s = new_product_suggestion(category, price)
+        # 列出所有同品類品項的完整銷量（讓 Claude 看到分佈）
+        all_items_str = "\n".join(
+            f"  {p['name'][:20]} {p['price']}元 → 銷{p['qty']}個" for p in s['top_in_category']
+        )
         data_parts.append(
-            f"【同品類「{category}」分析】\n"
+            f"【同品類「{category}」全部品項銷量（近3個月）】\n"
             f"品項數：{s['same_category_count']} 個\n"
             f"月均銷量：{s['same_category_avg_monthly']} 個/品\n"
-            f"熱銷品：" + "、".join(f"{p['name'][:12]}({p['price']}元,銷{p['qty']})" for p in s['top_in_category'][:5])
+            f"各品銷量明細：\n{all_items_str}"
         )
     if price > 0:
         s2 = new_product_suggestion(category if category != "其他" else "行動電源", price)
@@ -827,6 +831,48 @@ def _analyze_purchase(po_text: str) -> str:
             f"品項數：{s2['same_priceband_count']} 個\n"
             f"月均銷量：{s2['same_priceband_avg_monthly']} 個/品"
         )
+
+    # 同名稱/關鍵字的歷史銷量（找類似產品）
+    import sqlite3
+    _db_path = Path(__file__).parent / "data" / "sales_detail.db"
+    if _db_path.exists():
+        _conn = sqlite3.connect(str(_db_path))
+        # 從品名提取關鍵字（2字以上的中文詞）
+        _keywords = _re.findall(r'[\u4e00-\u9fff]{2,4}', prod_name)
+        _similar = []
+        for kw in _keywords[:3]:
+            rows = _conn.execute(
+                "SELECT prod_cd, prod_name, SUM(qty) as total, unit_price "
+                "FROM sales_detail WHERE prod_name LIKE ? AND customer NOT LIKE '%民享%' "
+                "GROUP BY prod_cd ORDER BY total DESC LIMIT 5",
+                (f"%{kw}%",)
+            ).fetchall()
+            for r in rows:
+                if r[0] not in [s[0] for s in _similar]:
+                    _similar.append(r)
+        if _similar:
+            sim_str = "\n".join(
+                f"  {r[1][:20]} ({r[0]}) {int(r[3])}元 → 實際銷{int(r[2])}個" for r in _similar[:8]
+            )
+            data_parts.append(
+                f"【⚠️ 同類型/同名稱產品的實際歷史銷量（最重要參考）】\n{sim_str}"
+            )
+        _conn.close()
+
+    # 同品類庫存水平
+    import json as _j_ap
+    _avail_path_ap = Path(__file__).parent / "data" / "available.json"
+    if _avail_path_ap.exists():
+        _avail_ap = _j_ap.loads(_avail_path_ap.read_text(encoding="utf-8"))
+        stock_levels = []
+        for p in s.get('top_in_category', []) if category != "其他" else []:
+            d = _avail_ap.get(p['code'])
+            if isinstance(d, dict):
+                stock_levels.append(f"  {p['name'][:15]} → 目前庫存{d.get('available',0)}個")
+        if stock_levels:
+            data_parts.append(
+                f"【同品類目前庫存水平（參考進貨量）】\n" + "\n".join(stock_levels)
+            )
 
     # 品類整體表現
     cats = category_analysis(90)
@@ -876,11 +922,16 @@ def _analyze_purchase(po_text: str) -> str:
 
 請分析：
 1. 這個品類和價位的市場表現如何
-2. 同類產品的銷售速度
-3. 建議首批進貨數量（具體數字）
+2. 同類產品的銷售速度（重點看熱銷品的實際銷量，不要只看平均值）
+3. 建議首批進貨數量（具體數字，參考同品類+同價位帶的熱銷品銷量，不要太保守）
 4. 風險評估（高/中/低）
 5. 一句話建議
 
+重要：
+- 最重要的參考是「同類型/同名稱產品的實際歷史銷量」，這是最直接的對照
+- 其次參考同品類熱銷品的實際銷量
+- 如果同名稱產品歷史只賣20-30個，就不應該建議進100個
+- 如果同品類熱銷品賣100-500個但同名稱只賣30個，要以同名稱為主要參考
 回覆格式要簡潔清楚，用繁體中文，適合在 LINE 群組閱讀。"""
 
     try:
