@@ -298,6 +298,23 @@ def extract_quantity(text: str) -> int | None:
     return _cn_to_int(t)
 
 
+def _resolve_case_code(prod_cd: str) -> str | None:
+    """查找箱裝版本的品項（如 Z3432 → Z3432-1）"""
+    code = prod_cd.upper()
+    for suffix in ["-1", "-2"]:
+        c = code + suffix
+        cache = ecount_client.get_product_cache_item(c)
+        if cache and cache.get("unit") == "箱":
+            return cache["code"]
+    # 如果自己有 -1/-2，查 base code
+    if "-" in code:
+        base = code.rsplit("-", 1)[0]
+        cache = ecount_client.get_product_cache_item(base)
+        if cache and cache.get("unit") == "箱":
+            return cache["code"]
+    return None
+
+
 def resolve_order_qty(prod_cd: str, input_qty: int) -> int:
     """
     箱/件下單數量換算：
@@ -350,10 +367,32 @@ def handle_order_quantity(
         return tone.ask_quantity(prod_name)
 
     # ── 箱/件換算 ──────────────────────────────────
+    _case_cd = _resolve_case_code(prod_cd)
     if any(u in text for u in BULK_UNITS):
-        qty = resolve_order_qty(prod_cd, qty)
+        # 客戶明確說「箱」
+        if _case_cd:
+            prod_cd = _case_cd
+            prod_name = ecount_client.get_product_cache_item(_case_cd).get("name", prod_name)
+        else:
+            qty = resolve_order_qty(prod_cd, qty)
+    elif _case_cd:
+        # 有箱裝版但客戶說個數 → 看能不能整除換算
+        _case_item = ecount_client.get_product_cache_item(_case_cd)
+        _per_box_case = 0
+        import re as _re_case
+        _sd = (_case_item.get("size_des", "") if _case_item else "")
+        _mc = _re_case.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', _sd)
+        if _mc:
+            _per_box_case = int(_mc.group(1))
+        if _per_box_case > 0 and qty >= _per_box_case and qty % _per_box_case == 0:
+            # 能整除 → 自動換算箱裝
+            _box_count = qty // _per_box_case
+            prod_cd = _case_cd
+            prod_name = _case_item.get("name", prod_name)
+            qty = _box_count
+        # 不能整除 → 用個裝品項下個數（不換算）
     else:
-        # 產品單位是「箱」但客戶沒說「箱」→ 詢問
+        # 無箱裝版，檢查產品本身是否箱裝
         from services.ecount import ecount_client as _ec_unit
         _item_unit = _ec_unit.get_product_cache_item(prod_cd)
         if _item_unit and _item_unit.get("unit") == "箱":
