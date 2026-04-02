@@ -837,10 +837,34 @@ def _analyze_purchase(po_text: str) -> str:
     _db_path = Path(__file__).parent / "data" / "sales_detail.db"
     if _db_path.exists():
         _conn = sqlite3.connect(str(_db_path))
-        # 從品名提取關鍵字（2字以上的中文詞）
-        _keywords = _re.findall(r'[\u4e00-\u9fff]{2,4}', prod_name)
+        # 從 PO 文提取關鍵字（品名+Ecount品名優先，再補 PO 文其他行）
+        _STOP_WORDS = {"原裝", "精品", "公司", "正版", "品質", "保障", "產品", "包裝", "尺寸",
+                       "重量", "價格", "現貨", "不多", "建議", "標準", "編號", "品名", "附贈",
+                       "精美", "海報", "起批", "凸面", "印刷", "超質", "輕巧", "實用", "設計",
+                       "快速", "充電", "合適", "大貨", "盒起", "一張", "黃金", "金級", "級吸",
+                       "立馬", "馬吸", "吸淨", "吸力", "強勁", "動力", "高效", "續航",
+                       "渦輪", "核心", "極效"}
+        # 優先用 Ecount 品名 + PO文品名行
+        _ecount_name = ""
+        _code_m = _re.search(r'[A-Za-z]{1,3}-?\d{3,6}', po_text)
+        if _code_m:
+            from services.ecount import ecount_client as _ec_kw
+            _ec_item = _ec_kw.get_product_cache_item(_code_m.group(0).upper())
+            if _ec_item:
+                _ecount_name = _ec_item.get("name", "")
+        _priority_text = f"{_ecount_name} {prod_name}"
+        _full_text = f"{_priority_text} {po_text}"
+        _cn_chars = _re.findall(r'[\u4e00-\u9fff]+', _priority_text)
+        _cn_chars += _re.findall(r'[\u4e00-\u9fff]+', po_text)
+        _keywords = []
+        for seg in _cn_chars:
+            if len(seg) >= 2:
+                for i in range(len(seg) - 1):
+                    w = seg[i:i+2]
+                    if w not in _keywords and w not in _STOP_WORDS:
+                        _keywords.append(w)
         _similar = []
-        for kw in _keywords[:3]:
+        for kw in _keywords[:8]:
             rows = _conn.execute(
                 "SELECT prod_cd, prod_name, SUM(qty) as total, unit_price "
                 "FROM sales_detail WHERE prod_name LIKE ? AND customer NOT LIKE '%民享%' "
