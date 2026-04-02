@@ -607,49 +607,19 @@ async def _extract_customers(page) -> list[dict]:
     優先：Excel 下載（一次取得全部頁資料）
     備用：翻頁逐頁抓取
     """
-    # ── 優先：Excel 下載 ─────────────────────────────────────────────────
-    custs = await _download_and_parse_excel(page)
-    if custs:
-        with_addr = sum(1 for c in custs if c.get("addr"))
-        print(f"  共取得 {len(custs)} 筆客戶（其中 {with_addr} 筆有地址）")
-        return custs
+    # ── Excel 下載（唯一方式，失敗重試 2 次）─────────────────────────────
+    for attempt in range(3):
+        custs = await _download_and_parse_excel(page)
+        if custs:
+            with_addr = sum(1 for c in custs if c.get("addr"))
+            print(f"  共取得 {len(custs)} 筆客戶（其中 {with_addr} 筆有地址）")
+            return custs
+        if attempt < 2:
+            print(f"  ⚠️ Excel 下載失敗，第 {attempt+2} 次重試...")
+            await asyncio.sleep(3)
 
-    # ── 備用：翻頁逐頁抓取 ───────────────────────────────────────────────
-    print("  從表格提取客戶資料...")
-    await _click_query(page)
-
-    all_custs: list[dict] = []
-    seen_codes: set[str] = set()
-    page_num = 1
-
-    while True:
-        print(f"  提取第 {page_num} 頁...")
-        custs = await _extract_page(page)
-        if not custs:
-            break
-
-        new = 0
-        for c in custs:
-            if c["code"] not in seen_codes:
-                seen_codes.add(c["code"])
-                all_custs.append(c)
-                new += 1
-
-        print(f"    本頁 {len(custs)} 筆，新增 {new} 筆（累計 {len(all_custs)}）")
-
-        if new == 0:
-            print("  [info] 本頁無新資料，停止翻頁")
-            break
-
-        has_next = await _click_next_page(page)
-        if not has_next:
-            print("  已到最後一頁")
-            break
-        page_num += 1
-
-    with_addr = sum(1 for c in all_custs if c.get("addr"))
-    print(f"  共取得 {len(all_custs)} 筆客戶（其中 {with_addr} 筆有地址）")
-    return all_custs
+    print("  ✗ Excel 下載 3 次都失敗，無法同步客戶清單")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -888,14 +858,23 @@ def main():
             print("❌ 未取得任何客戶資料，結束")
             sys.exit(1)
 
-        # 存 JSON 以便 --from-file 重跑
+        # 存 JSON 以便 --from-file 重跑（防止覆蓋：新資料比舊的少 50% 以上就不存）
         OUTPUT_JSON.parent.mkdir(exist_ok=True)
-        OUTPUT_JSON.write_text(
-            json.dumps(ecount_custs, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{ts}] 已存 {len(ecount_custs)} 筆 → {OUTPUT_JSON}")
+        old_count = 0
+        if OUTPUT_JSON.exists():
+            try:
+                old_count = len(json.loads(OUTPUT_JSON.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+        if old_count > 0 and len(ecount_custs) < old_count * 0.5:
+            print(f"⚠️ 新資料 {len(ecount_custs)} 筆遠少於現有 {old_count} 筆，跳過覆蓋（可能抓取不完整）")
+        else:
+            OUTPUT_JSON.write_text(
+                json.dumps(ecount_custs, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{ts}] 已存 {len(ecount_custs)} 筆 → {OUTPUT_JSON}")
 
     if args.save_only:
         print("--save-only 模式，跳過 DB 同步")
