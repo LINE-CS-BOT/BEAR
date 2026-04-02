@@ -741,7 +741,169 @@ def _handle_analytics_command(text: str) -> str | None:
                 lines.append(f"  {p['code']} {p['name'][:15]} {p['price']}元 銷{p['qty']}個")
         return "\n".join(lines)
 
+    # ── 採購建議（貨號或PO文）──
+    if t.startswith("採購建議"):
+        content = t.replace("採購建議", "").strip()
+        if not content:
+            return "請輸入貨號或 PO 文，例如：\n採購建議 P0154\n或：\n採購建議\nP0154\nT1234"
+        # 判斷是貨號還是 PO 文
+        codes = _PROD_CODE_RE.findall(content)
+        if codes and len(content.replace("\n", " ").split()) <= len(codes) + 2:
+            # 純貨號模式 → 自動找 PO 文
+            return _analyze_purchase_by_codes(codes)
+        else:
+            # PO 文模式
+            return _analyze_purchase(content)
+
     return None
+
+
+def _analyze_purchase_by_codes(codes: list[str]) -> str:
+    """用貨號自動找 PO 文 + 圖片，然後分析"""
+    from handlers.internal import _format_po, _get_raw_po_block
+    from services.ecount import ecount_client
+
+    results = []
+    for raw_code in codes:
+        code = raw_code.upper()
+        # 找 PO 文
+        po_block = _get_raw_po_block(code)
+        if not po_block:
+            # 沒有 PO 文，用 Ecount 品名
+            item = ecount_client.get_product_cache_item(code)
+            name = (item.get("name") if item else None) or code
+            po_block = f"品名：{name}\n編號：{code}"
+
+        # 找圖片
+        has_photo = False
+        for suffix in ["A.jpg", "B.jpg", ".jpg"]:
+            if (_PRODUCT_PHOTO_DIR / f"{code}{suffix}").exists():
+                has_photo = True
+                break
+
+        result = _analyze_purchase(po_block)
+        if has_photo:
+            result += f"\n📷 有產品照片"
+        results.append(result)
+
+    return "\n\n{'='*30}\n\n".join(results) if results else "找不到任何產品資料"
+
+
+def _analyze_purchase(po_text: str) -> str:
+    """用 Claude 分析師角色 + 銷售數據，建議採購數量"""
+    from services.analytics import (
+        _classify, top_sellers, price_band_analysis,
+        category_analysis, new_product_suggestion,
+    )
+    import re as _re
+
+    # 從 PO 文提取品名和價格
+    name_m = _re.search(r'品名[：:]\s*(.+)', po_text)
+    price_m = _re.search(r'(?:價格|售價|批發價|優惠價)[：:]*\s*(\d+)\s*元?', po_text)
+    prod_name = name_m.group(1).strip() if name_m else po_text.split('\n')[0][:20]
+    price = int(price_m.group(1)) if price_m else 0
+
+    category = _classify(prod_name)
+
+    # 收集分析數據
+    data_parts = []
+
+    # 同品類分析
+    if category != "其他":
+        s = new_product_suggestion(category, price)
+        data_parts.append(
+            f"【同品類「{category}」分析】\n"
+            f"品項數：{s['same_category_count']} 個\n"
+            f"月均銷量：{s['same_category_avg_monthly']} 個/品\n"
+            f"熱銷品：" + "、".join(f"{p['name'][:12]}({p['price']}元,銷{p['qty']})" for p in s['top_in_category'][:5])
+        )
+    if price > 0:
+        s2 = new_product_suggestion(category if category != "其他" else "行動電源", price)
+        data_parts.append(
+            f"【同價位帶分析】\n"
+            f"品項數：{s2['same_priceband_count']} 個\n"
+            f"月均銷量：{s2['same_priceband_avg_monthly']} 個/品"
+        )
+
+    # 品類整體表現
+    cats = category_analysis(90)
+    cat_data = next((c for c in cats if c["category"] == category), None)
+    if cat_data:
+        data_parts.append(
+            f"【品類整體表現（近90天）】\n"
+            f"品類：{category}\n"
+            f"銷售佔比：{cat_data['pct']}%\n"
+            f"品項數：{cat_data['product_count']}\n"
+            f"總出貨：{cat_data['total_qty']} 個\n"
+            f"總金額：${cat_data['total_amount']:,}"
+        )
+
+    # 價位帶表現
+    pb = price_band_analysis(90)
+    if price > 0:
+        for b in pb:
+            band = b["band"]
+            if ((band == "50以下" and price <= 50) or
+                (band == "51-100" and 51 <= price <= 100) or
+                (band == "101-150" and 101 <= price <= 150) or
+                (band == "151-200" and 151 <= price <= 200) or
+                (band == "201-300" and 201 <= price <= 300) or
+                (band == "300以上" and price > 300)):
+                data_parts.append(
+                    f"【價位帶 {band} 表現】\n"
+                    f"品項數：{b['product_count']}\n"
+                    f"平均每品出貨：{b['avg_qty_per_product']} 個\n"
+                    f"冠軍：{b['top3'][0]['name'][:15] if b['top3'] else 'N/A'}"
+                )
+                break
+
+    analytics_context = "\n\n".join(data_parts)
+
+    # 呼叫 Claude 分析師
+    from services.claude_ai import _CLAUDE_CMD, _TIMEOUT
+    import subprocess, os
+
+    prompt = f"""你是一位專業的娃娃機商品採購分析師。根據以下的銷售數據和新品PO文，分析並建議首批採購數量。
+
+【新品PO文】
+{po_text}
+
+【銷售數據分析】
+{analytics_context}
+
+請分析：
+1. 這個品類和價位的市場表現如何
+2. 同類產品的銷售速度
+3. 建議首批進貨數量（具體數字）
+4. 風險評估（高/中/低）
+5. 一句話建議
+
+回覆格式要簡潔清楚，用繁體中文，適合在 LINE 群組閱讀。"""
+
+    try:
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        result = subprocess.run(
+            [_CLAUDE_CMD, "-p", "-", "--tools", ""],
+            input=prompt.encode("utf-8"),
+            capture_output=True, timeout=_TIMEOUT, env=env,
+            cwd="C:\\Users\\bear\\AppData\\Local\\Temp",
+        )
+        answer = result.stdout.decode("utf-8", errors="replace").strip()
+        if answer and result.returncode == 0:
+            return f"🧠 採購分析報告\n{'='*20}\n{answer}"
+    except Exception as e:
+        print(f"[purchase-analysis] Claude 分析失敗: {e}", flush=True)
+
+    # Claude 失敗 fallback：用程式算
+    if category != "其他" and price > 0:
+        s = new_product_suggestion(category, price)
+        return (
+            f"🧠 採購建議（自動）\n"
+            f"品類：{category} | 價位：{price}元\n"
+            f"同品類 {s['same_category_count']} 品，月均 {s['same_category_avg_monthly']} 個\n"
+            f"💡 建議首批：{s['suggested_qty']} 個"
+        )
+    return "⚠️ 無法分析，請確認 PO 文包含品名和價格"
 
 
 def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id: str = "") -> str | None:
@@ -1033,7 +1195,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                 if _gi:
                     from handlers.internal import _format_po, _fmt_stock_lines
                     _po = _format_po(img_pc)
-                    _stock = _fmt_stock_lines(_gi)
+                    _stock = _fmt_stock_lines(_gi, img_pc)
                     ack = f"{_po}\n{_stock}"
                 else:
                     # lookup 失敗（available.json 過期等）→ 只回品名+貨號
