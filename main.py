@@ -659,7 +659,7 @@ def _handle_missing_ecount_name(text: str) -> str | None:
     return f"⚠️ Ecount 無品名（{len(missing)} 筆）：\n" + "\n".join(missing)
 
 
-_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析|月趨勢|產品趨勢|庫存周轉|客戶流失|不叫貨|全部訂單)$")
+_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析|月趨勢|產品趨勢|庫存周轉|客戶流失|不叫貨|全部訂單|可通知客戶)$")
 _NEW_PROD_SUGGEST_RE = re.compile(r"^新品建議\s+(.+?)\s+(\d+)元?$")
 
 
@@ -827,6 +827,46 @@ def _handle_analytics_command(text: str) -> str | None:
                 lines.extend(pending)
             else:
                 lines.append("  （無）")
+            return "\n".join(lines)
+
+        elif cmd == "可通知客戶":
+            from handlers.internal import _load_unfulfilled, _load_unclaimed
+            from handlers.internal import _unfulfilled_needs_refresh, _refresh_unfulfilled
+            from handlers.internal import _unclaimed_needs_refresh, _refresh_unclaimed
+            from handlers.inventory import _check_preorder
+            from services.rebate import _get_base_name
+            from collections import defaultdict as _dft2
+
+            if _unfulfilled_needs_refresh():
+                _refresh_unfulfilled()
+            if _unclaimed_needs_refresh():
+                _refresh_unclaimed()
+
+            uf = _load_unfulfilled()
+            uc = _load_unclaimed()
+
+            uf_by = _dft2(list)
+            uc_by = _dft2(list)
+            for o in uf:
+                uf_by[_get_base_name(o.get("customer", ""))].append(o)
+            for o in uc:
+                uc_by[_get_base_name(o.get("customer", ""))].append(o)
+
+            ready = []
+            for cust in sorted(set(list(uf_by.keys()) + list(uc_by.keys()))):
+                uc_items = uc_by.get(cust, [])
+                uf_items = uf_by.get(cust, [])
+                non_po_uf = [o for o in uf_items if not _check_preorder(o.get("code", ""))]
+                po_uf_count = len(uf_items) - len(non_po_uf)
+
+                if uc_items and not non_po_uf:
+                    po_note = f"（+預購{po_uf_count}筆）" if po_uf_count else ""
+                    ready.append(f"  {cust}：{len(uc_items)}筆{po_note}")
+
+            if not ready:
+                return "目前沒有可通知的客戶（都還有未備貨品項）"
+            lines = [f"📩 可通知取貨（{len(ready)}位）："]
+            lines.extend(ready)
             return "\n".join(lines)
 
         elif cmd == "不叫貨":
