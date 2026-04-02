@@ -4392,6 +4392,24 @@ def _handle_stateful(
             issue_store.add(user_id, "multi_img_order", f"客戶回覆：{text}")
             return None
 
+    # ── 箱/盒確認 ──────────────────────────────────
+    elif action == "awaiting_box_confirm":
+        prod_cd = state.get("prod_cd", "")
+        prod_name = state.get("prod_name", "")
+
+        # 嘗試提取數量
+        _box_qty = extract_quantity(text)
+        if _box_qty:
+            state_manager.clear(user_id)
+            from storage import cart as _cart_box
+            _cart_box.add_item(user_id, prod_cd, prod_name, _box_qty)
+            return tone.cart_item_added(_cart_box.get_cart(user_id))
+        elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用"]):
+            state_manager.clear(user_id)
+            return f"好的{tone.suffix_light()} 已取消"
+        else:
+            return f"請問「{prod_name}」要幾箱呢？"
+
     # ── 圖片下單確認框：等待「確認」或「取消」──────
     elif action == "awaiting_image_order_confirm":
         prod_cd   = state.get("prod_cd", "")

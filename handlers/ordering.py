@@ -352,6 +352,58 @@ def handle_order_quantity(
     # ── 箱/件換算 ──────────────────────────────────
     if any(u in text for u in BULK_UNITS):
         qty = resolve_order_qty(prod_cd, qty)
+    else:
+        # 產品單位是「箱」但客戶沒說「箱」→ 詢問
+        from services.ecount import ecount_client as _ec_unit
+        _item_unit = _ec_unit.get_product_cache_item(prod_cd)
+        if _item_unit and _item_unit.get("unit") == "箱":
+            # 從 Ecount SIZE_DES 或 PO 文提取裝箱數
+            _per_box = 0
+            import re as _re_box
+            # 優先用 Ecount 規格欄（如「100個/箱」「24盒/箱」）
+            _size_des = _item_unit.get("size_des", "")
+            if _size_des:
+                _m_box = _re_box.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', _size_des)
+                if _m_box:
+                    _per_box = int(_m_box.group(1))
+            # 沒有就從 PO 文找
+            if not _per_box:
+                try:
+                    from handlers.internal import _get_raw_po_block
+                    _po_box = _get_raw_po_block(prod_cd) or ""
+                    _m_box = _re_box.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', _po_box)
+                    if not _m_box:
+                        _m_box = _re_box.search(r'(?:1?\s*(?:箱|件))\s*(\d+)\s*(?:盒|個|入|包)', _po_box)
+                    if not _m_box:
+                        _m_box = _re_box.search(r'(\d+)\s*(?:盒|個|入|包)起批', _po_box)
+                    if _m_box:
+                        _per_box = int(_m_box.group(1))
+                except Exception:
+                    pass
+
+            # 客戶說了非箱單位（盒/個/包等）→ 嘗試自動換算
+            _said_unit = any(u in text for u in ["盒", "個", "入", "包", "罐", "條", "瓶"])
+            if _said_unit and _per_box > 1 and qty % _per_box == 0:
+                # 能整除 → 自動換算（如 100盒 ÷ 100 = 1箱）
+                _box_count = qty // _per_box
+                from storage import cart as _cart_auto_box
+                _cart_auto_box.add_item(user_id, prod_cd, prod_name, _box_count)
+                return f"好的，{qty}盒 = {_box_count}箱\n" + tone.cart_item_added(_cart_auto_box.get_cart(user_id))
+            elif _said_unit and _per_box > 1:
+                # 不能整除 → 提醒
+                return f"這款 1箱={_per_box}盒，{qty}盒無法整除。請問要幾箱呢？"
+
+            # 純數字沒單位 → 問
+            from storage.state import state_manager as _sm_unit
+            _sm_unit.set(user_id, {
+                "action": "awaiting_box_confirm",
+                "prod_cd": prod_cd,
+                "prod_name": prod_name,
+                "input_qty": qty,
+            })
+            if _per_box > 1:
+                return f"這款「{prod_name}」是以箱為單位（1箱={_per_box}盒），請問 {qty} 是幾箱呢？"
+            return f"這款「{prod_name}」是以箱為單位喔，請問 {qty} 是幾箱呢？"
 
     # ── 加入購物車 ────────────────────────────────
     cart = cart_store.add_item(user_id, prod_cd, prod_name, qty)
