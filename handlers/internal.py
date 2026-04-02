@@ -822,7 +822,7 @@ def handle_internal_order(
             items_b2[-1] = (prev[0], prev[1], _pending_note_b2)
         if items_b2:
             cust_name_b2 = lines[0].strip()
-            return _do_order(cust_name_b2, items_b2, note=note_b2, group_id=group_id)
+            return _do_order(cust_name_b2, items_b2, group_id=group_id)
 
     # ── 格式A：每行各自獨立 ──
     valid = [(l, _STAFF_ORDER_LINE_RE.search(l)) for l in lines]
