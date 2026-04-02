@@ -746,13 +746,10 @@ def _handle_analytics_command(text: str) -> str | None:
         content = t.replace("採購建議", "").strip()
         if not content:
             return "請輸入貨號或 PO 文，例如：\n採購建議 P0154\n或：\n採購建議\nP0154\nT1234"
-        # 判斷是貨號還是 PO 文
         codes = _PROD_CODE_RE.findall(content)
         if codes and len(content.replace("\n", " ").split()) <= len(codes) + 2:
-            # 純貨號模式 → 自動找 PO 文
             return _analyze_purchase_by_codes(codes)
         else:
-            # PO 文模式
             return _analyze_purchase(content)
 
     return None
@@ -810,6 +807,33 @@ def _analyze_purchase(po_text: str) -> str:
 
     # 收集分析數據
     data_parts = []
+
+    # 本品自身歷史銷量（最重要！已經賣過的就用實際數據）
+    _own_code = _re.search(r'[A-Za-z]{1,3}-?\d{3,6}', po_text)
+    if _own_code:
+        _own_cd = _own_code.group(0).upper()
+        import sqlite3 as _sq_own
+        _conn_own = _sq_own.connect(str(Path(__file__).parent / "data" / "sales_detail.db"))
+        _own_rows = _conn_own.execute(
+            "SELECT substr(date,1,7) as m, SUM(qty), SUM(amount), COUNT(DISTINCT customer) "
+            "FROM sales_detail WHERE prod_cd=? AND customer NOT LIKE '%民享%' GROUP BY m ORDER BY m",
+            (_own_cd,)
+        ).fetchall()
+        _own_total = _conn_own.execute(
+            "SELECT SUM(qty), SUM(amount), COUNT(DISTINCT customer) "
+            "FROM sales_detail WHERE prod_cd=? AND customer NOT LIKE '%民享%'",
+            (_own_cd,)
+        ).fetchone()
+        _conn_own.close()
+        if _own_rows:
+            months_str = "\n".join(f"  {r[0]}: 出{int(r[1])}個 ${int(r[2]):,} ({int(r[3])}位客戶)" for r in _own_rows)
+            data_parts.append(
+                f"【⚠️ 此產品本身的歷史銷量（最重要！）】\n"
+                f"貨號：{_own_cd}\n"
+                f"總計：出{int(_own_total[0])}個 ${int(_own_total[1]):,} {int(_own_total[2])}位客戶\n"
+                f"月別明細：\n{months_str}\n"
+                f"月均：{int(_own_total[0]) // max(len(_own_rows), 1)}個"
+            )
 
     # 同品類分析
     if category != "其他":
@@ -930,27 +954,39 @@ def _analyze_purchase(po_text: str) -> str:
                 )
                 break
 
-    # 搜蝦皮市場價格
+    # 用 Google 搜蝦皮市場價格
     try:
         import httpx
-        _search_name = _re.sub(r'[（）\(\)\[\]【】]', ' ', prod_name).strip()
-        _search_q = f"蝦皮 {_search_name}"
+        _search_name = _re.sub(r'[（）\(\)\[\]【】\(\)]', ' ', prod_name).strip()
+        # 取品名核心詞（去掉大/原等前綴）
+        _core_name = _re.sub(r'^[\(（]?[大原小][\)）]?\s*', '', _search_name).strip()
+        _search_q = f"site:shopee.tw {_core_name}"
         _resp = httpx.get(
             "https://html.duckduckgo.com/html/",
             params={"q": _search_q},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=10,
         )
+        # 從搜尋結果提取價格（$數字 或 數字元）
         _prices = _re.findall(r'\$\s*([\d,]+)', _resp.text)
-        _prices += _re.findall(r'(\d{2,6})\s*元', _resp.text)
-        _price_nums = sorted(set(int(p.replace(",", "")) for p in _prices if 10 < int(p.replace(",", "")) < 10000))
+        _prices += _re.findall(r'(?<!\d)([\d,]{2,6})\s*元', _resp.text)
+        # 過濾合理價格範圍（進價的 0.5~5 倍）
+        _min_p = max(price * 0.5, 30) if price > 0 else 30
+        _max_p = max(price * 5, 2000) if price > 0 else 5000
+        _price_nums = sorted(set(
+            int(p.replace(",", "")) for p in _prices
+            if _min_p < int(p.replace(",", "")) < _max_p
+        ))
         if _price_nums:
-            _price_range = f"${min(_price_nums):,} ~ ${max(_price_nums):,}（找到 {len(_price_nums)} 個價格）"
-            data_parts.append(f"【蝦皮市場零售價搜尋結果】\n搜尋：{_search_q}\n價格範圍：{_price_range}")
-        else:
-            data_parts.append(f"【蝦皮市場零售價】\n搜尋「{_search_q}」未找到具體價格")
-    except Exception as _e:
-        data_parts.append(f"【蝦皮市場零售價】\n搜尋失敗：{_e}")
+            _mid = _price_nums[len(_price_nums)//2]
+            data_parts.append(
+                f"【蝦皮市場零售價（Google 搜尋）】\n"
+                f"搜尋：{_core_name}\n"
+                f"找到 {len(_price_nums)} 個價格：${min(_price_nums):,} ~ ${max(_price_nums):,}\n"
+                f"中位數：${_mid:,}　進價：${price:,}　利潤空間：{round((_mid-price)/price*100) if price else '?'}%"
+            )
+    except Exception:
+        pass
 
     analytics_context = "\n\n".join(data_parts)
 
@@ -958,7 +994,8 @@ def _analyze_purchase(po_text: str) -> str:
     from services.claude_ai import _CLAUDE_CMD, _TIMEOUT
     import subprocess, os
 
-    prompt = f"""你是一位專業的娃娃機商品採購分析師。根據以下的銷售數據和新品PO文，分析並建議首批採購數量。
+    prompt = f"""你是台灣頂尖的娃娃機商品採購分析師，擁有 10 年以上經驗。你的分析必須 100% 數據導向，不猜測、不灌水。
+根據以下的銷售數據和PO文，給出精準的採購建議。
 
 【新品PO文】
 {po_text}
@@ -967,7 +1004,7 @@ def _analyze_purchase(po_text: str) -> str:
 {analytics_context}
 
 請分析：
-0. 市場零售價對比（資料已提供在下方）
+0. 市場零售價對比（如有提供蝦皮搜尋結果，分析進價 vs 零售價的利潤空間）
 1. 這個品類和價位的市場表現如何
 2. 同類產品的銷售速度（重點看熱銷品的實際銷量，不要只看平均值）
 3. 建議首批進貨數量（具體數字，參考同品類+同價位帶的熱銷品銷量，不要太保守）
@@ -975,10 +1012,11 @@ def _analyze_purchase(po_text: str) -> str:
 5. 一句話建議
 
 重要：
-- 最重要的參考是「同類型/同名稱產品的實際歷史銷量」，這是最直接的對照
-- 其次參考同品類熱銷品的實際銷量
-- 如果同名稱產品歷史只賣20-30個，就不應該建議進100個
-- 如果同品類熱銷品賣100-500個但同名稱只賣30個，要以同名稱為主要參考
+- 如果有「此產品本身的歷史銷量」，這是最最重要的參考，直接用月均銷量推算
+- 如果是全新產品（無自身銷量），參考「同名稱/同類型產品的歷史銷量」
+- 如果連同名的都沒有，才用同品類平均值
+- 建議數量要合理：已經賣過的產品，不要建議超出歷史月均的 2 倍
+- 你是頂級採購分析師，分析要精準、數據導向、不說廢話
 回覆格式要簡潔清楚，用繁體中文，適合在 LINE 群組閱讀。"""
 
     try:
