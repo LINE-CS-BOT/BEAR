@@ -659,7 +659,7 @@ def _handle_missing_ecount_name(text: str) -> str | None:
     return f"⚠️ Ecount 無品名（{len(missing)} 筆）：\n" + "\n".join(missing)
 
 
-_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析|月趨勢|產品趨勢|庫存周轉|客戶流失|不叫貨)$")
+_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析|月趨勢|產品趨勢|庫存周轉|客戶流失|不叫貨|全部訂單)$")
 _NEW_PROD_SUGGEST_RE = re.compile(r"^新品建議\s+(.+?)\s+(\d+)元?$")
 
 
@@ -766,6 +766,67 @@ def _handle_analytics_command(text: str) -> str | None:
             lines = [f"⚠️ 流失風險客戶（60天未下單，共{len(data)}位）"]
             for c in data[:15]:
                 lines.append(f"  {c['name'][:8]}  ${c['total_amount']:,}  上次{c['last_order']}  已{c['inactive_days']}天")
+            return "\n".join(lines)
+
+        elif cmd == "全部訂單":
+            from handlers.internal import _load_unfulfilled, _load_unclaimed
+            from handlers.internal import _unfulfilled_needs_refresh, _refresh_unfulfilled
+            from handlers.internal import _unclaimed_needs_refresh, _refresh_unclaimed
+            from handlers.inventory import _check_preorder
+            from services.rebate import _get_base_name
+
+            if _unfulfilled_needs_refresh():
+                _refresh_unfulfilled()
+            if _unclaimed_needs_refresh():
+                _refresh_unclaimed()
+
+            uf = _load_unfulfilled()
+            uc = _load_unclaimed()
+
+            # 按客戶 base name 分組
+            from collections import defaultdict as _dft
+            uf_by = _dft(list)
+            uc_by = _dft(list)
+            for o in uf:
+                uf_by[_get_base_name(o.get("customer", ""))].append(o)
+            for o in uc:
+                uc_by[_get_base_name(o.get("customer", ""))].append(o)
+
+            all_custs = sorted(set(list(uf_by.keys()) + list(uc_by.keys())))
+
+            ready = []    # 完全備好（只有未取，沒有未備貨，排除預購未備貨）
+            pending = []  # 還有未備貨
+
+            for cust in all_custs:
+                uf_items = uf_by.get(cust, [])
+                uc_items = uc_by.get(cust, [])
+                # 非預購的未備貨
+                non_po_uf = [o for o in uf_items if not _check_preorder(o.get("code", ""))]
+                uc_count = len(uc_items)
+                uf_count = len(non_po_uf)
+                po_uf_count = len(uf_items) - len(non_po_uf)
+
+                if uc_count > 0 and uf_count == 0:
+                    po_note = f"（+預購{po_uf_count}筆）" if po_uf_count else ""
+                    ready.append(f"  {cust}：{uc_count}筆未取{po_note}")
+                elif uf_count > 0 or uc_count > 0:
+                    parts = []
+                    if uc_count: parts.append(f"{uc_count}筆未取")
+                    if uf_count: parts.append(f"{uf_count}筆未備貨")
+                    if po_uf_count: parts.append(f"{po_uf_count}筆預購未備")
+                    pending.append(f"  {cust}：{'、'.join(parts)}")
+
+            lines = [f"📋 全部訂單（{len(all_custs)}位客戶）"]
+            lines.append(f"\n✅ 完全備好可取貨（{len(ready)}位）：")
+            if ready:
+                lines.extend(ready)
+            else:
+                lines.append("  （無）")
+            lines.append(f"\n⏳ 還有未備貨（{len(pending)}位）：")
+            if pending:
+                lines.extend(pending)
+            else:
+                lines.append("  （無）")
             return "\n".join(lines)
 
         elif cmd == "不叫貨":
@@ -5246,7 +5307,7 @@ def _dispatch(
                 if _img_urls:
                     return (_claude_reply, _img_urls)
             # Claude 回覆「確認一下」「稍後回覆」→ 代表無法回答
-            _unsure_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍等"]
+            _unsure_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍等", "查一下", "幫您查", "幫你查", "沒有資料"]
             if any(k in _claude_reply for k in _unsure_kw):
                 issue_store.add(user_id, "claude_unsure", f"Claude 無法回答：{text[:50]}")
                 print(f"[claude-ai] 回覆含不確定語氣，記待處理: {text[:30]!r}", flush=True)
