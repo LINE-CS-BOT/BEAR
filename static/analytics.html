@@ -49,9 +49,14 @@ tr:hover td { background: #f8f9ff; }
     <div class="tab" onclick="loadSection('top_sellers')">銷售排行</div>
     <div class="tab" onclick="loadSection('forecast')">補貨預測</div>
     <div class="tab" onclick="loadSection('slow_movers')">滯銷品</div>
+    <div class="tab" onclick="loadSection('do_not_restock')">不叫貨</div>
     <div class="tab" onclick="loadSection('price_bands')">價位分析</div>
     <div class="tab" onclick="loadSection('categories')">品類分析</div>
     <div class="tab" onclick="loadSection('customers')">客戶分析</div>
+    <div class="tab" onclick="loadSection('monthly_trend')">月趨勢</div>
+    <div class="tab" onclick="loadSection('product_trend')">產品趨勢</div>
+    <div class="tab" onclick="loadSection('stock_turnover')">庫存周轉</div>
+    <div class="tab" onclick="loadSection('customer_churn')">客戶流失</div>
   </div>
 
   <div class="grid" id="dashboard">
@@ -193,6 +198,89 @@ function render() {
           <td style="font-size:0.8rem;color:#666">${topItems}</td>
         </tr>`;
       }).join('')}
+    </table></div></div>`;
+  }
+
+  // 月趨勢
+  if (DATA.monthly_trend && (s === 'all' || s === 'monthly_trend')) {
+    const maxAmt = Math.max(...DATA.monthly_trend.map(d => d.amount));
+    html += `<div class="card"><div class="card-title">📈 月銷售趨勢</div><div class="card-body"><table>
+      <tr><th>月份</th><th class="num">金額</th><th class="num">筆數</th><th class="num">客戶數</th><th style="width:120px">佔比</th></tr>
+      ${DATA.monthly_trend.map(d => `<tr>
+        <td><b>${d.month}</b></td>
+        <td class="num">$${d.amount.toLocaleString()}</td><td class="num">${d.orders}</td><td class="num">${d.customers}</td>
+        <td><div class="bar-wrap"><div class="bar" style="width:${(d.amount/maxAmt*100).toFixed(0)}%;background:linear-gradient(90deg,#66bb6a,#2e7d32)"></div></div></td>
+      </tr>`).join('')}
+    </table></div></div>`;
+  }
+
+  // 產品趨勢
+  if (DATA.product_trend && (s === 'all' || s === 'product_trend')) {
+    html += `<div class="card"><div class="card-title">📊 產品趨勢（近90天前半 vs 後半）</div><div class="card-body">`;
+    if (DATA.product_trend.growing && DATA.product_trend.growing.length) {
+      html += `<h4 style="color:#2e7d32;margin:8px 0 4px">🚀 成長品</h4><table>
+        <tr><th>貨號</th><th>品名</th><th class="num">前期</th><th class="num">後期</th><th class="num">成長</th></tr>
+        ${DATA.product_trend.growing.map(p => `<tr>
+          <td>${p.code}</td><td>${p.name.substring(0,15)}</td>
+          <td class="num">${p.before}</td><td class="num">${p.after}</td>
+          <td class="num"><span class="badge badge-green">+${p.growth}%</span></td>
+        </tr>`).join('')}
+      </table>`;
+    }
+    if (DATA.product_trend.declining && DATA.product_trend.declining.length) {
+      html += `<h4 style="color:#c62828;margin:12px 0 4px">📉 衰退品</h4><table>
+        <tr><th>貨號</th><th>品名</th><th class="num">前期</th><th class="num">後期</th><th class="num">衰退</th></tr>
+        ${DATA.product_trend.declining.map(p => `<tr>
+          <td>${p.code}</td><td>${p.name.substring(0,15)}</td>
+          <td class="num">${p.before}</td><td class="num">${p.after}</td>
+          <td class="num"><span class="badge badge-red">-${p.decline}%</span></td>
+        </tr>`).join('')}
+      </table>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // 庫存周轉
+  if (DATA.stock_turnover && (s === 'all' || s === 'stock_turnover')) {
+    html += `<div class="card"><div class="card-title">🔄 庫存周轉率 TOP 20（越高賣越快）</div><div class="card-body"><table>
+      <tr><th>貨號</th><th>品名</th><th>品類</th><th class="num">出庫</th><th class="num">庫存</th><th class="num">周轉率</th></tr>
+      ${DATA.stock_turnover.slice(0,20).map(d => {
+        const color = d.turnover >= 3 ? 'badge-green' : d.turnover >= 1 ? 'badge-yellow' : 'badge-red';
+        return `<tr>
+          <td>${d.code}</td><td>${d.name.substring(0,15)}</td>
+          <td><span class="badge badge-blue">${d.category}</span></td>
+          <td class="num">${d.total_out}</td><td class="num">${d.stock}</td>
+          <td class="num"><span class="badge ${color}">${d.turnover}x</span></td>
+        </tr>`;
+      }).join('')}
+    </table></div></div>`;
+  }
+
+  // 客戶流失
+  if (DATA.customer_churn && (s === 'all' || s === 'customer_churn')) {
+    html += `<div class="card"><div class="card-title">⚠️ 客戶流失風險（60天未下單）</div><div class="card-body"><table>
+      <tr><th>客戶</th><th class="num">歷史金額</th><th class="num">訂單次</th><th>最後下單</th><th class="num">已幾天</th></tr>
+      ${DATA.customer_churn.map(c => `<tr>
+        <td><b>${c.name}</b></td>
+        <td class="num">$${c.total_amount.toLocaleString()}</td>
+        <td class="num">${c.total_orders}</td>
+        <td>${c.last_order}</td>
+        <td class="num"><span class="badge ${c.inactive_days > 90 ? 'badge-red' : 'badge-yellow'}">${c.inactive_days}天</span></td>
+      </tr>`).join('')}
+    </table></div></div>`;
+  }
+
+  // 不叫貨
+  if (DATA.do_not_restock && (s === 'all' || s === 'do_not_restock')) {
+    html += `<div class="card full-width"><div class="card-title">🚫 不建議叫貨（共${DATA.do_not_restock.length}品）</div><div class="card-body"><table>
+      <tr><th>貨號</th><th>品名</th><th>品類</th><th class="num">庫存</th><th class="num">近90天出</th><th class="num">前90天出</th><th>原因</th></tr>
+      ${DATA.do_not_restock.slice(0,30).map(d => `<tr>
+        <td>${d.code}</td><td>${d.name.substring(0,15)}</td>
+        <td><span class="badge badge-blue">${d.category}</span></td>
+        <td class="num">${d.stock}</td>
+        <td class="num">${d.recent_qty}</td><td class="num">${d.old_qty}</td>
+        <td style="font-size:0.8rem;color:#c62828">${d.reasons}</td>
+      </tr>`).join('')}
     </table></div></div>`;
   }
 

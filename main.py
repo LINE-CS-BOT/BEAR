@@ -659,7 +659,7 @@ def _handle_missing_ecount_name(text: str) -> str | None:
     return f"⚠️ Ecount 無品名（{len(missing)} 筆）：\n" + "\n".join(missing)
 
 
-_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析)$")
+_ANALYTICS_RE = re.compile(r"^(分析報告|銷售排行|滯銷品|補貨預測|價位分析|品類分析|客戶分析|月趨勢|產品趨勢|庫存周轉|客戶流失|不叫貨)$")
 _NEW_PROD_SUGGEST_RE = re.compile(r"^新品建議\s+(.+?)\s+(\d+)元?$")
 
 
@@ -724,6 +724,58 @@ def _handle_analytics_command(text: str) -> str | None:
             for c in custs:
                 interval = f"每{c['avg_interval_days']}天" if c['avg_interval_days'] > 0 else "單次"
                 lines.append(f"  {c['name'][:8]}  ${c['total_amount']:,}  {c['order_count']}次  {interval}  愛買:{c['fav_category']}")
+            return "\n".join(lines)
+        elif cmd == "月趨勢":
+            from services.analytics import monthly_trend
+            data = monthly_trend()
+            if not data:
+                return "沒有月趨勢資料"
+            lines = ["📈 月銷售趨勢"]
+            for d in data:
+                lines.append(f"  {d['month']}  ${d['amount']:,}  {d['orders']}筆  {d['customers']}客")
+            return "\n".join(lines)
+        elif cmd == "產品趨勢":
+            from services.analytics import product_trend
+            data = product_trend(90)
+            lines = ["📊 產品趨勢（近90天前半 vs 後半）"]
+            if data["growing"]:
+                lines.append("\n🚀 成長品：")
+                for p in data["growing"][:5]:
+                    lines.append(f"  {p['code']} {p['name'][:15]} {p['before']}→{p['after']} +{p['growth']}%")
+            if data["declining"]:
+                lines.append("\n📉 衰退品：")
+                for p in data["declining"][:5]:
+                    lines.append(f"  {p['code']} {p['name'][:15]} {p['before']}→{p['after']} -{p['decline']}%")
+            if not data["growing"] and not data["declining"]:
+                lines.append("沒有明顯成長或衰退的品項")
+            return "\n".join(lines)
+        elif cmd == "庫存周轉":
+            from services.analytics import stock_turnover
+            data = stock_turnover(90)
+            if not data:
+                return "沒有庫存周轉資料"
+            lines = ["🔄 庫存周轉率 TOP 15（近90天，越高賣越快）"]
+            for d in data[:15]:
+                lines.append(f"  {d['code']} {d['name'][:15]} 出{d['total_out']} 庫{d['stock']} 周轉{d['turnover']}x")
+            return "\n".join(lines)
+        elif cmd == "客戶流失":
+            from services.analytics import customer_churn
+            data = customer_churn(60)
+            if not data:
+                return "沒有流失客戶"
+            lines = [f"⚠️ 流失風險客戶（60天未下單，共{len(data)}位）"]
+            for c in data[:15]:
+                lines.append(f"  {c['name'][:8]}  ${c['total_amount']:,}  上次{c['last_order']}  已{c['inactive_days']}天")
+            return "\n".join(lines)
+
+        elif cmd == "不叫貨":
+            from services.analytics import do_not_restock
+            data = do_not_restock()
+            if not data:
+                return "目前沒有建議不叫貨的品項"
+            lines = [f"🚫 不建議叫貨（共{len(data)}品）"]
+            for d in data[:15]:
+                lines.append(f"  {d['code']} {d['name'][:15]} 庫{d['stock']} | {d['reasons']}")
             return "\n".join(lines)
 
     m = _NEW_PROD_SUGGEST_RE.match(t)
@@ -3180,6 +3232,7 @@ async def admin_analytics_data(report: str = "all"):
     from services.analytics import (
         top_sellers, slow_movers, customer_analysis,
         restock_forecast, price_band_analysis, category_analysis,
+        monthly_trend, product_trend, stock_turnover, customer_churn, do_not_restock,
     )
     result = {}
     if report in ("all", "top_sellers"):
@@ -3194,6 +3247,16 @@ async def admin_analytics_data(report: str = "all"):
         result["price_bands"] = price_band_analysis(90)
     if report in ("all", "categories"):
         result["categories"] = category_analysis(90)
+    if report in ("all", "monthly_trend"):
+        result["monthly_trend"] = monthly_trend()
+    if report in ("all", "product_trend"):
+        result["product_trend"] = product_trend(90)
+    if report in ("all", "stock_turnover"):
+        result["stock_turnover"] = stock_turnover(90)
+    if report in ("all", "customer_churn"):
+        result["customer_churn"] = customer_churn(60)
+    if report in ("all", "do_not_restock"):
+        result["do_not_restock"] = do_not_restock()
     return result
 
 

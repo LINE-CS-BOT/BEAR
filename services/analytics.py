@@ -147,10 +147,20 @@ def slow_movers(no_sale_days: int = 60, min_stock: int = 10) -> list[dict]:
             GROUP BY prod_cd
         """).fetchall()
 
+    # 最近 30 天有入庫的品項（剛到貨，不算滯銷）
+    recent_restock_cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    with _conn() as conn:
+        recently_restocked = set(r[0] for r in conn.execute(
+            "SELECT DISTINCT prod_cd FROM inventory_changes WHERE date >= ? AND qty_in > 0",
+            (recent_restock_cutoff,)
+        ).fetchall())
+
     results = []
     for code, name, last_out in all_products:
         if code in active or _is_excluded_product(code):
             continue
+        if code in recently_restocked:
+            continue  # 最近才進貨，不是滯銷
         stock = 0
         if code in avail:
             d = avail[code]
@@ -365,7 +375,247 @@ def category_analysis(days: int = 90) -> list[dict]:
     return results
 
 
-# ── 7. 新品採購建議 ──────────────────────────────────
+# ── 7. 月趨勢分析 ──────────────────────────────────
+
+def monthly_trend() -> list[dict]:
+    """每月銷售趨勢（金額、筆數、客戶數）"""
+    with _conn() as conn:
+        rows = conn.execute("""
+            SELECT substr(date,1,7) as m,
+                   CAST(SUM(amount) AS INTEGER),
+                   COUNT(*),
+                   COUNT(DISTINCT customer)
+            FROM sales_detail
+            WHERE customer NOT LIKE '%民享%'
+            GROUP BY m ORDER BY m
+        """).fetchall()
+    return [{"month": r[0], "amount": r[1], "orders": r[2], "customers": r[3]} for r in rows]
+
+
+# ── 8. 產品成長/衰退 ──────────────────────────────────
+
+def product_trend(days: int = 90) -> dict:
+    """比較前半段 vs 後半段銷量，找出成長和衰退的品項"""
+    mid = (datetime.now() - timedelta(days=days//2)).strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    with _conn() as conn:
+        first_half = {}
+        for r in conn.execute("""
+            SELECT prod_cd, prod_name, SUM(qty) FROM sales_detail
+            WHERE date >= ? AND date < ? AND customer NOT LIKE '%民享%'
+            GROUP BY prod_cd
+        """, (start, mid)).fetchall():
+            if not _is_excluded_product(r[0]):
+                first_half[r[0]] = {"name": r[1], "qty": int(r[2])}
+
+        second_half = {}
+        for r in conn.execute("""
+            SELECT prod_cd, prod_name, SUM(qty) FROM sales_detail
+            WHERE date >= ? AND customer NOT LIKE '%民享%'
+            GROUP BY prod_cd
+        """, (mid,)).fetchall():
+            if not _is_excluded_product(r[0]):
+                second_half[r[0]] = {"name": r[1], "qty": int(r[2])}
+
+    growing = []
+    declining = []
+    for code in set(list(first_half.keys()) + list(second_half.keys())):
+        q1 = first_half.get(code, {}).get("qty", 0)
+        q2 = second_half.get(code, {}).get("qty", 0)
+        name = second_half.get(code, first_half.get(code, {})).get("name", code)
+        if q1 > 10 and q2 > q1 * 1.5:
+            growing.append({"code": code, "name": name, "before": q1, "after": q2,
+                          "growth": round((q2-q1)/q1*100)})
+        elif q1 > 20 and q2 < q1 * 0.5:
+            declining.append({"code": code, "name": name, "before": q1, "after": q2,
+                            "decline": round((q1-q2)/q1*100)})
+
+    growing.sort(key=lambda x: -x["growth"])
+    declining.sort(key=lambda x: -x["decline"])
+    return {"growing": growing[:10], "declining": declining[:10]}
+
+
+# ── 9. 庫存周轉率 ──────────────────────────────────
+
+def stock_turnover(days: int = 90) -> list[dict]:
+    """庫存周轉率：出庫量 ÷ 平均庫存，越高代表賣得越快"""
+    import json
+    avail_path = Path(__file__).parent.parent / "data" / "available.json"
+    if not avail_path.exists():
+        return []
+    avail = json.loads(avail_path.read_text(encoding="utf-8"))
+
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with _conn() as conn:
+        rows = conn.execute("""
+            SELECT prod_cd, prod_name, SUM(qty_out) as total_out
+            FROM inventory_changes
+            WHERE date >= ? AND qty_out > 0
+            GROUP BY prod_cd
+        """, (cutoff,)).fetchall()
+
+    results = []
+    for code, name, total_out in rows:
+        if _is_excluded_product(code):
+            continue
+        stock = 0
+        if code in avail:
+            d = avail[code]
+            stock = d.get("available", 0) if isinstance(d, dict) else d
+        if stock <= 0:
+            continue
+        turnover = round(total_out / stock, 1)
+        results.append({
+            "code": code, "name": name,
+            "total_out": int(total_out), "stock": stock,
+            "turnover": turnover,
+            "category": _classify(name),
+        })
+    results.sort(key=lambda x: -x["turnover"])
+    return results
+
+
+# ── 10. 客戶流失偵測 ──────────────────────────────────
+
+def customer_churn(days_inactive: int = 60) -> list[dict]:
+    """最近 N 天沒下單但之前有下單的客戶"""
+    cutoff = (datetime.now() - timedelta(days=days_inactive)).strftime("%Y-%m-%d")
+    with _conn() as conn:
+        # 之前有下單但最近沒下的
+        rows = conn.execute("""
+            SELECT customer, MAX(date) as last_order,
+                   COUNT(DISTINCT date) as total_days, CAST(SUM(amount) AS INTEGER) as total_amt
+            FROM sales_detail
+            WHERE customer NOT LIKE '%民享%' AND customer != ''
+            GROUP BY customer
+            HAVING last_order < ?
+            ORDER BY total_amt DESC
+        """, (cutoff,)).fetchall()
+
+    from services.rebate import _get_base_name
+    seen = set()
+    results = []
+    for cust, last, days_count, amt in rows:
+        base = _get_base_name(cust)
+        if base in seen:
+            continue
+        seen.add(base)
+        inactive_days = (datetime.now() - datetime.strptime(last, "%Y-%m-%d")).days
+        results.append({
+            "name": base, "last_order": last,
+            "inactive_days": inactive_days,
+            "total_orders": days_count, "total_amount": amt,
+        })
+    return results[:20]
+
+
+# ── 11. 不建議叫貨清單 ──────────────────────────────────
+
+def do_not_restock() -> list[dict]:
+    """綜合分析：哪些品項不建議再叫貨"""
+    import json
+    avail_path = Path(__file__).parent.parent / "data" / "available.json"
+    if not avail_path.exists():
+        return []
+    avail = json.loads(avail_path.read_text(encoding="utf-8"))
+
+    with _conn() as conn:
+        # 近 90 天 vs 前 90 天的銷量
+        now = datetime.now()
+        mid = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        old_start = (now - timedelta(days=180)).strftime("%Y-%m-%d")
+
+        recent = {}
+        for r in conn.execute("""
+            SELECT prod_cd, prod_name, SUM(qty) FROM sales_detail
+            WHERE date >= ? AND customer NOT LIKE '%民享%'
+            GROUP BY prod_cd
+        """, (mid,)).fetchall():
+            recent[r[0]] = {"name": r[1], "qty": int(r[2])}
+
+        old = {}
+        for r in conn.execute("""
+            SELECT prod_cd, SUM(qty) FROM sales_detail
+            WHERE date >= ? AND date < ? AND customer NOT LIKE '%民享%'
+            GROUP BY prod_cd
+        """, (old_start, mid)).fetchall():
+            old[r[0]] = int(r[1])
+
+        # 最後出庫日
+        last_out = {}
+        for r in conn.execute("""
+            SELECT prod_cd, MAX(date) FROM inventory_changes
+            WHERE qty_out > 0 GROUP BY prod_cd
+        """).fetchall():
+            last_out[r[0]] = r[1]
+
+    results = []
+    for code, d in avail.items():
+        if _is_excluded_product(code):
+            continue
+        stock = d.get("available", 0) if isinstance(d, dict) else d
+        if stock <= 0:
+            continue
+
+        name = recent.get(code, {}).get("name", "")
+        if not name:
+            from services.ecount import ecount_client
+            item = ecount_client.get_product_cache_item(code)
+            name = (item.get("name") if item else None) or code
+
+        recent_qty = recent.get(code, {}).get("qty", 0)
+        old_qty = old.get(code, 0)
+        last_sale = last_out.get(code, "N/A")
+        days_since = 0
+        if last_sale and last_sale != "N/A":
+            try:
+                days_since = (datetime.now() - datetime.strptime(last_sale, "%Y-%m-%d")).days
+            except Exception:
+                pass
+
+        # 評分：越高越不建議叫
+        score = 0
+        reasons = []
+
+        # 銷量大幅衰退
+        if old_qty > 20 and recent_qty < old_qty * 0.3:
+            score += 3
+            reasons.append(f"銷量衰退{round((1-recent_qty/old_qty)*100)}%")
+        elif old_qty > 10 and recent_qty < old_qty * 0.5:
+            score += 2
+            reasons.append(f"銷量下滑{round((1-recent_qty/max(old_qty,1))*100)}%")
+
+        # 庫存高但出貨慢
+        if stock > 50 and recent_qty < 10:
+            score += 3
+            reasons.append(f"庫存{stock}但近90天只出{recent_qty}個")
+        elif stock > 30 and recent_qty < 5:
+            score += 2
+            reasons.append(f"庫存{stock}近90天出{recent_qty}個")
+
+        # 很久沒出貨
+        if days_since > 90:
+            score += 2
+            reasons.append(f"已{days_since}天沒出貨")
+        elif days_since > 60:
+            score += 1
+            reasons.append(f"已{days_since}天沒出貨")
+
+        if score >= 3:
+            results.append({
+                "code": code, "name": name, "stock": stock,
+                "recent_qty": recent_qty, "old_qty": old_qty,
+                "last_sale": last_sale, "score": score,
+                "reasons": "、".join(reasons),
+                "category": _classify(name),
+            })
+
+    results.sort(key=lambda x: -x["score"])
+    return results
+
+
+# ── 12. 新品採購建議 ──────────────────────────────────
 
 def new_product_suggestion(category: str, price: int) -> dict:
     """根據品類+價位，建議新品採購數量"""
