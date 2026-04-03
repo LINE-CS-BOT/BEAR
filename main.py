@@ -4419,6 +4419,16 @@ def on_image_message(event: MessageEvent):
     if not _bot_active:
         return
 
+    # ── 真人介入中 → 靜默 ────────────────────────────
+    if (state_manager.get(user_id) or {}).get("action") == "human_takeover":
+        print(f"[escalate] 真人介入中，圖片靜默 | {user_id[:10]}...")
+        return
+    if (issue_store.has_pending_issue(user_id)
+            or delivery_store.has_pending(user_id)
+            or pending_store.has_pending(user_id)):
+        print(f"[escalate] 真人介入中，圖片靜默 | {user_id[:10]}...")
+        return
+
     # 自動記錄客戶資料（不影響緩衝邏輯）
     with ApiClient(_configuration) as api_client:
         line_api = MessagingApi(api_client)
@@ -5316,8 +5326,10 @@ def _dispatch(
             from handlers.ordering import extract_quantity as _eq_cart
             if _eq_cart(text):
                 return f"請問要訂什麼商品呢？或是跟我說「好了」幫您送出目前的訂單唷"
-            # 其他不明訊息 → 不自動結帳，交給 Claude 回覆
-            pass
+            # 語意暗示「就這樣」→ 自動結帳
+            _done_kw = ["就先", "先這", "就好", "夠了", "可以了", "就這", "這樣就", "不用了"]
+            if any(kw in text for kw in _done_kw):
+                return handle_checkout(user_id, line_api)
         # 先問 Claude，失敗才轉真人
         from services.claude_ai import ask_claude_text
         _claude_reply = ask_claude_text(text, user_id=user_id)
@@ -5346,6 +5358,12 @@ def _dispatch(
                 _img_urls = _get_product_image_urls(_claude_codes)
                 if _img_urls:
                     return (_claude_reply, _img_urls)
+            # Claude 回覆確認語（記下、沒問題）→ 登記待處理，讓真人確認
+            _claude_noted_kw = ["記下", "記住", "沒問題", "已記", "幫您記", "幫你記"]
+            if any(k in _claude_reply for k in _claude_noted_kw):
+                issue_store.add(user_id, "claude_noted", f"Claude 回覆記下了：{text[:80]}")
+                print(f"[claude-ai] 回覆含確認語，記待處理: {text[:30]!r}", flush=True)
+
             # Claude 回覆「確認一下」「稍後回覆」→ 代表無法回答
             _unsure_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍等", "查一下", "幫您查", "幫你查", "沒有資料"]
             if any(k in _claude_reply for k in _unsure_kw):
