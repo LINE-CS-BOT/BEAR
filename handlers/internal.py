@@ -285,7 +285,8 @@ def handle_spec_inquiry_qty(group_id: str, text: str, line_api) -> str | None:
     )
     name = item["name"] or prod_code
     if slip_no:
-        return f"✅ 已建立訂單 {slip_no}\n  {name}（{prod_code}）× {actual_qty} 個"
+        _u = (item.get("unit") or "個")
+        return f"✅ 已建立訂單 {slip_no}\n  {name}（{prod_code}）× {actual_qty} {_u}"
     else:
         return f"❌ {name}（{prod_code}）訂單建立失敗"
 
@@ -294,8 +295,11 @@ def _push_arrival_msg(uid: str, prod_name: str, prod_code: str, qty: int, source
     if source == "staff":
         # 內部群登記：訂購到貨格式
         item = ecount_client.get_product_cache_item(prod_code)
+        prod_unit = (item.get("unit") or "") if item else ""
         box_qty = (item.get("box_qty") or 0) if item else 0
-        if box_qty > 1 and qty >= box_qty and qty % box_qty == 0:
+        if prod_unit == "箱":
+            qty_display = f"{qty}箱"
+        elif box_qty > 1 and qty >= box_qty and qty % box_qty == 0:
             qty_display = f"{qty // box_qty}箱"
         else:
             qty_display = f"{qty}個"
@@ -538,7 +542,10 @@ def _do_order(
         print(f"[internal] 代訂成功: {slip_no} | {cust_label}{new_tag} | {detail}")
         lines_out = [f"✅ {cust_label}{new_tag}｜{slip_no}"]
         for i in order_items:
-            unit     = (units or {}).get(i["prod_cd"], "個")
+            unit = (units or {}).get(i["prod_cd"], "")
+            if not unit:
+                _item_unit = ecount_client.get_product_cache_item(i["prod_cd"])
+                unit = (_item_unit.get("unit") if _item_unit else "") or "個"
             note_str = f"（{i['note']}）" if i.get("note") else ""
             lines_out.append(f"  {i['prod_name']}（{i['prod_cd']}）× {i['qty']} {unit}{note_str}")
         # 同時建立到貨通知登記（直接用已知的 cust_code/user_id，避免重名查詢問題）
@@ -1040,8 +1047,9 @@ def handle_internal_order(
                         _dq = _r.get("display_qty", _r["qty"])
                         _aq = _r["qty"]
                         _u  = _r["unit"]
-                        if _dq != _aq:  # 有換算
-                            _lines.append(f"  📦 {_r['name']}（{_r['code']}）× {_dq} {_u} = {_aq} 個")
+                        _real_u = (ecount_client.get_product_cache_item(_r["code"]) or {}).get("unit", "個") or "個"
+                        if _dq != _aq:
+                            _lines.append(f"  📦 {_r['name']}（{_r['code']}）× {_dq} {_u} = {_aq} {_real_u}")
                         else:
                             _lines.append(f"  📦 {_r['name']}（{_r['code']}）× {_aq} {_u}")
                     if _not_found:
@@ -1066,8 +1074,9 @@ def _build_ambiguous_ask(amb: dict, resolved: list, not_found: list) -> str:
             _dq = _r.get("display_qty", _r["qty"])
             _aq = _r["qty"]
             _u  = _r["unit"]
+            _real_u = (ecount_client.get_product_cache_item(_r["code"]) or {}).get("unit", "個") or "個"
             if _dq != _aq:
-                lines.append(f"  ✅ {_r['name']}（{_r['code']}）× {_dq} {_u} = {_aq} 個")
+                lines.append(f"  ✅ {_r['name']}（{_r['code']}）× {_dq} {_u} = {_aq} {_real_u}")
             else:
                 lines.append(f"  ✅ {_r['name']}（{_r['code']}）× {_aq} {_u}")
     return "\n".join(lines)
@@ -1760,20 +1769,22 @@ def handle_internal_order_from_state(
         )
     except Exception as e:
         print(f"[internal] save_order 例外: {e}", flush=True)
-        return f"❌ 訂單建立失敗（API 錯誤：{e}）\n客戶：{cust_label}\n商品：{prod_name} × {qty} 個"
+        return f"❌ 訂單建立失敗（API 錯誤：{e}）\n客戶：{cust_label}\n商品：{prod_name} × {qty}"
 
     state_manager.clear(state_key)  # 訂單完成，清除 state
 
     if slip_no:
         print(f"[internal] 圖片代訂成功: {slip_no} | {cust_label} | {prod_name} x{qty}")
+        _item_u = ecount_client.get_product_cache_item(prod_cd)
+        _disp_u = (_item_u.get("unit") if _item_u else "") or "個"
         return (
             f"✅ 訂單建立成功\n"
             f"客戶：{cust_label}\n"
-            f"商品：{prod_name} × {qty} 個"
+            f"商品：{prod_name} × {qty} {_disp_u}"
         )
     else:
         print(f"[internal] 圖片代訂失敗: {cust_code} | {prod_name} x{qty}")
-        return f"❌ 訂單建立失敗，請手動建立\n客戶：{cust_label}\n商品：{prod_name} × {qty} 個"
+        return f"❌ 訂單建立失敗，請手動建立\n客戶：{cust_label}\n商品：{prod_name} × {qty}"
 
 
 _PO_TXT_PATH = r"H:\其他電腦\我的電腦\小蠻牛\產品PO文.txt"
