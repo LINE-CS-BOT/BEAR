@@ -2807,6 +2807,54 @@ def _resolve_push_products(prod_query: str) -> list[tuple[str, str]]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# 產品圖片查詢：「圖片 Z3555」「照片 T1202」
+# ---------------------------------------------------------------------------
+_PHOTO_RE = re.compile(
+    rf'^(?:圖片|照片|圖)\s+(.+)',
+    re.DOTALL
+)
+
+
+def handle_internal_product_photo(text: str, line_api) -> str | None:
+    """
+    「圖片 Z3555」→ 推送產品照片到內部群。
+    """
+    m = _PHOTO_RE.match(text.strip())
+    if not m:
+        return None
+    codes = _PROD_CODE_RE.findall(m.group(1))
+    if not codes:
+        return None
+
+    ngrok_url = _get_ngrok_url()
+    media_dir = _get_media_dir()
+    if not media_dir:
+        return "⚠️ 產品照片磁碟機未連線"
+
+    from config import settings
+    group_id = settings.LINE_GROUP_ID
+
+    results = []
+    for raw_code in codes:
+        prod_code = raw_code.upper()
+        files = _match_product_media_files(prod_code, media_dir)
+        if not files:
+            results.append(f"❌ {prod_code} 無照片")
+            continue
+        media_msgs = _build_media_messages(prod_code, files, ngrok_url)[:4]
+        if media_msgs and group_id:
+            try:
+                from linebot.v3.messaging import PushMessageRequest
+                line_api.push_message(PushMessageRequest(to=group_id, messages=media_msgs))
+                results.append(f"📷 {prod_code} 共 {len(files)} 張（已推送 {len(media_msgs)} 張）")
+            except Exception as e:
+                results.append(f"❌ {prod_code} 推送失敗：{e}")
+        else:
+            results.append(f"📷 {prod_code} 有 {len(files)} 張照片")
+    return "\n".join(results)
+
+
 def _get_ngrok_url() -> str:
     """取得公開 HTTPS 網址（DuckDNS）"""
     return "https://xmnline.duckdns.org/product-photo"
