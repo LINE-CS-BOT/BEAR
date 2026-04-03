@@ -2811,7 +2811,7 @@ def _resolve_push_products(prod_query: str) -> list[tuple[str, str]]:
 # 產品圖片查詢：「圖片 Z3555」「照片 T1202」
 # ---------------------------------------------------------------------------
 _PHOTO_RE = re.compile(
-    rf'^(?:圖片|照片|圖)\s+(.+)',
+    rf'^(?:圖片|照片|圖)\s*(.+)',
     re.DOTALL
 )
 
