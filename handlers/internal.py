@@ -2814,19 +2814,8 @@ def _resolve_push_products(prod_query: str) -> list[tuple[str, str]]:
 
 
 def _get_ngrok_url() -> str:
-    """同步查詢 ngrok 本地 API，取得目前公開 HTTPS 網址"""
-    try:
-        import requests as _req
-        r = _req.get("http://localhost:4040/api/tunnels", timeout=2)
-        tunnels = r.json().get("tunnels", [])
-        for t in tunnels:
-            if t.get("proto") == "https":
-                return t["public_url"]
-        if tunnels:
-            return tunnels[0].get("public_url", "")
-    except Exception:
-        pass
-    return ""
+    """取得公開 HTTPS 網址（DuckDNS）"""
+    return "https://xmnline.duckdns.org/product-photo"
 
 
 def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
