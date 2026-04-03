@@ -234,6 +234,99 @@ _UNIT_PATTERN = r"(?:個|盒|組|台|條|瓶|套|份|片|包|罐|顆|粒|入|箱
 
 # 保留供外部引用（不再轉真人，直接接受為數量）
 BULK_UNITS = ["件", "箱"]
+_PIECE_UNITS = ["盒", "個", "入", "包", "罐", "條", "瓶"]
+
+
+def detect_per_box(prod_cd: str) -> int:
+    """
+    偵測產品每箱幾個（從 Ecount SIZE_DES 或 PO 文提取）。
+    回傳 0 表示查不到。
+    """
+    item = ecount_client.get_product_cache_item(prod_cd)
+    if not item:
+        return 0
+    # 優先用 Ecount 規格欄（如「100個/箱」「24盒/箱」）
+    size_des = item.get("size_des", "")
+    if size_des:
+        m = re.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', size_des)
+        if m:
+            return int(m.group(1))
+    # 沒有就從 PO 文找
+    try:
+        from handlers.internal import _get_raw_po_block
+        po = _get_raw_po_block(prod_cd) or ""
+        m = re.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', po)
+        if not m:
+            m = re.search(r'(?:1?\s*(?:箱|件))\s*(\d+)\s*(?:盒|個|入|包)', po)
+        if not m:
+            m = re.search(r'(\d+)\s*(?:盒|個|入|包)起批', po)
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return 0
+
+
+def resolve_unit(prod_cd: str, qty: int, unit: str | None) -> tuple[str, int, str]:
+    """
+    統一單位換算邏輯，所有下單/登記共用。
+
+    回傳 (actual_prod_cd, actual_qty, warning_msg)
+    - warning_msg 為空字串表示正常
+    - warning_msg 非空表示需要提示使用者（不能整除、需確認箱數等）
+    """
+    # 1. 客戶說「箱/件」
+    if unit and unit in BULK_UNITS:
+        case_cd = _resolve_case_code(prod_cd)
+        if case_cd:
+            # 有箱裝版本 → 用箱裝編號，數量不換算
+            return case_cd, qty, ""
+        # 沒有箱裝版本 → 看產品本身單位
+        item = ecount_client.get_product_cache_item(prod_cd)
+        if item and item.get("unit") == "箱":
+            # 本身就是箱 → 直接下
+            return prod_cd, qty, ""
+        # 本身不是箱 → 箱換算成個
+        return prod_cd, resolve_order_qty(prod_cd, qty), ""
+
+    # 2. 客戶說「盒/個/包」等，或沒說單位
+    # 先查有沒有箱裝版本
+    case_cd = _resolve_case_code(prod_cd)
+    if case_cd:
+        per_box = detect_per_box(case_cd)
+        if per_box > 0 and qty >= per_box and qty % per_box == 0:
+            # 能整除 → 自動換成箱裝
+            box_count = qty // per_box
+            case_item = ecount_client.get_product_cache_item(case_cd)
+            case_name = (case_item.get("name") if case_item else "") or case_cd
+            return case_cd, box_count, f"{qty}盒 = {box_count}箱（{case_name}）"
+        # 不能整除 → 用個裝品項，原數量
+        return prod_cd, qty, ""
+
+    # 沒有箱裝版本 → 看產品本身單位是否為箱
+    item = ecount_client.get_product_cache_item(prod_cd)
+    if not item or item.get("unit") != "箱":
+        # 不是箱 → 直接下
+        return prod_cd, qty, ""
+
+    # 產品本身單位是箱，客戶說了非箱單位
+    per_box = detect_per_box(prod_cd)
+    said_piece = unit and unit in _PIECE_UNITS
+
+    if said_piece and per_box > 1 and qty % per_box == 0:
+        # 能整除 → 自動換算
+        box_count = qty // per_box
+        return prod_cd, box_count, f"{qty}{unit} = {box_count}箱"
+    elif said_piece and per_box > 1:
+        # 不能整除 → 警告
+        return prod_cd, qty, f"⚠️ 1箱={per_box}{unit}，{qty}{unit}無法整除，請確認箱數"
+    elif not unit and per_box > 1:
+        # 沒說單位 → 提示
+        return prod_cd, qty, f"⚠️ 此產品以箱為單位（1箱={per_box}盒），請確認 {qty} 是否為箱數"
+    elif not unit:
+        return prod_cd, qty, f"⚠️ 此產品以箱為單位，請確認 {qty} 是否為箱數"
+    else:
+        return prod_cd, qty, ""
 
 _QTY_PATTERNS = [
     # 「各 X 個/...」→ 每款各幾個（取第一個數字）
@@ -367,82 +460,27 @@ def handle_order_quantity(
         return tone.ask_quantity(prod_name)
 
     # ── 箱/件換算 ──────────────────────────────────
-    _case_cd = _resolve_case_code(prod_cd)
-    if any(u in text for u in BULK_UNITS):
-        # 客戶明確說「箱」
-        if _case_cd:
-            prod_cd = _case_cd
-            prod_name = ecount_client.get_product_cache_item(_case_cd).get("name", prod_name)
-        else:
-            qty = resolve_order_qty(prod_cd, qty)
-    elif _case_cd:
-        # 有箱裝版但客戶說個數 → 看能不能整除換算
-        _case_item = ecount_client.get_product_cache_item(_case_cd)
-        _per_box_case = 0
-        import re as _re_case
-        _sd = (_case_item.get("size_des", "") if _case_item else "")
-        _mc = _re_case.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', _sd)
-        if _mc:
-            _per_box_case = int(_mc.group(1))
-        if _per_box_case > 0 and qty >= _per_box_case and qty % _per_box_case == 0:
-            # 能整除 → 自動換算箱裝
-            _box_count = qty // _per_box_case
-            prod_cd = _case_cd
-            prod_name = _case_item.get("name", prod_name)
-            qty = _box_count
-        # 不能整除 → 用個裝品項下個數（不換算）
-    else:
-        # 無箱裝版，檢查產品本身是否箱裝
-        from services.ecount import ecount_client as _ec_unit
-        _item_unit = _ec_unit.get_product_cache_item(prod_cd)
-        if _item_unit and _item_unit.get("unit") == "箱":
-            # 從 Ecount SIZE_DES 或 PO 文提取裝箱數
-            _per_box = 0
-            import re as _re_box
-            # 優先用 Ecount 規格欄（如「100個/箱」「24盒/箱」）
-            _size_des = _item_unit.get("size_des", "")
-            if _size_des:
-                _m_box = _re_box.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', _size_des)
-                if _m_box:
-                    _per_box = int(_m_box.group(1))
-            # 沒有就從 PO 文找
-            if not _per_box:
-                try:
-                    from handlers.internal import _get_raw_po_block
-                    _po_box = _get_raw_po_block(prod_cd) or ""
-                    _m_box = _re_box.search(r'(\d+)\s*(?:盒|個|入|包|罐|條|瓶)\s*/?\s*(?:箱|件)', _po_box)
-                    if not _m_box:
-                        _m_box = _re_box.search(r'(?:1?\s*(?:箱|件))\s*(\d+)\s*(?:盒|個|入|包)', _po_box)
-                    if not _m_box:
-                        _m_box = _re_box.search(r'(\d+)\s*(?:盒|個|入|包)起批', _po_box)
-                    if _m_box:
-                        _per_box = int(_m_box.group(1))
-                except Exception:
-                    pass
+    # 從 text 提取客戶說的單位
+    _unit_m = re.search(r'(\d+)\s*(個|盒|組|台|條|瓶|套|份|片|包|罐|入|箱|件|支|隻)', text)
+    _said_unit = _unit_m.group(2) if _unit_m else None
 
-            # 客戶說了非箱單位（盒/個/包等）→ 嘗試自動換算
-            _said_unit = any(u in text for u in ["盒", "個", "入", "包", "罐", "條", "瓶"])
-            if _said_unit and _per_box > 1 and qty % _per_box == 0:
-                # 能整除 → 自動換算（如 100盒 ÷ 100 = 1箱）
-                _box_count = qty // _per_box
-                from storage import cart as _cart_auto_box
-                _cart_auto_box.add_item(user_id, prod_cd, prod_name, _box_count)
-                return f"好的，{qty}盒 = {_box_count}箱\n" + tone.cart_item_added(_cart_auto_box.get_cart(user_id))
-            elif _said_unit and _per_box > 1:
-                # 不能整除 → 提醒
-                return f"這款 1箱={_per_box}盒，{qty}盒無法整除。請問要幾箱呢？"
+    prod_cd, qty, warn = resolve_unit(prod_cd, qty, _said_unit)
 
-            # 純數字沒單位 → 問
-            from storage.state import state_manager as _sm_unit
-            _sm_unit.set(user_id, {
-                "action": "awaiting_box_confirm",
-                "prod_cd": prod_cd,
-                "prod_name": prod_name,
-                "input_qty": qty,
-            })
-            if _per_box > 1:
-                return f"這款「{prod_name}」是以箱為單位（1箱={_per_box}盒），請問 {qty} 是幾箱呢？"
-            return f"這款「{prod_name}」是以箱為單位喔，請問 {qty} 是幾箱呢？"
+    if warn and warn.startswith("⚠️"):
+        # 需要確認 → 問客戶
+        from storage.state import state_manager as _sm_unit
+        _sm_unit.set(user_id, {
+            "action": "awaiting_box_confirm",
+            "prod_cd": prod_cd,
+            "prod_name": prod_name,
+            "input_qty": qty,
+        })
+        return warn.replace("⚠️ ", "").replace("，請確認箱數", "。請問要幾箱呢？").replace("，請確認", "，請問")
+    elif warn:
+        # 自動換算成功 → 更新品名
+        _new_item = ecount_client.get_product_cache_item(prod_cd)
+        if _new_item:
+            prod_name = _new_item.get("name", prod_name)
 
     # ── 加入購物車 ────────────────────────────────
     cart = cart_store.add_item(user_id, prod_cd, prod_name, qty)
