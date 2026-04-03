@@ -4535,11 +4535,18 @@ def _handle_stateful(
 
     # ── 等待數量：客戶確認要購買幾個 ──────────────
     if action == "awaiting_quantity":
+        # 問句排除：「是不是三個顏色」「有幾個顏色」不是回答數量
+        _question_kw = ["請問", "是不是", "是否", "有幾", "嗎", "？", "?", "顏色", "款式", "種"]
+        _is_question = any(kw in text for kw in _question_kw)
         qty = extract_quantity(text)
-        if qty:
+        if qty and not _is_question:
             # 統一直接加購物車（不再多一步確認，避免 state 被覆蓋）
             state_manager.clear(user_id)
             return handle_order_quantity(user_id, text, state, line_api)
+        elif qty and _is_question:
+            # 有數字但是問句 → 清 state，走正常 dispatch（交給 Claude 回答）
+            state_manager.clear(user_id)
+            return None
         elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用"]):
             state_manager.clear(user_id)
             return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
