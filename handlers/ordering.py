@@ -551,28 +551,27 @@ def handle_checkout(
 
     if slip_no:
         print(f"[ordering] 購物車訂單建立成功: {slip_no} | {cust_code} | {len(cart)} 項")
-        # 預購品自動登記到貨通知
+        # 所有品項自動登記到貨通知
         from handlers.inventory import _check_preorder, notify_hq_restock
         from storage.notify import notify_store
         _oos_items = []  # 缺貨品項（需通知總公司調貨）
         _po_items = []   # 預購品項
         for item in cart:
+            notify_store.add(
+                user_id=user_id,
+                prod_code=item["prod_cd"],
+                prod_name=item["prod_name"],
+                source="staff",
+                qty_wanted=item["qty"],
+            )
+            print(f"[ordering] 自動登記到貨通知: {item['prod_name']} x{item['qty']}")
             if _check_preorder(item["prod_cd"]):
                 _po_items.append(item)
-                notify_store.add(
-                    user_id=user_id,
-                    prod_code=item["prod_cd"],
-                    prod_name=item["prod_name"],
-                    source="staff",
-                    qty_wanted=item["qty"],
-                )
-                print(f"[ordering] 預購品自動登記到貨通知: {item['prod_name']} x{item['qty']}")
             else:
                 # 非預購品 → 檢查庫存是否足夠
                 _item_info = ecount_client.lookup(item["prod_cd"])
                 _item_qty = _item_info.get("qty") if _item_info else None
                 if not _item_qty or _item_qty < item["qty"]:
-                    # 庫存不足（包含 0 和不夠的情況）
                     _short = item["qty"] - (_item_qty or 0)
                     _oos_items.append({**item, "short": _short, "stock": _item_qty or 0})
         # 缺貨品項 → 一次通知總公司 + 一筆待處理
