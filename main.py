@@ -5373,6 +5373,13 @@ def _dispatch(
                 issue_store.add(user_id, "claude_noted", f"Claude 回覆記下了：{text[:80]}")
                 print(f"[claude-ai] 回覆含確認語，記待處理: {text[:30]!r}", flush=True)
 
+            # 客戶語意含取消/延後/讓給別人 → 登記待處理
+            _cancel_defer_kw = ["先給別人", "給其他客人", "先讓給", "不用留", "延後", "有空再",
+                                "有時間再", "下次再", "先不要", "暫時不", "改天再", "先取消"]
+            if any(k in text for k in _cancel_defer_kw):
+                issue_store.add(user_id, "cancel_defer", f"客戶取消/延後：{text[:80]}")
+                print(f"[claude-ai] 客戶取消/延後，記待處理: {text[:30]!r}", flush=True)
+
             # Claude 回覆「確認一下」「稍後回覆」→ 代表無法回答
             _unsure_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍等", "查一下", "幫您查", "幫你查", "沒有資料"]
             if any(k in _claude_reply for k in _unsure_kw):
