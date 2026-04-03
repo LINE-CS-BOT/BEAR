@@ -87,11 +87,12 @@ def _handle_available(request: dict, line_api: MessagingApi) -> str | None:
     prod_cd = request["prod_cd"]
     qty = request["qty"]
 
-    # 箱/件換算
-    from handlers.ordering import resolve_order_qty
-    actual_qty = resolve_order_qty(prod_cd, qty)
+    # 單位換算
+    from handlers.ordering import resolve_unit
+    _unit = request.get("unit")
+    prod_cd, actual_qty, _warn = resolve_unit(prod_cd, qty, _unit)
     if actual_qty != qty:
-        print(f"[restock] 箱件換算: {prod_cd} {qty} → {actual_qty} 個")
+        print(f"[restock] 單位換算: {prod_cd} {qty} → {actual_qty}")
 
     restock_store.update_status(request["id"], "available")
 

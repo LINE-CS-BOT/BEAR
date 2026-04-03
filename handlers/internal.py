@@ -262,8 +262,9 @@ def handle_spec_inquiry_qty(group_id: str, text: str, line_api) -> str | None:
     prod_code = st.get("prod_code", "")
     state_manager.clear(group_id)
 
-    from handlers.ordering import extract_quantity, resolve_order_qty
+    from handlers.ordering import extract_quantity, resolve_unit
     from services.ecount import ecount_client
+    import re as _re_unit
 
     qty = extract_quantity(text)
     if not qty:
@@ -273,7 +274,11 @@ def handle_spec_inquiry_qty(group_id: str, text: str, line_api) -> str | None:
     if not item:
         return f"❌ 找不到產品 {prod_code}"
 
-    actual_qty = resolve_order_qty(prod_code, qty)
+    _um = _re_unit.search(r'(\d+)\s*(個|盒|組|台|條|瓶|套|份|片|包|罐|入|箱|件|支|隻)', text)
+    _said_unit = _um.group(2) if _um else None
+    prod_code, actual_qty, _warn = resolve_unit(prod_code, qty, _said_unit)
+    if _warn and _warn.startswith("⚠️"):
+        return _warn
     slip_no = ecount_client.save_order(
         cust_code="INTERNAL",
         items=[{"prod_cd": prod_code, "qty": actual_qty}],
@@ -734,34 +739,12 @@ def handle_internal_order(
     if not lines:
         return None
 
-    from handlers.ordering import resolve_order_qty as _resolve_qty
-
-    def _resolve_case_code(prod_cd: str) -> str | None:
-        """查找箱裝版本的品項編號"""
-        code = prod_cd.upper()
-        for suffix in ["-1"]:
-            c = code + suffix
-            cache = ecount_client.get_product_cache_item(c)
-            if cache and ("箱" in cache.get("name", "") or "條" in cache.get("name", "")):
-                return cache["code"]
-        if "-" in code:
-            base = code.rsplit("-", 1)[0]
-            cache = ecount_client.get_product_cache_item(base)
-            if cache and ("箱" in cache.get("name", "") or "條" in cache.get("name", "")):
-                return cache["code"]
-        return None
+    from handlers.ordering import resolve_unit
 
     def _apply_unit(prod_cd: str, qty: int, unit: str | None) -> tuple[str, int]:
-        """若單位是箱/件，嘗試切換到箱裝品項；否則換算數量。
-        回傳 (實際品項編號, 實際數量)"""
-        if unit and unit in _BULK_UNITS:
-            case_cd = _resolve_case_code(prod_cd)
-            if case_cd:
-                # 有箱裝版本 → 用箱裝編號，數量不換算
-                return case_cd, qty
-            # 沒有箱裝版本 → 走原本的數量換算
-            return prod_cd, _resolve_qty(prod_cd, qty)
-        return prod_cd, qty
+        """統一單位換算，回傳 (實際品項編號, 實際數量)。"""
+        cd, q, _warn = resolve_unit(prod_cd, qty, unit)
+        return cd, q
 
     # ── 格式B 判斷：第一行符合「姓名訂」且後面沒有產品代碼 ──
     header_m = _STAFF_ORDER_HEADER_RE.match(lines[0])
@@ -971,7 +954,6 @@ def handle_internal_order(
                     _ambiguous: list[dict] = []
                     _not_found: list[str]  = []
 
-                    from handlers.ordering import resolve_order_qty
                     _IS_BULK = {"箱", "件"}
 
                     for _name, _qty, _unit in _name_items:
@@ -1098,7 +1080,7 @@ def handle_ambiguous_resolve(group_id: str, text: str) -> str | None:
     支援：序號（1/2/3）、貨號（Z2095）、品名關鍵字（厚衛生紙）
     """
     from storage.state import state_manager as _sm
-    from handlers.ordering import resolve_order_qty
+    from handlers.ordering import resolve_unit
     state = _sm.get(group_id)
     if not state or state.get("action") != "pending_ambiguous_resolve":
         return None
@@ -1152,7 +1134,7 @@ def handle_ambiguous_resolve(group_id: str, text: str) -> str | None:
     # 找到選擇 → 換算數量並加入 resolved
     _it = ecount_client.lookup(chosen_code)
     _pn = (_it.get("name") if _it else "") or chosen_code
-    _actual_qty = resolve_order_qty(chosen_code, qty) if is_bulk else qty
+    chosen_code, _actual_qty, _warn = resolve_unit(chosen_code, qty, unit)
     resolved = resolved + [{
         "query": current["query"], "code": chosen_code,
         "name": _pn, "qty": _actual_qty,
@@ -1481,10 +1463,9 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
                     cust_name_q = re.sub(r'\s+', '', mq.group(1))
                     qty = int(mq.group(2))
                     unit = mq.group(3) or ""
-                if unit in ("箱", "件"):
-                    from handlers.ordering import resolve_order_qty
-                    qty = resolve_order_qty(prod_code, qty)
-                results.append(_notify_register_and_push(cust_name_q, prod_code, prod_name, qty))
+                from handlers.ordering import resolve_unit
+                _cd, qty, _warn = resolve_unit(prod_code, qty, unit or None)
+                results.append(_notify_register_and_push(cust_name_q, _cd, prod_name, qty))
             return "\n".join(results) if results else None
 
         # ── A2：第二行是客戶名 → 一客多品 ──────────────────────────────
@@ -1563,10 +1544,8 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
         prod_code   = m.group(2).upper()
         qty         = _parse_qty(m.group(3)) if m.group(3) else 1
         unit        = m.group(4) or ""
-        # 箱/件單位換算
-        if unit in ("箱", "件"):
-            from handlers.ordering import resolve_order_qty
-            qty = resolve_order_qty(prod_code, qty)
+        from handlers.ordering import resolve_unit
+        prod_code, qty, _warn = resolve_unit(prod_code, qty, unit or None)
         item        = ecount_client.lookup(prod_code)
         prod_name   = (item["name"] if item else "") or prod_code
         results.append(_notify_register_and_push(
@@ -1583,6 +1562,10 @@ def _notify_register_and_push(
     查找客戶 → 登記 notify_store → 回傳狀態行。
     到貨時再由排程自動 push（不立即通知）。
     """
+    # 取產品單位用於顯示
+    _item_unit = ecount_client.get_product_cache_item(prod_code)
+    _display_unit = (_item_unit.get("unit") if _item_unit else "") or "個"
+
     matches = customer_store.search_by_name(cust_name_q, real_name_only=True)
     if not matches:
         # LINE DB 找不到 → 用 ecount: 前綴存，到貨時通知到內部群
@@ -1592,7 +1575,7 @@ def _notify_register_and_push(
             source="staff",
         )
         print(f"[internal] 通知登記(staff): #{notify_id} {cust_name_q}（到貨通知內部群）← {prod_name}({prod_code}) x{qty}")
-        return f"✅ {cust_name_q}｜{prod_name}（{prod_code}）× {qty} 個（到貨通知內部群）"
+        return f"✅ {cust_name_q}｜{prod_name}（{prod_code}）× {qty} {_display_unit}（到貨通知內部群）"
     if len(matches) > 1:
         ns = "、".join(r.get("real_name") or r.get("display_name", "?") for r in matches[:5])
         return f"⚠️ 「{cust_name_q}」有多位：{ns}"
@@ -1612,7 +1595,7 @@ def _notify_register_and_push(
     )
     tag = "（到貨通知內部群）" if cust_uid.startswith("ecount:") else ""
     print(f"[internal] 通知登記(staff): #{notify_id} {cust_label}{tag} ← {prod_name}({prod_code}) x{qty}")
-    return f"✅ {cust_label}｜{prod_name}（{prod_code}）× {qty} 個{tag}"
+    return f"✅ {cust_label}｜{prod_name}（{prod_code}）× {qty} {_display_unit}{tag}"
 
 
 # ── 3. 圖片識別 → PO文 + 等待訂單 ───────────────────────────────────
@@ -3909,9 +3892,16 @@ def _build_one_product(fields: dict) -> str:
     if out_price:    extra["OUT_PRICE"]    = out_price
     if in_price:     extra["IN_PRICE"]     = in_price
     if size_des:     extra["SIZE_DES"]     = size_des
-    # 從規格提取裝箱數（如「20個/箱」「24/箱」→ EXCH_RATE=20）
+    # 從規格提取裝箱數（如「20個/箱」「24/箱」）
     _box_m = re.search(r'(\d+)\s*(?:個|盒|入)?\s*/\s*(?:箱|件)', size_des)
-    if _box_m:       extra["EXCH_RATE"]    = _box_m.group(1)
+    if _box_m:
+        if unit == "箱":
+            # 單位是箱 → 寫入規格（SIZE_DES），不寫 EXCH_RATE
+            if not size_des:
+                extra["SIZE_DES"] = _box_m.group(0)
+        else:
+            # 單位是個 → 寫入包裝數（EXCH_RATE）
+            extra["EXCH_RATE"] = _box_m.group(1)
     if _prod_size:   extra["REMARKS_WIN"]  = _prod_size     # 尺寸 → REMARKS_WIN
     if _prod_weight: extra["CONT1"]        = _prod_weight   # 重量 → CONT1
 
