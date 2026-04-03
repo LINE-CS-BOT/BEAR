@@ -2762,16 +2762,10 @@ def _push_messages_chunked(
     line_api, uid: str, text_msg: TextMessage, media_msgs: list
 ) -> None:
     """
-    分批 push：第一批 = text + 最多 4 media（LINE 限 5 則/次）；
-    後續批次每批最多 5 media。
+    單次 push：text + 最多 4 media（LINE 限 5 則/次），多的不送。
     """
-    first_batch = [text_msg] + media_msgs[:4]
-    line_api.push_message(PushMessageRequest(to=uid, messages=first_batch))
-    remaining = media_msgs[4:]
-    while remaining:
-        batch = remaining[:5]
-        remaining = remaining[5:]
-        line_api.push_message(PushMessageRequest(to=uid, messages=batch))
+    batch = [text_msg] + media_msgs[:4]
+    line_api.push_message(PushMessageRequest(to=uid, messages=batch))
 
 
 def _resolve_push_products(prod_query: str) -> list[tuple[str, str]]:
@@ -2926,15 +2920,26 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
         uid = cust.get("line_user_id")
         if not uid:
             continue
-        cust_name = cust.get("real_name") or cust.get("display_name") or ""
-        greeting_prefix = f"老闆 {cust_name}～\n\n" if cust_name else "老闆～\n\n"
+        import random
+        greeting_prefix = random.choice([
+            "老闆您好~給您送新品來了~\n\n",
+            "哈囉~老闆~挖來啊~給你送新品來了!!\n\n",
+            "老闆好~新品到了唷~快來看看~\n\n",
+            "嗨~老闆~又有好東西來了!!\n\n",
+            "老闆~新品來報到囉~看看有沒有喜歡的~\n\n",
+            "老闆您好~熱騰騰的新品來了~\n\n",
+            "嘿~老闆~新品上架啦~來看看吧~\n\n",
+            "老闆~好東西來了~快來瞧瞧~\n\n",
+        ])
 
         try:
             # 第一款加上問候語，其後各款不重複問候
+            import time
             for i, (prod_code, prod_name, po_text, media_msgs) in enumerate(prod_data):
+                if i > 0:
+                    time.sleep(3)
                 prefix = greeting_prefix if i == 0 else ""
                 text_msg = TextMessage(text=prefix + po_text)
-                # 分批推送：text + 最多 4 媒體/批，超過自動續批
                 _push_messages_chunked(line_api, uid, text_msg, media_msgs)
             sent += 1
             codes_str = "、".join(c for c, *_ in prod_data)
