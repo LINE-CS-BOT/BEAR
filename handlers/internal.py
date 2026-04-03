@@ -2896,14 +2896,29 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
 
     # 收集每個產品的推送資料：(code, name, po_text, [media_msgs])
     prod_data: list[tuple[str, str, str, list]] = []
+    skipped: list[str] = []
     for prod_code, prod_name in products:
-        po_text = _format_po(prod_code)
+        raw_po = _get_raw_po_block(prod_code)
+        if not raw_po:
+            skipped.append(f"{prod_name}（{prod_code}）無 PO 文")
+            continue
         media_msgs = []
+        files = []
         if ngrok_url and media_dir:
             files = _match_product_media_files(prod_code, media_dir)
             media_msgs = _build_media_messages(prod_code, files, ngrok_url)
             print(f"[internal-tag-push] {prod_code} 媒體檔案 {len(files)} 個 → {len(media_msgs)} 則訊息")
+        if not files:
+            skipped.append(f"{prod_name}（{prod_code}）無圖片")
+            continue
+        po_text = _format_po(prod_code)
         prod_data.append((prod_code, prod_name, po_text, media_msgs))
+
+    if not prod_data:
+        msg = "❌ 所有產品都不符合推送條件（需有 PO 文 + 圖片）"
+        if skipped:
+            msg += "\n⚠️ 跳過：\n" + "\n".join(f"  • {s}" for s in skipped)
+        return msg
 
     sent = 0
     failed = 0
@@ -2949,10 +2964,8 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
     )
     if failed:
         result += f"\n❌ 失敗：{failed} 位（請查看 log）"
-    if not ngrok_url:
-        result += "\n⚠️ ngrok 未啟動，圖片/影片未推送"
-    elif not media_dir:
-        result += "\n⚠️ 產品照片磁碟機未連線，媒體未推送"
+    if skipped:
+        result += "\n⚠️ 跳過：\n" + "\n".join(f"  • {s}" for s in skipped)
     return result
 
 
@@ -2994,19 +3007,24 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
     ngrok_url = _get_ngrok_url()
     media_dir = _get_media_dir()
 
-    # 收集每個產品的推送資料，檢查 PO 文
+    # 收集每個產品的推送資料，檢查 PO 文 + 圖片
     pushed = []
     skipped = []
     for prod_code, prod_name in products:
         raw_po = _get_raw_po_block(prod_code)
         if not raw_po:
-            skipped.append(f"{prod_name}（{prod_code}）")
+            skipped.append(f"{prod_name}（{prod_code}）無 PO 文")
             continue
 
         media_msgs = []
+        files = []
         if ngrok_url and media_dir:
             files = _match_product_media_files(prod_code, media_dir)
             media_msgs = _build_media_messages(prod_code, files, ngrok_url)
+
+        if not files:
+            skipped.append(f"{prod_name}（{prod_code}）無圖片")
+            continue
 
         try:
             text_msg = TextMessage(text=raw_po)
@@ -3020,13 +3038,9 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
     if pushed:
         lines.append(f"📣 已推送至看貨群！\n產品：{'、'.join(pushed)}")
     if skipped:
-        lines.append(f"⚠️ 以下產品無 PO 文，未推送：\n{'、'.join(skipped)}")
+        lines.append(f"⚠️ 跳過（需有 PO 文 + 圖片）：\n" + "\n".join(f"  • {s}" for s in skipped))
     if not pushed and not skipped:
         lines.append("❌ 沒有產品可推送")
-    if not ngrok_url:
-        lines.append("⚠️ ngrok 未啟動，圖片未推送")
-    elif not media_dir:
-        lines.append("⚠️ 產品照片磁碟機未連線")
     return "\n".join(lines)
 
 
@@ -4215,7 +4229,7 @@ def handle_internal_rebate(text: str, state_key: str | None = None) -> str | Non
 _UNFULFILLED_PATH = Path(__file__).parent.parent / "data" / "unfulfilled_orders.json"
 
 _UNFULFILLED_KW = ["未備貨"]
-_UNFULFILLED_ALL_KW = ["未備貨資料"]
+_UNFULFILLED_ALL_KW = ["未備貨訂單", "未備貨資料"]
 
 
 def _load_unfulfilled() -> list[dict]:
@@ -4266,15 +4280,21 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
     if not orders:
         return "📋 目前沒有未備貨訂單資料"
 
-    # 「未備貨資料」→ 全部列出（按客戶分組）
+    # 「未備貨資料」→ 按產品別分組
     if any(kw in t for kw in _UNFULFILLED_ALL_KW):
-        custs: dict[str, list] = {}
+        prods: dict[str, dict] = {}  # code → {name, customers: [(cust, qty)]}
         for o in orders:
-            custs.setdefault(o["customer"], []).append(o)
-        lines = [f"📋 全部未備貨訂單（{len(orders)} 筆，{len(custs)} 位客戶）"]
-        for cust, cust_orders in sorted(custs.items()):
-            items = "、".join(f"{o['code']}*{o['qty']:g}" for o in cust_orders)
-            lines.append(f"  {cust}: {items}")
+            code = o.get("code", "")
+            if code not in prods:
+                prods[code] = {"name": o.get("name", ""), "customers": []}
+            prods[code]["customers"].append((o.get("customer", ""), o.get("qty", 0)))
+
+        lines = [f"📋 全部未備貨訂單（{len(orders)} 筆，{len(prods)} 品項）"]
+        for code, data in sorted(prods.items()):
+            total = sum(q for _, q in data["customers"])
+            lines.append(f"\n{code} {data['name'][:20]} 共{total:g}個")
+            for cust, qty in data["customers"]:
+                lines.append(f"  {cust}*{qty:g}")
         return "\n".join(lines)
 
     # 提取查詢關鍵字
@@ -4319,7 +4339,7 @@ def handle_internal_unfulfilled(text: str, state_key: str | None = None) -> str 
 
 _UNCLAIMED_PATH = Path(__file__).parent.parent / "data" / "unclaimed_orders.json"
 
-_UNCLAIMED_KW = ["未取資料", "已備貨資料", "未取", "已備貨"]
+_UNCLAIMED_KW = ["未取訂單", "未取資料", "已備貨資料", "已備貨訂單", "未取", "已備貨"]
 
 
 def _load_unclaimed() -> list[dict]:
