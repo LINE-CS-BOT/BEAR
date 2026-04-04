@@ -3074,10 +3074,7 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
     if _SHOWCASE_TRIGGER not in text:
         return None
 
-    from config import settings
-    showcase_gid = settings.LINE_GROUP_ID_SHOWCASE
-    if not showcase_gid:
-        return "❌ 看貨群 ID 未設定"
+    return "⚠️ 看貨群推送暫停使用中"
 
     # 提取產品編碼
     remaining = text.replace(_SHOWCASE_TRIGGER, "").strip()
