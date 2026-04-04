@@ -425,6 +425,7 @@ def _msg_buf_add(
             existing["timer"].cancel()
             if text:
                 existing["lines"].append(text)
+                existing["line_quotes"].append(quoted_msg_id)
             if media_msg_id:
                 _txt_count = len(existing.get("lines", []))
                 existing["media"].append({
@@ -439,6 +440,7 @@ def _msg_buf_add(
         else:
             _msg_buffer[user_id] = {
                 "lines":        [text] if text else [],
+                "line_quotes":  [quoted_msg_id] if text else [],
                 "media":        [{"msg_id": media_msg_id, "type": media_type or "image", "after_text": 0}] if media_msg_id else [],
                 "context":      context,
                 "group_id":     group_id,
@@ -1507,6 +1509,42 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 if any(kw in combined for kw in _DOC_KW):
                     img_e = None  # 清掉圖片，不辨識
 
+                # 1:1 多引用處理：每行 tag 不同圖片 + 數量 → 批次加購物車
+                _line_quotes = entry.get("line_quotes", [])
+                _has_multi_quotes = (
+                    len(_line_quotes) > 1
+                    and sum(1 for q in _line_quotes if q) >= 2
+                )
+                if _has_multi_quotes and not img_e:
+                    from handlers.ordering import extract_quantity as _eq_mq
+                    _added_items = []
+                    for _li, (_line_text, _lq) in enumerate(zip(entry["lines"], _line_quotes)):
+                        if not _lq:
+                            continue
+                        _lq_code = lookup_sent_image(_lq)
+                        if not _lq_code:
+                            continue
+                        _lq_qty = _eq_mq(_line_text) or 1
+                        from services.ecount import ecount_client as _ec_mq
+                        _lq_item = _ec_mq.get_product_cache_item(_lq_code)
+                        _lq_name = (_lq_item.get("name") if _lq_item else "") or _lq_code
+                        from storage import cart as _cart_mq
+                        _cart_mq.add_item(user_id, _lq_code, _lq_name, _lq_qty)
+                        _added_items.append(f"  • {_lq_name}（{_lq_code}）× {_lq_qty}")
+                        print(f"[quote-multi] {_lq_code} × {_lq_qty}", flush=True)
+                    _has_unknown_quotes = any(
+                        lq and not lookup_sent_image(lq)
+                        for lq in _line_quotes if lq
+                    )
+                    if _added_items:
+                        state_manager.clear(user_id)
+                        reply_text = tone.cart_item_added(_cart_mq.get_cart(user_id))
+                        _send_reply(reply_token, user_id, reply_text, line_api)
+                    elif _has_unknown_quotes:
+                        issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的圖片：{combined[:50]}")
+                        _send_reply(reply_token, user_id, "稍等一下唷～等等處理嘿", line_api)
+                        return
+
                 # 1:1 圖片識別：優先從文字提取貨號，沒有才辨識圖片
                 # 若客戶引用了某張圖片，把引用的圖片當作 img_e 來辨識
                 if quoted_msg_id and not img_e:
@@ -1522,6 +1560,10 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             img_e = {"msg_id": quoted_msg_id, "bot_sent_code": _sent_pc}
                         else:
                             print(f"[quote] 引用圖片辨識失敗: {quoted_msg_id}", flush=True)
+                            # 查不到對應產品 → 回覆稍等 + 記待處理
+                            issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的圖片：{combined[:50]}")
+                            _send_reply(reply_token, user_id, "稍等一下唷～等等處理嘿", line_api)
+                            return
 
                 img_pcs = []
                 _text_codes = _PROD_CODE_RE.findall(combined) if img_e else []
