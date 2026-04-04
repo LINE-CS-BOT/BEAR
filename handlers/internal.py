@@ -2852,6 +2852,8 @@ def handle_internal_product_photo(text: str, line_api) -> str | None:
     from config import settings
     group_id = settings.LINE_GROUP_ID
 
+    # 只取第一個產品的圖片，用 reply 送（節省 push 額度）
+    all_image_urls = []
     results = []
     for raw_code in codes:
         prod_code = raw_code.upper()
@@ -2859,17 +2861,15 @@ def handle_internal_product_photo(text: str, line_api) -> str | None:
         if not files:
             results.append(f"❌ {prod_code} 無照片")
             continue
-        media_msgs = _build_media_messages(prod_code, files, ngrok_url)[:4]
-        if media_msgs and group_id:
-            try:
-                from linebot.v3.messaging import PushMessageRequest
-                line_api.push_message(PushMessageRequest(to=group_id, messages=media_msgs))
-                results.append(f"📷 {prod_code} 共 {len(files)} 張（已推送 {len(media_msgs)} 張）")
-            except Exception as e:
-                results.append(f"❌ {prod_code} 推送失敗：{e}")
-        else:
-            results.append(f"📷 {prod_code} 有 {len(files)} 張照片")
-    return "\n".join(results)
+        results.append(f"📷 {prod_code} 共 {len(files)} 張")
+        base = ngrok_url.rstrip("/")
+        for f in files[:4]:
+            if f.suffix.lower() in _IMG_EXTS:
+                all_image_urls.append(f"{base}/{f.name}")
+    text = "\n".join(results) if results else None
+    if text and all_image_urls:
+        return (text, all_image_urls[:4])
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -2891,37 +2891,14 @@ def handle_internal_product_po_photo(text: str, line_api) -> str | None:
     ngrok_url = _get_ngrok_url()
     media_dir = _get_media_dir()
 
-    from config import settings
-    from linebot.v3.messaging import PushMessageRequest
-    group_id = settings.LINE_GROUP_ID
-
     results = []
-    for raw_code in codes:
+    first_po = None
+    first_image_urls = []
+
+    for i, raw_code in enumerate(codes):
         prod_code = raw_code.upper()
         raw_po = _get_raw_po_block(prod_code)
         files = _match_product_media_files(prod_code, media_dir) if media_dir else []
-
-        # 推 PO 文
-        if raw_po and group_id:
-            try:
-                line_api.push_message(PushMessageRequest(
-                    to=group_id, messages=[TextMessage(text=raw_po)]
-                ))
-            except Exception as e:
-                results.append(f"❌ {prod_code} PO文推送失敗：{e}")
-                continue
-
-        # 推圖片
-        if files and ngrok_url and group_id:
-            media_msgs = _build_media_messages(prod_code, files, ngrok_url)[:4]
-            if media_msgs:
-                try:
-                    line_api.push_message(PushMessageRequest(
-                        to=group_id, messages=media_msgs
-                    ))
-                except Exception as e:
-                    results.append(f"❌ {prod_code} 圖片推送失敗：{e}")
-                    continue
 
         if not raw_po and not files:
             results.append(f"❌ {prod_code} 無 PO 文、無圖片")
@@ -2929,12 +2906,39 @@ def handle_internal_product_po_photo(text: str, line_api) -> str | None:
             results.append(f"❌ {prod_code} 無 PO 文")
         elif not files:
             results.append(f"❌ {prod_code} 無圖片")
+        elif i == 0:
+            # 第一個產品：用 reply 送（免費）
+            first_po = raw_po
+            base = ngrok_url.rstrip("/")
+            for f in files[:4]:
+                if f.suffix.lower() in _IMG_EXTS:
+                    first_image_urls.append(f"{base}/{f.name}")
+        else:
+            # 後續產品：用 push 送（沒辦法，reply 只能用一次）
+            from config import settings
+            from linebot.v3.messaging import PushMessageRequest
+            group_id = settings.LINE_GROUP_ID
+            if group_id:
+                try:
+                    media_msgs = _build_media_messages(prod_code, files, ngrok_url)[:4]
+                    all_msgs = [TextMessage(text=raw_po)] + media_msgs
+                    line_api.push_message(PushMessageRequest(to=group_id, messages=all_msgs[:5]))
+                except Exception as e:
+                    results.append(f"❌ {prod_code} 推送失敗：{e}")
 
+    # 第一個產品用 reply 回傳（免費），錯誤訊息附在後面
+    if first_po:
+        text = first_po
+        if results:
+            text += "\n\n" + "\n".join(results)
+        if first_image_urls:
+            return (text, first_image_urls[:4])
+        return text
     return "\n".join(results) if results else None
 
 
 def _get_ngrok_url() -> str:
-    """取得公開 HTTPS 網址（DuckDNS）"""
+    """取得公開 HTTPS 網址（DuckDNA）"""
     return "https://xmnline.duckdns.org/product-photo"
 
 
