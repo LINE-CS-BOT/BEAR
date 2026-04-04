@@ -5302,6 +5302,9 @@ def _dispatch(
     elif intent == Intent.NOTIFY_REQUEST:
         return handle_notify_request(user_id, text, line_api)
     elif intent == Intent.MACHINE_SIZE:
+        # 含貨號 → 可能是客戶貼 PO 文問庫存，不當台型查詢
+        if _PROD_CODE_RE.search(text):
+            return handle_inventory(user_id, text, line_api)
         # 娃娃機尺寸詢問 → 靜默記錄，不回覆客戶
         issue_store.add(user_id, "machine_size", text)
         return None
