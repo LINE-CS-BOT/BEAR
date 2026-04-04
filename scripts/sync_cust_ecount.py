@@ -122,6 +122,8 @@ def sync(dry_run: bool = False):
         print(f"  ✅ 取得 {len(ecount_custs)} 筆 Ecount 客戶")
 
     phone_index, name_index = _build_ecount_index(ecount_custs)
+    # code → name 反向索引
+    code_to_name = {c["code"]: c["name"] for c in ecount_custs if c.get("name")}
 
     # 2. 讀取 LINE 客戶
     print("\n[2/4] 讀取 customers.db...")
@@ -140,9 +142,14 @@ def sync(dry_run: bool = False):
         phone = _normalize_phone(c.get("phone") or "")
         db_id = c.get("id")
 
-        # 已有 ecount_cust_cd → 跳過
+        # 已有 ecount_cust_cd → 檢查 real_name 是否需要補填
         if c.get("ecount_cust_cd"):
             already.append((name, c["ecount_cust_cd"]))
+            if uid and not c.get("real_name") and not dry_run:
+                ec_name = code_to_name.get(c["ecount_cust_cd"], "")
+                if ec_name:
+                    customer_store.update_real_name(uid, ec_name)
+                    print(f"  [補填] {name or uid} → 真實姓名：{ec_name}")
             continue
 
         ecount_code = None
@@ -170,11 +177,18 @@ def sync(dry_run: bool = False):
 
     updated = 0
     for uid, db_id, name, phone, ecount_code in matched:
-        print(f"  [比對] {name or uid}  →  {ecount_code}")
+        ec_name = code_to_name.get(ecount_code, "")
+        print(f"  [比對] {name or uid}  →  {ecount_code}（{ec_name}）")
         if not dry_run:
             ok = _update_cust_code(uid, db_id, ecount_code)
             if ok:
                 updated += 1
+            # real_name 為空 → 用 Ecount 客戶名填上
+            if ec_name and uid:
+                cust = customer_store.get_by_line_id(uid)
+                if cust and not cust.get("real_name"):
+                    customer_store.update_real_name(uid, ec_name)
+                    print(f"    → 填入真實姓名：{ec_name}")
 
     # 列出未命中的客戶（僅記錄，不建立）
     if to_create:

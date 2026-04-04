@@ -197,15 +197,27 @@ def _notify_sync_failure(task_name: str, error: str):
     ))
     print(f"[sync-fail] 已記錄失敗：{task_name}", flush=True)
 
-# ── 圖片訊息合併緩衝（等待後續文字，最多 N 秒）──────────
+# ── 統一訊息合併緩衝（文字 + 圖片 + 影片，同一 timer）──────────
 import threading as _threading
 
-_IMG_COALESCE_SECS = 6.0          # 等幾秒看有沒有連續文字（必須 > _TXT_COALESCE_SECS=5.0，讓文字先觸發帶走圖片）
+_MSG_COALESCE_SECS = 5.0           # 預設等待秒數
+_MSG_UPLOAD_COALESCE_SECS = 15.0   # 上架指令等待秒數
+_MSG_IMAGE_COALESCE_SECS = 8.0     # 有圖片 / 庫存問句等待秒數
 
 # key: user_id
-# value: {"msg_id": str, "context": "user"|"group", "group_id": str|None, "timer": Timer}
-_img_buffer: dict[str, dict] = {}
-_img_buffer_lock = _threading.Lock()
+# value: {
+#     "lines":        [str],           # 文字訊息
+#     "media":        [{"msg_id": str, "type": str, "after_text": int}],
+#     "context":      "user" | "group",
+#     "group_id":     str | None,
+#     "timer":        threading.Timer,
+#     "reply_token":  str | None,
+#     "quoted_msg_id": str | None,
+# }
+_msg_buffer: dict[str, dict] = {}
+_msg_buffer_lock = _threading.Lock()
+_user_flush_locks: dict[str, _threading.Lock] = {}
+_user_flush_locks_lock = _threading.Lock()
 
 
 # ── 已發送圖片 → 產品代碼對應表（客戶 tag 圖片時查詢）──
@@ -292,106 +304,7 @@ def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
             print(f"[send_reply] push_message 也失敗: {_pe}", flush=True)
 
 
-def _img_buf_flush(user_id: str) -> None:
-    """Timer callback：N 秒後沒有文字跟上，單獨處理圖片"""
-    # 如果有文字正在 buffer 中，不要單獨處理圖片，讓文字 flush 來帶走
-    with _txt_buffer_lock:
-        if user_id in _txt_buffer:
-            return  # 文字 flush 會 pop img_buf
-    with _img_buffer_lock:
-        entry = _img_buffer.pop(user_id, None)
-    if not entry:
-        return   # 已被文字訊息消費
-
-    line_api = _line_api
-    reply_token = entry.get("reply_token")
-
-    if entry["context"] == "group":
-        # flush 時再次確認是否有 upload session（可能在 3 秒後才建立）
-        _up_state = state_manager.get(user_id)
-        if _up_state and _up_state.get("action") == "uploading":
-            # 補進上架 session，不走圖片識別
-            handle_internal_upload_add_media(user_id, entry["msg_id"], "image")
-            _upload_timer_reset(user_id, entry["group_id"], reply_token)
-            return
-        # 內部群 → handle_internal_image
-        reply_text = handle_internal_image(entry["group_id"], entry["msg_id"], line_api)
-        _send_reply(reply_token, entry["group_id"], reply_text, line_api)
-    else:
-        # 1:1 客戶
-        if _in_quiet_hours():
-            queue_store.add(user_id, "image", msg_id=entry["msg_id"])
-            return
-        reply_text = handle_image_product(user_id, entry["msg_id"], line_api)
-        _send_reply(reply_token, user_id, reply_text, line_api)
-
-
-def _img_buf_set(user_id: str, msg_id: str, context: str, group_id: str | None,
-                 reply_token: str | None = None) -> None:
-    """存入緩衝並啟動 timer（支援多張圖片累積）"""
-    # 如果 txt_buffer 已有這個 user 的文字，不啟動 timer
-    # 讓文字 flush 來帶走圖片，避免圖片先被單獨 flush
-    with _txt_buffer_lock:
-        _has_pending_text = user_id in _txt_buffer
-    if _has_pending_text:
-        with _img_buffer_lock:
-            old = _img_buffer.get(user_id)
-            if old:
-                old["timer"].cancel()
-                old_ids = old.get("msg_ids", [old["msg_id"]] if old.get("msg_id") else [])
-                old_ids.append(msg_id)
-                _img_buffer[user_id] = {
-                    "msg_id": old_ids[0], "msg_ids": old_ids, "context": context,
-                    "group_id": group_id, "timer": _threading.Timer(0, lambda: None),
-                    "reply_token": reply_token,
-                }
-            else:
-                _img_buffer[user_id] = {
-                    "msg_id": msg_id, "msg_ids": [msg_id], "context": context,
-                    "group_id": group_id, "timer": _threading.Timer(0, lambda: None),
-                    "reply_token": reply_token,
-                }
-        return  # 不啟動 timer，等文字 flush 帶走
-
-    timer = _threading.Timer(_IMG_COALESCE_SECS, _img_buf_flush, args=(user_id,))
-    timer.daemon = True
-    with _img_buffer_lock:
-        old = _img_buffer.get(user_id)
-        if old:
-            old["timer"].cancel()   # 取消舊 timer（連續圖片更新）
-            # 累積多張圖片
-            old_ids = old.get("msg_ids", [old["msg_id"]] if old.get("msg_id") else [])
-            old_ids.append(msg_id)
-            _img_buffer[user_id] = {
-                "msg_id": old_ids[0], "msg_ids": old_ids, "context": context,
-                "group_id": group_id, "timer": timer,
-                "reply_token": reply_token,
-            }
-        else:
-            _img_buffer[user_id] = {
-                "msg_id": msg_id, "msg_ids": [msg_id], "context": context,
-                "group_id": group_id, "timer": timer,
-                "reply_token": reply_token,
-            }
-    timer.start()
-
-
-def _img_buf_pop(user_id: str) -> dict | None:
-    """文字到達時取出圖片緩衝並取消 timer（若存在）"""
-    with _img_buffer_lock:
-        entry = _img_buffer.pop(user_id, None)
-    if entry:
-        entry["timer"].cancel()
-    return entry
-
-
-# ── 內部群組多媒體緩衝（累積圖片/影片，等 PO 文字跟上）────────────
-_MEDIA_COALESCE_SECS = 15.0
-
-# key: user_id
-# value: {"media": [{"msg_id": str, "type": "image"|"video"}], "group_id": str, "timer": Timer}
-_media_buf: dict[str, dict] = {}
-_media_buf_lock = _threading.Lock()
+# (img_buffer / media_buf removed — merged into _msg_buffer above)
 
 # ── 上架 Session 自動完成 timer（圖片傳完 30 秒無後續自動 finish）────
 _UPLOAD_AUTO_FINISH_SECS = 15.0
@@ -487,171 +400,71 @@ def _upload_timer_cancel(user_id: str) -> None:
             t.cancel()
 
 
-def _media_buf_add(user_id: str, msg_id: str, media_type: str, group_id: str,
-                   reply_token: str | None = None) -> None:
-    """內部群組：累積圖片/影片到緩衝，重置 15 秒 timer"""
-    # 記錄圖片到達時已有幾行文字，用於上架時按順序分配圖片給各 PO文
-    with _txt_buffer_lock:
-        _txt_count = len(_txt_buffer.get(user_id, {}).get("lines", []))
-    with _media_buf_lock:
-        if user_id in _media_buf:
-            _media_buf[user_id]["timer"].cancel()
-            _media_buf[user_id]["media"].append({"msg_id": msg_id, "type": media_type, "after_text": _txt_count})
-            # 保留最新的 reply_token
-            if reply_token:
-                _media_buf[user_id]["reply_token"] = reply_token
-        else:
-            _media_buf[user_id] = {
-                "media":       [{"msg_id": msg_id, "type": media_type, "after_text": _txt_count}],
-                "group_id":    group_id,
-                "reply_token": reply_token,
-            }
-        timer = _threading.Timer(_MEDIA_COALESCE_SECS, _media_buf_flush, args=(user_id,))
-        timer.daemon = True
-        _media_buf[user_id]["timer"] = timer
-    timer.start()
+# (_media_buf_add / _media_buf_pop / _media_buf_flush / _txt_buffer removed — merged into _msg_buffer)
 
 
-def _media_buf_pop(user_id: str) -> dict | None:
-    """文字到達時取出媒體緩衝並取消 timer"""
-    with _media_buf_lock:
-        entry = _media_buf.pop(user_id, None)
-    if entry:
-        entry["timer"].cancel()
-    return entry
-
-
-def _media_buf_flush(user_id: str) -> None:
-    """15 秒後沒有文字跟上：單張圖片 → 商品識別；多張/含影片 → 提示補文字"""
-    with _media_buf_lock:
-        entry = _media_buf.pop(user_id, None)
-    if not entry:
-        return
-    media    = entry["media"]
-    group_id = entry["group_id"]
-
-    # ── 防 race condition：如果 txt_buffer 裡還有待處理的上架指令，
-    #    把媒體塞回去讓 txt_buf_flush 一起處理 ──
-    with _txt_buffer_lock:
-        txt_entry = _txt_buffer.get(user_id)
-        if txt_entry:
-            txt_combined = "\n".join(txt_entry["lines"])
-            if "上架" in txt_combined or "存圖" in txt_combined or "加圖" in txt_combined:
-                # 塞回 media_buf（不設 timer，等 txt_buf_flush pop）
-                with _media_buf_lock:
-                    _media_buf[user_id] = entry
-                    _media_buf[user_id]["timer"] = _threading.Timer(0, lambda: None)
-                print(f"[media-buf] txt_buffer 有上架指令待處理，媒體等合併", flush=True)
-                return
-
-    # ── 如果有「補圖/加圖/存圖」等待中 → 直接處理 ──
-    _st = state_manager.get(user_id)
-    if _st and _st.get("action") == "pending_add_img":
-        _add_code = _st["prod_code"]
-        _add_gid = _st.get("group_id", group_id)
-        state_manager.clear(user_id)
-        ack = handle_internal_add_images(_add_code, media)
-        if ack:
-            _send_reply(entry.get("reply_token"), _add_gid, ack, _line_api)
-        return
-    if _st and _st.get("action") == "pending_save_img":
-        _save_code = _st["prod_code"]
-        _save_gid = _st.get("group_id", group_id)
-        state_manager.clear(user_id)
-        ack = handle_internal_save_images(_save_code, media)
-        if ack:
-            _send_reply(entry.get("reply_token"), _save_gid, ack, _line_api)
-        return
-
-    # ── 如果 upload session 已啟動（txt_buf_flush 先跑完），直接追加 ──
-    if _st and _st.get("action") == "uploading":
-        for m in media:
-            handle_internal_upload_add_media(user_id, m["msg_id"], m["type"])
-        _upload_timer_reset(user_id, group_id, entry.get("reply_token"))
-        print(f"[media-buf] upload session 進行中，媒體已追加", flush=True)
-        return
-
-    line_api = _line_api
-    reply_token = entry.get("reply_token")
-    if len(media) == 1 and media[0]["type"] == "image":
-        # 單張圖片，無文字 → 既有商品識別
-        reply_text = handle_internal_image(user_id, media[0]["msg_id"], line_api)
-    else:
-        n = len(media)
-        reply_text = (
-            f"收到 {n} 個檔案，請補上指令：\n"
-            f"• 上架（圖片 + PO文一起存）\n"
-            f"• 存圖 Z3432（只存圖片）"
-        )
-    _send_reply(reply_token, group_id, reply_text, line_api)
-
-
-# ── 文字訊息合併緩衝（等待連續訊息，5 秒無新訊息才統一處理）────────
-_TXT_COALESCE_SECS = 5.0
-
-# key: user_id
-# value: {"lines": [str], "context": "user"|"group", "group_id": str|None, "timer": Timer}
-_txt_buffer: dict[str, dict] = {}
-_txt_buffer_lock = _threading.Lock()
-_user_flush_locks: dict[str, _threading.Lock] = {}
-_user_flush_locks_lock = _threading.Lock()
-
-
-def _txt_buf_add(user_id: str, text: str, context: str, group_id: str | None,
-                 reply_token: str | None = None, quoted_msg_id: str | None = None) -> None:
+def _msg_buf_add(
+    user_id: str,
+    *,
+    text: str | None = None,
+    media_msg_id: str | None = None,
+    media_type: str | None = None,   # "image" | "video"
+    context: str,
+    group_id: str | None = None,
+    reply_token: str | None = None,
+    quoted_msg_id: str | None = None,
+) -> None:
     """
-    新增一行文字到緩衝，並重置 timer（debounce）。
-    - 一般訊息：5 秒後觸發
-    - 含上架指令（上架/存圖）：延長到 15 秒，等圖片/影片跟上
-    reply_token：最後一則訊息的 reply_token，flush 時優先用 reply_message（不佔月額度）
+    統一訊息緩衝：文字 / 圖片 / 影片都走同一個 buffer + 單一 timer。
+    任何新訊息重置 timer；timer 到期呼叫 _msg_buf_flush。
     """
-    _is_upload_cmd = ("上架" in text or "存圖" in text or "加圖" in text or "存文" in text)
-    # 含庫存查詢關鍵字（問句型）→ 可能有圖片跟上，多等幾秒
-    # 不包含純量詞（個/箱），避免「10個」這種回覆也延長等待
-    _may_have_image = any(k in text for k in ["有嗎", "有沒有", "還有貨", "有貨嗎", "還有嗎"])
-    if _is_upload_cmd:
-        wait_secs = _MEDIA_COALESCE_SECS
-    elif _may_have_image:
-        wait_secs = _IMG_COALESCE_SECS + 1  # 7 秒，比圖片的 6 秒多等 1 秒
-    else:
-        wait_secs = _TXT_COALESCE_SECS
-
-    # 取消圖片 timer（圖片不要單獨處理，等文字一起）
-    with _img_buffer_lock:
-        img_e = _img_buffer.get(user_id)
-        if img_e:
-            img_e["timer"].cancel()
-
-    # 取消媒體 timer（多媒體等文字一起處理）
-    with _media_buf_lock:
-        med_e = _media_buf.get(user_id)
-        if med_e:
-            med_e["timer"].cancel()
-
-    with _txt_buffer_lock:
-        if user_id in _txt_buffer:
-            _txt_buffer[user_id]["timer"].cancel()
-            _txt_buffer[user_id]["lines"].append(text)
-            # 每次更新 reply_token（保留最新的，離過期最遠）
+    with _msg_buffer_lock:
+        existing = _msg_buffer.get(user_id)
+        if existing:
+            existing["timer"].cancel()
+            if text:
+                existing["lines"].append(text)
+            if media_msg_id:
+                _txt_count = len(existing.get("lines", []))
+                existing["media"].append({
+                    "msg_id": media_msg_id,
+                    "type": media_type or "image",
+                    "after_text": _txt_count,
+                })
             if reply_token:
-                _txt_buffer[user_id]["reply_token"] = reply_token
-            all_text = "\n".join(_txt_buffer[user_id]["lines"])
-            if "上架" in all_text or "存圖" in all_text or "加圖" in all_text or "存文" in all_text:
-                wait_secs = _MEDIA_COALESCE_SECS
+                existing["reply_token"] = reply_token
+            if quoted_msg_id:
+                existing["quoted_msg_id"] = quoted_msg_id
         else:
-            _txt_buffer[user_id] = {
-                "lines":       [text],
-                "context":     context,
-                "group_id":    group_id,
-                "reply_token": reply_token,
-                "quoted_msg_id": None,
+            _msg_buffer[user_id] = {
+                "lines":        [text] if text else [],
+                "media":        [{"msg_id": media_msg_id, "type": media_type or "image", "after_text": 0}] if media_msg_id else [],
+                "context":      context,
+                "group_id":     group_id,
+                "reply_token":  reply_token,
+                "quoted_msg_id": quoted_msg_id,
             }
-        # 記錄引用的訊息 ID（客戶引用圖片下單用）
-        if quoted_msg_id:
-            _txt_buffer[user_id]["quoted_msg_id"] = quoted_msg_id
-        timer = _threading.Timer(wait_secs, _txt_buf_flush, args=(user_id,))
+            existing = _msg_buffer[user_id]
+
+        # ── 決定 timer 秒數 ──
+        all_text = "\n".join(existing["lines"])
+        _is_upload_cmd = any(kw in all_text for kw in ("上架", "存圖", "加圖", "存文"))
+        _may_have_image = any(k in all_text for k in ("有嗎", "有沒有", "還有貨", "有貨嗎", "還有嗎"))
+        has_media = bool(existing["media"])
+        has_text = bool(existing["lines"])
+
+        if _is_upload_cmd:
+            wait_secs = _MSG_UPLOAD_COALESCE_SECS
+        elif has_media and not has_text:
+            wait_secs = _MSG_IMAGE_COALESCE_SECS
+        elif _may_have_image:
+            wait_secs = _MSG_IMAGE_COALESCE_SECS
+        else:
+            wait_secs = _MSG_COALESCE_SECS
+
+        timer = _threading.Timer(wait_secs, _msg_buf_flush, args=(user_id,))
         timer.daemon = True
-        _txt_buffer[user_id]["timer"] = timer
+        existing["timer"] = timer
 
     timer.start()
 
@@ -1261,34 +1074,123 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
     )
 
 
-def _txt_buf_flush(user_id: str) -> None:
+def _flush_media_only(
+    user_id: str,
+    entry: dict,
+    _all_media: list,
+    img_e: dict | None,
+    media_e: dict | None,
+) -> None:
+    """無文字、只有媒體時的處理（取代舊 _img_buf_flush + _media_buf_flush）"""
+    context     = entry["context"]
+    group_id    = entry.get("group_id")
+    reply_token = entry.get("reply_token")
+    line_api    = _line_api
+
+    if context == "group":
+        # ── 如果有「補圖/加圖/存圖」等待中 → 直接處理 ──
+        _st = state_manager.get(user_id)
+        if _st and _st.get("action") == "pending_add_img":
+            _add_code = _st["prod_code"]
+            _add_gid = _st.get("group_id", group_id)
+            state_manager.clear(user_id)
+            ack = handle_internal_add_images(_add_code, _all_media)
+            if ack:
+                _send_reply(reply_token, _add_gid, ack, line_api)
+            return
+        if _st and _st.get("action") == "pending_save_img":
+            _save_code = _st["prod_code"]
+            _save_gid = _st.get("group_id", group_id)
+            state_manager.clear(user_id)
+            ack = handle_internal_save_images(_save_code, _all_media)
+            if ack:
+                _send_reply(reply_token, _save_gid, ack, line_api)
+            return
+        # ── upload session 進行中 → 直接追加 ──
+        if _st and _st.get("action") == "uploading":
+            for m in _all_media:
+                handle_internal_upload_add_media(user_id, m["msg_id"], m["type"])
+            _upload_timer_reset(user_id, group_id, reply_token)
+            print(f"[msg-buf] upload session 進行中，媒體已追加", flush=True)
+            return
+        # ── 單張圖片 → 商品識別；多張/含影片 → 提示 ──
+        if len(_all_media) == 1 and _all_media[0]["type"] == "image":
+            reply_text = handle_internal_image(user_id, _all_media[0]["msg_id"], line_api)
+        else:
+            n = len(_all_media)
+            reply_text = (
+                f"收到 {n} 個檔案，請補上指令：\n"
+                f"• 上架（圖片 + PO文一起存）\n"
+                f"• 存圖 Z3432（只存圖片）"
+            )
+        _send_reply(reply_token, group_id, reply_text, line_api)
+    else:
+        # 1:1 客戶
+        if _in_quiet_hours():
+            for m in _all_media:
+                if m["type"] == "image":
+                    queue_store.add(user_id, "image", msg_id=m["msg_id"])
+            return
+        # 只取第一張圖片做商品識別
+        if img_e:
+            reply_text = handle_image_product(user_id, img_e["msg_id"], line_api)
+            _send_reply(reply_token, user_id, reply_text, line_api)
+
+
+def _msg_buf_flush(user_id: str) -> None:
     """per-user 鎖 wrapper：確保同一客戶的 flush 不會並行"""
     with _user_flush_locks_lock:
         if user_id not in _user_flush_locks:
             _user_flush_locks[user_id] = _threading.Lock()
         user_lock = _user_flush_locks[user_id]
     with user_lock:
-        _txt_buf_flush_inner(user_id)
+        _msg_buf_flush_inner(user_id)
+
+# keep old name as alias so inspect.getsource(_txt_buf_flush) still works
+_txt_buf_flush = _msg_buf_flush
 
 
-def _txt_buf_flush_inner(user_id: str) -> None:
+def _msg_buf_flush_inner(user_id: str) -> None:
     """
-    5 秒後觸發：合併所有緩衝文字（+ 圖片若有），統一處理並 push_message 回覆。
+    Timer 到期後觸發：合併所有緩衝文字 + 媒體，統一處理並回覆。
     """
-    with _txt_buffer_lock:
-        entry = _txt_buffer.pop(user_id, None)
+    with _msg_buffer_lock:
+        entry = _msg_buffer.pop(user_id, None)
     if not entry:
         return
 
-    combined       = "\n".join(entry["lines"])
+    combined       = "\n".join(entry["lines"]) if entry["lines"] else ""
     context        = entry["context"]
     group_id       = entry.get("group_id")
     reply_token    = entry.get("reply_token")
     quoted_msg_id  = entry.get("quoted_msg_id")
 
-    # ── 圖片緩衝（1:1）/ 媒體緩衝（內部群）：一起處理 ──────────────────
-    img_e   = _img_buf_pop(user_id)
-    media_e = _media_buf_pop(user_id)
+    # ── 從統一 buffer 建立相容變數（img_e / media_e）──────────────────
+    _all_media = entry.get("media", [])
+    _images    = [m for m in _all_media if m["type"] == "image"]
+    img_e = (
+        {
+            "msg_id":    _images[0]["msg_id"],
+            "msg_ids":   [i["msg_id"] for i in _images],
+            "context":   context,
+            "group_id":  group_id,
+            "reply_token": reply_token,
+        }
+        if _images else None
+    )
+    media_e = (
+        {
+            "media":       _all_media,
+            "group_id":    group_id,
+            "reply_token": reply_token,
+        }
+        if _all_media else None
+    )
+
+    # ── 無文字、只有媒體 → 走「媒體獨立處理」路徑 ──────────────────
+    if not combined and _all_media:
+        _flush_media_only(user_id, entry, _all_media, img_e, media_e)
+        return
 
     line_api = _line_api
 
@@ -1360,11 +1262,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
             if upload_state and upload_state.get("action") == "uploading":
                 if _INTERNAL_UPLOAD_FINISH_RE.match(combined.strip()):
                     _upload_timer_cancel(user_id)
-                    # 修 Bug1：完成前先把 img_buf 中還沒處理的圖片補進 session
-                    _pending_img = _img_buf_pop(user_id)
-                    if _pending_img:
-                        handle_internal_upload_add_media(user_id, _pending_img["msg_id"], "image")
-                    # 補進 media_buf 中等待的圖片/影片
+                    # 補進統一 buffer 中等待的圖片/影片
                     if media_e:
                         for _mi in media_e["media"]:
                             handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
@@ -1400,11 +1298,7 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         _po_part = "\n".join(_rem_lines[:_finish_idx]).strip()
                         if _po_part:
                             handle_internal_upload_text(user_id, _po_part)
-                        # 補進 img_buf 中還沒處理的圖片
-                        _pending_img = _img_buf_pop(user_id)
-                        if _pending_img:
-                            handle_internal_upload_add_media(user_id, _pending_img["msg_id"], "image")
-                        # 補進 media_buf — 利用 after_text 按順序分配給各 PO文組
+                        # 補進統一 buffer 中的媒體 — 利用 after_text 按順序分配給各 PO文組
                         if media_e:
                             _raw_lines = entry.get("lines", [])
                             # 找出每行原始文字裡含貨號的行號（在 raw_lines 中的 index）
@@ -1738,8 +1632,16 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                         _send_reply(reply_token, user_id, reply_text, line_api)
                         return
                     else:
-                        # 意圖不明 → 依庫存決定走購物車或缺貨/預購流程
-                        # 統一走 awaiting_quantity → 購物車，不分調貨/預購
+                        # 意圖不明 → 交給 Claude 指令引擎判斷
+                        from services.claude_ai import ask_claude_command as _acc_img
+                        _cmd = _acc_img(combined, user_id=user_id,
+                                        product_code=img_pc, product_name=_un)
+                        if _cmd:
+                            _cmd_result = _execute_claude_command(user_id, _cmd, line_api)
+                            if _cmd_result:
+                                _send_reply(reply_token, user_id, _cmd_result, line_api)
+                                return
+                        # Claude 也判斷不了 → fallback 到 awaiting_quantity
                         state_manager.set(user_id, {
                             "action":    "awaiting_quantity",
                             "prod_cd":   img_pc,
@@ -1751,12 +1653,10 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                             reply_text = tone.preorder_ask_qty(_un)
                             _send_reply(reply_token, user_id, reply_text, line_api)
                             reply_text = None
-                            print(f"[txt-buf] 圖片+文字 → 預購 {img_pc}", flush=True)
                         else:
                             reply_text = tone.out_of_stock_ask_qty(_un)
                             _send_reply(reply_token, user_id, reply_text, line_api)
                             reply_text = None
-                            print(f"[txt-buf] 圖片+文字 → 缺貨 {img_pc}，走購物車", flush=True)
                         current_state = state_manager.get(user_id)
 
                 elif img_e and not current_state:
@@ -2449,7 +2349,7 @@ def _startup_verify():
     except Exception as e:
         checks.append(f"❌ Ecount Z+英文過濾 ({e})")
     try:
-        src2 = inspect.getsource(_txt_buf_flush)
+        src2 = inspect.getsource(_msg_buf_flush_inner)
         checks.append("✅ 內部群 try/except" if "內部群處理例外" in src2 else "❌ 內部群 try/except（未套用）")
         checks.append("✅ ambiguous dispatch" if "handle_ambiguous_resolve" in src2 else "❌ ambiguous dispatch（未套用）")
     except Exception as e:
@@ -2493,11 +2393,13 @@ _TXT_BUF_PERSIST_PATH = _BASE_DIR / "data" / "txt_buffer_pending.json"
 
 
 def _persist_txt_buffer():
-    """shutdown 時把未處理的 _txt_buffer 存到 JSON"""
+    """shutdown 時把未處理的 _msg_buffer 存到 JSON（只存文字部分，媒體無法序列化）"""
     import json as _json
-    with _txt_buffer_lock:
+    with _msg_buffer_lock:
         pending = {}
-        for uid, entry in _txt_buffer.items():
+        for uid, entry in _msg_buffer.items():
+            if not entry.get("lines"):
+                continue  # 只有媒體、沒文字 → 不持久化
             try:
                 entry["timer"].cancel()
             except Exception:
@@ -2517,7 +2419,7 @@ def _persist_txt_buffer():
 
 
 def _restore_txt_buffer():
-    """startup 時恢復未處理的 _txt_buffer 並立即 flush"""
+    """startup 時恢復未處理的 _msg_buffer 並立即 flush"""
     import json as _json
     if not _TXT_BUF_PERSIST_PATH.exists():
         return
@@ -2528,21 +2430,19 @@ def _restore_txt_buffer():
             return
         print(f"[startup] 恢復 {len(pending)} 筆未處理的文字 buffer", flush=True)
         for uid, entry in pending.items():
-            # 直接 flush，不再等 5 秒
-            combined = "\n".join(entry["lines"])
-            context = entry["context"]
-            group_id = entry.get("group_id")
             # 塞回 buffer 然後立即 flush
-            with _txt_buffer_lock:
-                _txt_buffer[uid] = {
+            with _msg_buffer_lock:
+                _msg_buffer[uid] = {
                     "lines":       entry["lines"],
-                    "context":     context,
-                    "group_id":    group_id,
+                    "media":       [],
+                    "context":     entry["context"],
+                    "group_id":    entry.get("group_id"),
                     "reply_token": None,  # reload 後 token 已過期
+                    "quoted_msg_id": None,
                 }
                 # 不設 timer，直接啟動 flush
-                _txt_buffer[uid]["timer"] = _threading.Timer(0, lambda: None)
-            _threading.Thread(target=_txt_buf_flush, args=(uid,), daemon=True).start()
+                _msg_buffer[uid]["timer"] = _threading.Timer(0, lambda: None)
+            _threading.Thread(target=_msg_buf_flush, args=(uid,), daemon=True).start()
     except Exception as e:
         print(f"[startup] buffer 恢復失敗: {e}", flush=True)
 
@@ -4301,7 +4201,8 @@ def on_message(event: MessageEvent):
             if _up_st and _up_st.get("action") == "uploading":
                 _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
                 print(f"[on_msg] 上架中收到文字，跳過 quick_reply: {text[:30]!r}", flush=True)
-                _txt_buf_add(user_id, text, "group", event.source.group_id,
+                _msg_buf_add(user_id, text=text, context="group",
+                             group_id=event.source.group_id,
                              reply_token=event.reply_token)
                 return
             # 標籤指令：直接回覆，不走 buffer
@@ -4314,14 +4215,15 @@ def on_message(event: MessageEvent):
             _SKIP_QUICK_KW = ("上架", "存圖", "加圖", "存文")
             _skip_quick = any(kw in text for kw in _SKIP_QUICK_KW)
             if not _skip_quick:
-                with _txt_buffer_lock:
-                    _pending = _txt_buffer.get(user_id)
+                with _msg_buffer_lock:
+                    _pending = _msg_buffer.get(user_id)
                     if _pending:
                         _pending_text = "\n".join(_pending["lines"])
                         _skip_quick = any(kw in _pending_text for kw in _SKIP_QUICK_KW)
             if _skip_quick:
                 print(f"[on_msg] 含上架指令，跳過 quick_reply: {text[:30]!r}", flush=True)
-                _txt_buf_add(user_id, text, "group", event.source.group_id,
+                _msg_buf_add(user_id, text=text, context="group",
+                             group_id=event.source.group_id,
                              reply_token=event.reply_token)
                 return
             # 簡單查詢指令：直接 reply 不走 buffer（避免 token 過期）
@@ -4346,7 +4248,8 @@ def on_message(event: MessageEvent):
                             _quick_reply, line_api)
                 return
             # 其餘走文字緩衝，5 秒後統一處理
-            _txt_buf_add(user_id, text, "group", event.source.group_id,
+            _msg_buf_add(user_id, text=text, context="group",
+                         group_id=event.source.group_id,
                          reply_token=event.reply_token)
             return
 
@@ -4397,7 +4300,8 @@ def on_message(event: MessageEvent):
             return
 
         # ── 1:1 客戶 → 存文字緩衝，5 秒後統一處理（含圖片合併）────────
-        _txt_buf_add(user_id, text, "user", None, reply_token=event.reply_token,
+        _msg_buf_add(user_id, text=text, context="user",
+                     reply_token=event.reply_token,
                      quoted_msg_id=quoted_msg_id)
 
 
@@ -4421,20 +4325,22 @@ def on_image_message(event: MessageEvent):
         # 批次上架 Session 進行中
         _st = state_manager.get(user_id)
         if _st and _st.get("action") == "uploading":
-            # 若有文字正在 buffer 中（新 PO文即將到來），圖片先存 media_buf
+            # 若有文字正在 buffer 中（新 PO文即將到來），圖片先存 buffer
             # 等文字 flush 時再一起分配，避免圖片被歸到錯誤的 PO文組
-            with _txt_buffer_lock:
-                _has_pending_text = user_id in _txt_buffer
+            with _msg_buffer_lock:
+                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
-                _media_buf_add(user_id, message_id, "image", event.source.group_id,
-                               reply_token=event.reply_token)
+                _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
+                             context="group", group_id=event.source.group_id,
+                             reply_token=event.reply_token)
             else:
                 handle_internal_upload_add_media(user_id, message_id, "image")
                 _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
-        # 一般模式 → 存媒體緩衝，等文字跟上；15s timer 到期再單獨處理
-        _media_buf_add(user_id, message_id, "image", event.source.group_id,
-                       reply_token=event.reply_token)
+        # 一般模式 → 存媒體緩衝，等文字跟上；timer 到期再單獨處理
+        _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
+                     context="group", group_id=event.source.group_id,
+                     reply_token=event.reply_token)
         return
 
     # ── 總公司群圖片：上架 Session 進行中 → 追加到 state ──
@@ -4443,11 +4349,12 @@ def on_image_message(event: MessageEvent):
             and event.source.group_id == settings.LINE_GROUP_ID_HQ):
         _st = state_manager.get(user_id)
         if _st and _st.get("action") == "uploading":
-            with _txt_buffer_lock:
-                _has_pending_text = user_id in _txt_buffer
+            with _msg_buffer_lock:
+                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
-                _media_buf_add(user_id, message_id, "image", event.source.group_id,
-                               reply_token=event.reply_token)
+                _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
+                             context="group", group_id=event.source.group_id,
+                             reply_token=event.reply_token)
             else:
                 handle_internal_upload_add_media(user_id, message_id, "image")
                 _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
@@ -4486,7 +4393,8 @@ def on_image_message(event: MessageEvent):
         return
 
     # 存入緩衝，等待後續文字（如「5個」「有貨嗎」）
-    _img_buf_set(user_id, message_id, "user", None, reply_token=event.reply_token)
+    _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
+                 context="user", reply_token=event.reply_token)
 
 
 @_webhook_handler.add(MessageEvent, message=VideoMessageContent)
@@ -4504,17 +4412,19 @@ def on_video_message(event: MessageEvent):
         # 批次上架 Session 進行中
         _st = state_manager.get(user_id)
         if _st and _st.get("action") == "uploading":
-            with _txt_buffer_lock:
-                _has_pending_text = user_id in _txt_buffer
+            with _msg_buffer_lock:
+                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
-                _media_buf_add(user_id, event.message.id, "video", event.source.group_id,
-                               reply_token=event.reply_token)
+                _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
+                             context="group", group_id=event.source.group_id,
+                             reply_token=event.reply_token)
             else:
                 handle_internal_upload_add_media(user_id, event.message.id, "video")
                 _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
-        _media_buf_add(user_id, event.message.id, "video", event.source.group_id,
-                       reply_token=event.reply_token)
+        _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
+                     context="group", group_id=event.source.group_id,
+                     reply_token=event.reply_token)
         return
 
     # ── 總公司群影片：上架 Session 進行中 → 追加到 state ──
@@ -4523,11 +4433,12 @@ def on_video_message(event: MessageEvent):
             and event.source.group_id == settings.LINE_GROUP_ID_HQ):
         _st = state_manager.get(user_id)
         if _st and _st.get("action") == "uploading":
-            with _txt_buffer_lock:
-                _has_pending_text = user_id in _txt_buffer
+            with _msg_buffer_lock:
+                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
-                _media_buf_add(user_id, event.message.id, "video", event.source.group_id,
-                               reply_token=event.reply_token)
+                _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
+                             context="group", group_id=event.source.group_id,
+                             reply_token=event.reply_token)
             else:
                 handle_internal_upload_add_media(user_id, event.message.id, "video")
                 _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
@@ -5266,6 +5177,63 @@ def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
     return reply
 
 
+def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
+    """執行 Claude 指令引擎回傳的結構化指令"""
+    action = cmd.get("action")
+
+    if action == "add_cart":
+        code = cmd.get("code", "").upper()
+        qty = int(cmd.get("qty", 1))
+        note = cmd.get("note", "")
+        if not code:
+            return None
+        from services.ecount import ecount_client as _ec_cmd
+        item = _ec_cmd.get_product_cache_item(code)
+        name = (item.get("name") if item else "") or code
+        from storage import cart as _cart_cmd
+        _cart_cmd.add_item(user_id, code, name, qty, note=note)
+        print(f"[claude-cmd] add_cart: {code} x{qty} note={note!r}", flush=True)
+        return tone.cart_item_added(_cart_cmd.get_cart(user_id))
+
+    elif action == "ask_quantity":
+        code = cmd.get("code", "").upper()
+        if not code:
+            return None
+        from services.ecount import ecount_client as _ec_cmd2
+        item = _ec_cmd2.get_product_cache_item(code)
+        name = (item.get("name") if item else "") or code
+        from storage.state import state_manager as _sm_cmd
+        _sm_cmd.set(user_id, {
+            "action": "awaiting_quantity",
+            "prod_cd": code,
+            "prod_name": name,
+        })
+        print(f"[claude-cmd] ask_quantity: {code}", flush=True)
+        return tone.ask_quantity(name)
+
+    elif action == "checkout":
+        from storage import cart as _cart_co
+        if _cart_co.is_empty(user_id):
+            return None
+        print(f"[claude-cmd] checkout", flush=True)
+        return handle_checkout(user_id, line_api)
+
+    elif action == "reply":
+        reply_text = cmd.get("text", "")
+        if reply_text:
+            print(f"[claude-cmd] reply: {reply_text[:30]!r}", flush=True)
+            return reply_text
+        return None
+
+    elif action == "escalate":
+        reason = cmd.get("reason", "")
+        issue_store.add(user_id, "claude_escalate", f"Claude 轉真人：{reason}")
+        print(f"[claude-cmd] escalate: {reason}", flush=True)
+        return "我幫您確認一下，稍後回覆您"
+
+    return None
+
+
 def _dispatch(
     user_id: str, text: str, intent: Intent, line_api: MessagingApi
 ) -> str:
@@ -5382,15 +5350,21 @@ def _dispatch(
             if any(k in text for k in _note_kw) and not any(k in text for k in _cancel_kw):
                 _cart_chk.set_note(user_id, text.strip())
                 return f"好的，已備註：{text.strip()}"
-        # 先問 Claude，失敗才轉真人
-        from services.claude_ai import ask_claude_text
+        # 先問 Claude 指令引擎，再 fallback 到文字回覆
+        from services.claude_ai import ask_claude_command, ask_claude_text
+        _cmd = ask_claude_command(text, user_id=user_id)
+        if _cmd:
+            _cmd_result = _execute_claude_command(user_id, _cmd, line_api)
+            if _cmd_result:
+                return _cmd_result
+
+        # Claude 指令引擎沒回應 → fallback 到文字回覆
         _claude_reply = ask_claude_text(text, user_id=user_id)
         if _claude_reply:
             # Claude 回覆裡的產品代碼
             _claude_codes_raw = _PROD_CODE_RE.findall(_claude_reply)
             _claude_codes = list(dict.fromkeys(c.upper() for c in _claude_codes_raw))
             if len(_claude_codes) == 1:
-                # 單一產品 → 設 state 等數量
                 _cc = _claude_codes[0]
                 from services.ecount import ecount_client as _ec_cl
                 _cl_item = _ec_cl.get_product_cache_item(_cc)
@@ -5403,20 +5377,13 @@ def _dispatch(
                 })
                 print(f"[claude-ai] 設 awaiting_quantity: {_cc} ({_cl_name})", flush=True)
             elif len(_claude_codes) > 1:
-                # 多個產品 → 不設 state，讓客戶選
                 print(f"[claude-ai] 回覆含多個產品 {_claude_codes}，不設 state", flush=True)
-            # 有貨號 → 附上產品圖片
             if _claude_codes:
                 _img_urls = _get_product_image_urls(_claude_codes)
                 if _img_urls:
                     return (_claude_reply, _img_urls)
-            # Claude 回覆確認語（記下、沒問題）→ 登記待處理，讓真人確認
-            _claude_noted_kw = ["記下", "記住", "沒問題", "已記", "幫您記", "幫你記"]
-            if any(k in _claude_reply for k in _claude_noted_kw):
-                issue_store.add(user_id, "claude_noted", f"Claude 回覆記下了：{text[:80]}")
-                print(f"[claude-ai] 回覆含確認語，記待處理: {text[:30]!r}", flush=True)
 
-            # 客戶語意含取消/延後/讓給別人 → 登記待處理
+            # 客戶語意含取消/延後 → 登記待處理
             _cancel_defer_kw = ["先給別人", "給其他客人", "先讓給", "不用留", "延後", "有空再",
                                 "有時間再", "下次再", "先不要", "暫時不", "改天再", "先取消"]
             if any(k in text for k in _cancel_defer_kw):
