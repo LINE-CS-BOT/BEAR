@@ -74,6 +74,7 @@ from handlers.internal import (
     handle_internal_customer_orders,
     handle_internal_showcase_push,
     handle_internal_product_photo,
+    handle_internal_product_po_photo,
     handle_internal_label_queue,
     handle_internal_cart,
     _NEW_PROD_TRIGGER_RE,
@@ -543,8 +544,26 @@ def _media_buf_flush(user_id: str) -> None:
                 print(f"[media-buf] txt_buffer 有上架指令待處理，媒體等合併", flush=True)
                 return
 
-    # ── 如果 upload session 已啟動（txt_buf_flush 先跑完），直接追加 ──
+    # ── 如果有「補圖/加圖/存圖」等待中 → 直接處理 ──
     _st = state_manager.get(user_id)
+    if _st and _st.get("action") == "pending_add_img":
+        _add_code = _st["prod_code"]
+        _add_gid = _st.get("group_id", group_id)
+        state_manager.clear(user_id)
+        ack = handle_internal_add_images(_add_code, media)
+        if ack:
+            _send_reply(entry.get("reply_token"), _add_gid, ack, _line_api)
+        return
+    if _st and _st.get("action") == "pending_save_img":
+        _save_code = _st["prod_code"]
+        _save_gid = _st.get("group_id", group_id)
+        state_manager.clear(user_id)
+        ack = handle_internal_save_images(_save_code, media)
+        if ack:
+            _send_reply(entry.get("reply_token"), _save_gid, ack, _line_api)
+        return
+
+    # ── 如果 upload session 已啟動（txt_buf_flush 先跑完），直接追加 ──
     if _st and _st.get("action") == "uploading":
         for m in media:
             handle_internal_upload_add_media(user_id, m["msg_id"], m["type"])
@@ -1231,6 +1250,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or handle_internal_unclaimed(combined, group_id)
         or handle_internal_customer_orders(combined, group_id)
         or handle_internal_consumable(combined, group_id)
+        or handle_internal_product_po_photo(combined, line_api)
         or handle_internal_product_photo(combined, line_api)
         or handle_internal_spec_query(combined)
         or handle_internal_product_info(combined, group_id)
@@ -1448,6 +1468,15 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                 if ack:
                     _send_group_ack(ack)
                 return
+            elif _save_img_m and not media_e:
+                _save_code = _save_img_m.group(1).upper()
+                state_manager.set(user_id, {
+                    "action": "pending_save_img",
+                    "prod_code": _save_code,
+                    "group_id": group_id,
+                })
+                _send_group_ack(f"📷 等待 {_save_code} 的圖片，請傳圖...")
+                return
 
             # ── 加圖 Z3432（保留舊圖，追加新圖片/影片）──────────────────
             _add_img_m = _INTERNAL_ADD_IMG_RE.search(combined)
@@ -1456,6 +1485,16 @@ def _txt_buf_flush_inner(user_id: str) -> None:
                     _add_img_m.group(1).upper(), media_e["media"])
                 if ack:
                     _send_group_ack(ack)
+                return
+            elif _add_img_m and not media_e:
+                # 文字先到，圖片還沒到 → 存 state 等圖片
+                _add_code = _add_img_m.group(1).upper()
+                state_manager.set(user_id, {
+                    "action": "pending_add_img",
+                    "prod_code": _add_code,
+                    "group_id": group_id,
+                })
+                _send_group_ack(f"📷 等待 {_add_code} 的圖片，請傳圖...")
                 return
 
             # ── 存文（純文字 → PO文.txt）────────────────────────────────
