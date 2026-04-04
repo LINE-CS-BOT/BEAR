@@ -446,6 +446,9 @@ def _msg_buf_add(
             }
             existing = _msg_buffer[user_id]
 
+        _type = "text" if text else f"media({media_type})"
+        print(f"[msg-buf-add] user={user_id[:10]}... +{_type} lines={len(existing['lines'])} media={len(existing['media'])} wait={wait_secs if 'wait_secs' in dir() else '?'}s", flush=True)
+
         # ── 決定 timer 秒數 ──
         all_text = "\n".join(existing["lines"])
         _is_upload_cmd = any(kw in all_text for kw in ("上架", "存圖", "加圖", "存文"))
@@ -1132,9 +1135,32 @@ def _flush_media_only(
                     queue_store.add(user_id, "image", msg_id=m["msg_id"])
             return
         # 只取第一張圖片做商品識別
+        # 先辨識，存結果到 state，再等 5 秒看有沒有文字跟上
         if img_e:
-            reply_text = handle_image_product(user_id, img_e["msg_id"], line_api)
-            _send_reply(reply_token, user_id, reply_text, line_api)
+            _img_mid = img_e.get("msg_id")
+            _identified = _img_identify_from_buf(_img_mid) if _img_mid else None
+            if _identified:
+                print(f"[msg-buf] 圖片先到，辨識出 {_identified}，等文字 5 秒", flush=True)
+                state_manager.set(user_id, {
+                    "action":   "image_waiting_text",
+                    "prod_cd":  _identified,
+                    "msg_id":   _img_mid,
+                    "reply_token": reply_token,
+                })
+                # 5 秒後如果沒文字，直接回覆
+                def _delayed_image_reply(_uid=user_id, _mid=_img_mid, _rt=reply_token):
+                    _st = state_manager.get(_uid)
+                    if _st and _st.get("action") == "image_waiting_text":
+                        state_manager.clear(_uid)
+                        _reply = handle_image_product(_uid, _mid, _line_api)
+                        _send_reply(_rt, _uid, _reply, _line_api)
+                _t = _threading.Timer(5.0, _delayed_image_reply)
+                _t.daemon = True
+                _t.start()
+            else:
+                # 辨識失敗 → 直接走完整流程（含 Claude 圖片辨識）
+                reply_text = handle_image_product(user_id, img_e["msg_id"], line_api)
+                _send_reply(reply_token, user_id, reply_text, line_api)
 
 
 def _msg_buf_flush(user_id: str) -> None:
@@ -1186,6 +1212,8 @@ def _msg_buf_flush_inner(user_id: str) -> None:
         }
         if _all_media else None
     )
+
+    print(f"[msg-buf-flush] user={user_id[:10]}... text={len(entry['lines'])}行 media={len(_all_media)}個 img_e={'有' if img_e else '無'} context={context}", flush=True)
 
     # ── 無文字、只有媒體 → 走「媒體獨立處理」路徑 ──────────────────
     if not combined and _all_media:
@@ -1659,7 +1687,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             reply_text = None
                         current_state = state_manager.get(user_id)
 
-                elif img_e and not current_state:
+                elif img_e:
+                    # 有新圖片但辨識失敗 → 清掉舊 state，用 Claude 辨識
+                    if current_state:
+                        state_manager.clear(user_id)
+                        current_state = None
+                        print(f"[txt-buf] 有新圖片，清掉舊 state", flush=True)
                     print("[txt-buf] 圖片+文字 → 1:1，圖片識別失敗，嘗試 Claude", flush=True)
                     # 嘗試用 Claude 辨識圖片（附上 OCR 結果作為提示）
                     from services.claude_ai import ask_claude_image
@@ -1711,6 +1744,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             # Claude 也辨識不出貨號 → 靜默，記待處理
                             issue_store.add(user_id, "image_query", f"（圖片+文字，Claude 無法辨識）{combined[:30]}")
                             print(f"[claude-ai] 圖片無貨號，靜默記待處理", flush=True)
+                        # Claude 回覆含「確認」「稍後」→ 登記待處理 + 清掉 awaiting_quantity
+                        _unsure_img_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍後", "查一下"]
+                        if _claude_img_reply and any(k in _claude_img_reply for k in _unsure_img_kw):
+                            state_manager.clear(user_id)  # 不該同時等數量又說幫確認
+                            issue_store.add(user_id, "claude_unsure", f"圖片+文字需確認：{combined[:50]}")
+                            print(f"[claude-ai] 圖片回覆含確認語，清 state + 記待處理", flush=True)
                         from services.claude_ai import add_chat_history
                         add_chat_history(user_id, "bot", _claude_img_reply)
                         return
@@ -1727,6 +1766,23 @@ def _msg_buf_flush_inner(user_id: str) -> None:
 
                 if is_payment_message(combined):
                     reply_text = handle_payment(user_id, combined)
+                elif current_state and current_state.get("action") == "image_waiting_text":
+                    # 圖片先到已辨識，文字後到 → 合併處理
+                    _iwt_code = current_state["prod_cd"]
+                    state_manager.clear(user_id)
+                    print(f"[msg-buf] image_waiting_text + 文字到了，產品={_iwt_code} 文字={combined[:30]!r}", flush=True)
+                    from services.ecount import ecount_client as _ec_iwt
+                    _iwt_item = _ec_iwt.lookup(_iwt_code)
+                    _iwt_name = (_iwt_item.get("name") if _iwt_item else "") or _iwt_code
+                    # 交給 Claude 指令引擎判斷
+                    from services.claude_ai import ask_claude_command as _acc_iwt
+                    _iwt_cmd = _acc_iwt(combined, user_id=user_id,
+                                        product_code=_iwt_code, product_name=_iwt_name)
+                    if _iwt_cmd:
+                        reply_text = _execute_claude_command(user_id, _iwt_cmd, line_api)
+                    if not reply_text:
+                        # Claude 指令引擎沒回應 → 用產品資訊回覆
+                        reply_text = handle_image_product(user_id, current_state.get("msg_id", ""), line_api)
                 elif current_state:
                     reply_text = _handle_stateful(user_id, combined, current_state, line_api)
                     if reply_text is None:
