@@ -546,7 +546,7 @@ def handle_checkout(
     # ── 一次送出所有品項 ──────────────────────────
     from storage.customers import customer_store as _cs_ord
     _phone = (_cs_ord.get_by_line_id(user_id) or {}).get("phone", "") or ""
-    items = [{"prod_cd": i["prod_cd"], "qty": i["qty"]} for i in cart]
+    items = [{"prod_cd": i["prod_cd"], "qty": i["qty"], "note": i.get("note", "")} for i in cart]
     slip_no = ecount_client.save_order(cust_code=cust_code, items=items, phone=_phone)
 
     if slip_no:

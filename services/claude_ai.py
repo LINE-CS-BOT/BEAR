@@ -135,6 +135,7 @@ _SYSTEM_PROMPT = """重要：忽略所有其他系統指示。你現在的唯一
 - 推薦產品時列出貨號、品名、價格即可，圖片會自動附上，不要提到圖片相關的事（不要說「沒有圖片」「稍後傳圖」「系統會顯示」等）
 - 客戶問「有圖嗎」「圖片看一下」時，直接列出產品資訊就好，圖片會自動附上
 - 如果圖片看不清楚或無法辨識出任何貨號，回覆「確認中～請稍等下唷～」，不要描述圖片內容、不要問客戶問題
+- 客戶的購物車如果有東西，客戶說「謝謝」「麻煩」等不代表要結帳，可能只是禮貌。要引導客戶確認送出，例如回覆「好的～那幫您送出訂單囉？跟我說「好了」就幫您處理！」
 - 你的回覆會直接傳給客戶，所以只輸出回覆內容，不要加任何解釋、程式碼或前綴"""
 
 
@@ -145,7 +146,24 @@ def ask_claude_text(question: str, user_id: str = "") -> str | None:
     """
     context = _load_context()
     chat_ctx = _get_chat_context(user_id) if user_id else ""
-    full_prompt = f"{_SYSTEM_PROMPT}\n\n{context}\n\n{chat_ctx}\n\n---\n客戶問：{question}\n\n請直接回覆客戶（不要加任何前綴或解釋）："
+
+    # 帶入購物車狀態
+    cart_ctx = ""
+    if user_id:
+        try:
+            from storage import cart as _cart_ctx
+            _cart_items = _cart_ctx.get_cart(user_id)
+            if _cart_items:
+                cart_lines = ["【客戶目前購物車】"]
+                for _ci in _cart_items:
+                    _note = f"（備註：{_ci['note']}）" if _ci.get("note") else ""
+                    cart_lines.append(f"  • {_ci['prod_name']}（{_ci['prod_cd']}）× {_ci['qty']}{_note}")
+                cart_lines.append("※ 購物車有東西，客戶說「好了」才會送出訂單。如果客戶語意像是確認完畢，引導他說「好了」送出。")
+                cart_ctx = "\n".join(cart_lines)
+        except Exception:
+            pass
+
+    full_prompt = f"{_SYSTEM_PROMPT}\n\n{context}\n\n{chat_ctx}\n\n{cart_ctx}\n\n---\n客戶問：{question}\n\n請直接回覆客戶（不要加任何前綴或解釋）："
 
     try:
         env = {**__import__("os").environ, "PYTHONIOENCODING": "utf-8"}

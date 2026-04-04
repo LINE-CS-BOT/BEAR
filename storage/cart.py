@@ -53,7 +53,7 @@ def _load() -> None:
 _load()
 
 
-def add_item(user_id: str, prod_cd: str, prod_name: str, qty: int) -> list[dict]:
+def add_item(user_id: str, prod_cd: str, prod_name: str, qty: int, note: str = "") -> list[dict]:
     """加入品項（相同 prod_cd 則累加數量），回傳目前購物車"""
     prod_cd = prod_cd.upper()
     with _lock:
@@ -61,13 +61,26 @@ def add_item(user_id: str, prod_cd: str, prod_name: str, qty: int) -> list[dict]
         for item in cart:
             if item["prod_cd"].upper() == prod_cd:
                 item["qty"] += qty
+                if note:
+                    item["note"] = note
                 _cart_timestamps[user_id] = time.time()
                 _save()
                 return list(cart)
-        cart.append({"prod_cd": prod_cd, "prod_name": prod_name, "qty": qty})
+        cart.append({"prod_cd": prod_cd, "prod_name": prod_name, "qty": qty, "note": note})
         _cart_timestamps[user_id] = time.time()
         _save()
         return list(cart)
+
+
+def set_note(user_id: str, note: str) -> bool:
+    """替最後一個品項設定備註，回傳是否成功"""
+    with _lock:
+        cart = _carts.get(user_id, [])
+        if not cart:
+            return False
+        cart[-1]["note"] = note
+        _save()
+        return True
 
 
 def get_cart(user_id: str) -> list[dict]:
