@@ -405,7 +405,8 @@ def cart_item_added(cart: list[dict]) -> str:
     """加入品項後顯示目前購物車，並詢問是否繼續"""
     lines = ["好的！目前清單："]
     for item in cart:
-        lines.append(f"  • {item['prod_name']} × {item['qty']}")
+        code = item.get('prod_cd', '')
+        lines.append(f"  • {item['prod_name']}（{code}）× {item['qty']}")
     lines.append("")
     lines.append("還有其他要訂的嗎？如果好了就跟我說幫你送出唷✉️")
     return "\n".join(lines)

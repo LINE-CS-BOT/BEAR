@@ -5263,10 +5263,6 @@ def _dispatch(
     elif intent == Intent.BANK_ACCOUNT:
         return f"匯款資訊如下：\n{tone._get_bank_info()}"
     elif intent == Intent.CONFIRMATION:
-        # 購物車有東西 → 視為確認下單
-        from storage import cart as cart_store
-        if not cart_store.is_empty(user_id):
-            return handle_checkout(user_id, line_api)
         # 只有真正的感謝語才回覆，純確認詞（好的/了解/收到）靜默不回
         _THANKS_KW = ["謝謝", "感謝", "感恩", "辛苦了", "謝啦", "謝了", "多謝"]
         if any(kw in text for kw in _THANKS_KW):
@@ -5335,10 +5331,12 @@ def _dispatch(
             from handlers.ordering import extract_quantity as _eq_cart
             if _eq_cart(text):
                 return f"請問要訂什麼商品呢？或是跟我說「好了」幫您送出目前的訂單唷"
-            # 語意暗示「就這樣」→ 自動結帳
-            _done_kw = ["就先", "先這", "就好", "夠了", "可以了", "就這", "這樣就", "不用了"]
-            if any(kw in text for kw in _done_kw):
-                return handle_checkout(user_id, line_api)
+            # 備註性質的訊息 → 存到最後一個品項的備註
+            _note_kw = ["麻煩", "備註", "幫我", "請幫", "分配", "混裝", "平均",
+                        "顏色", "款式", "不要", "要", "換", "配"]
+            if any(k in text for k in _note_kw) and not any(k in text for k in _cancel_kw):
+                _cart_chk.set_note(user_id, text.strip())
+                return f"好的，已備註：{text.strip()}"
         # 先問 Claude，失敗才轉真人
         from services.claude_ai import ask_claude_text
         _claude_reply = ask_claude_text(text, user_id=user_id)
