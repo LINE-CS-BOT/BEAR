@@ -2988,17 +2988,16 @@ async def shop_products():
         machine = spec.get("machine", [])
         machine_label = "、".join(machine) if machine else "通用"
 
-        # 找第一張圖片
-        image_url = ""
+        # 找第一張圖片（列表頁用，點進去再載入全部）
+        image = ""
         if media_dir.exists():
-            for ext in [".jpg", ".jpeg", ".png"]:
-                # 優先找 A 圖
-                for suffix in ["A", "", "B"]:
+            for suffix in ["A", "", "B"]:
+                for ext in [".jpg", ".jpeg", ".png"]:
                     f = media_dir / f"{code}{suffix}{ext}"
                     if f.exists():
-                        image_url = f"{base_url}/{f.name}"
+                        image = f"{base_url}/{f.name}"
                         break
-                if image_url:
+                if image:
                     break
 
         products.append({
@@ -3006,23 +3005,52 @@ async def shop_products():
             "name": name,
             "price": int(price) if price else 0,
             "unit": unit,
+            "image": image,
             "machine": machine_label,
-            "image": image_url,
+            "size": spec.get("size", ""),
+            "weight": spec.get("weight", ""),
         })
 
-    # 按台型分組
-    groups = {}
+    # 加上品類標籤
+    from services.analytics import _classify
+    _CATEGORY_ORDER = [
+        "藍牙耳機", "音響", "行動電源", "電腦周邊", "手錶",
+        "遙控車/飛機", "合金模型", "雷射/燈光",
+        "三麗鷗/IP", "娃娃/絨毛", "玩具", "盲盒",
+        "涼風扇", "打火機/噴火槍", "工具類", "釣具",
+        "生活用品", "美容/保養", "車載用品",
+        "耗材", "零食飲料", "飾品配件", "節慶商品",
+        "暖風/保暖", "香薰", "其他",
+    ]
+    _cat_rank = {c: i for i, c in enumerate(_CATEGORY_ORDER)}
+
     for p in products:
-        m = p["machine"]
-        if m not in groups:
-            groups[m] = []
-        groups[m].append(p)
+        p["category"] = _classify(p["name"])
+        p["cat_rank"] = _cat_rank.get(p["category"], 999)
 
-    # 每組按價格排序
-    for g in groups.values():
-        g.sort(key=lambda x: -x["price"])
+    # 按品類排序，同品類按價格排
+    products.sort(key=lambda x: (x["cat_rank"], -x["price"]))
 
-    return {"groups": groups, "total": len(products)}
+    return {"products": products, "total": len(products)}
+
+
+@app.get("/api/shop/images/{code}")
+async def shop_images(code: str):
+    """取得單一產品的所有圖片（最多 4 張）"""
+    media_dir = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品照片")
+    base_url = "https://xmnline.duckdns.org/product-photo"
+    images = []
+    if media_dir.exists():
+        _img_exts = {".jpg", ".jpeg", ".png"}
+        _found = sorted(
+            [f for f in media_dir.iterdir()
+             if f.is_file() and f.suffix.lower() in _img_exts
+             and f.stem.upper().startswith(code.upper())],
+            key=lambda f: f.stem.upper()
+        )
+        for f in _found[:4]:
+            images.append(f"{base_url}/{f.name}")
+    return {"code": code, "images": images}
 
 
 @app.get("/api/shop/profile")
