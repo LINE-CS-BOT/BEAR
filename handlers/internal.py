@@ -2174,16 +2174,24 @@ def handle_internal_product_info(text: str, state_key: str | None = None) -> str
         files = _match_product_media_files(prod_code, media_dir) if media_dir else []
         has_img = len(files) > 0
 
+        # 價格
+        _cache_item = ecount_client.get_product_cache_item(prod_code)
+        _price = ""
+        if _cache_item and _cache_item.get("price") and _cache_item["price"] > 0:
+            _price = f"${int(_cache_item['price'])}"
+
+        _name_line = f"  {prod_code}　{prod_name}　{_price}" if _price else f"  {prod_code}　{prod_name}"
+
         check_parts = []
         check_parts.append(f"PO文：{'✅' if has_po else '❌'}")
         check_parts.append(f"圖片：{'✅' + str(len(files)) + '張' if has_img else '❌'}")
 
         if qty is not None and qty > 0:
             check_parts.append(f"可售：{qty}")
-            in_stock.append(f"  {prod_code}　{prod_name}\n  {'　'.join(check_parts)}")
+            in_stock.append(f"{_name_line}\n  {'　'.join(check_parts)}")
         else:
             check_parts.append("缺貨")
-            out_of_stock.append(f"  {prod_code}　{prod_name}\n  {'　'.join(check_parts)}")
+            out_of_stock.append(f"{_name_line}\n  {'　'.join(check_parts)}")
 
         last_code, last_name = prod_code, prod_name
 

@@ -156,34 +156,42 @@ def slow_movers(no_sale_days: int = 60, min_stock: int = 10) -> list[dict]:
             (recent_restock_cutoff,)
         ).fetchall())
 
+    # 計算每個產品的出庫量（用於周轉率判斷）
+    with _conn() as conn:
+        _sales_90d = {}
+        for _sc, _sq in conn.execute(
+            "SELECT prod_cd, SUM(qty) FROM sales_detail WHERE date >= ? AND customer NOT LIKE '%民享%' GROUP BY prod_cd",
+            ((datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),)
+        ).fetchall():
+            _sales_90d[_sc] = _sq or 0
+
     results = []
     for code, name, last_out in all_products:
-        if code in active or _is_excluded_product(code):
+        if _is_excluded_product(code):
             continue
         if code in recently_restocked:
             continue  # 最近才進貨，不是滯銷
-
-        # 檢查：以前賣到沒庫存 → 最近才補貨（庫存變更沒記到的情況）
-        # 如果歷史上 balance 曾經 <= 0 且現在庫存很多 → 跳過
-        with _conn() as _c_slow:
-            _was_zero = _c_slow.execute(
-                "SELECT 1 FROM inventory_changes WHERE prod_cd=? AND balance <= 0",
-                (code,)
-            ).fetchone()
-        if _was_zero:
-            _d_avail = avail.get(code)
-            _cur_stock = _d_avail.get("available", 0) if isinstance(_d_avail, dict) else (_d_avail or 0)
-            if _cur_stock > 30:
-                continue  # 曾斷貨 + 現在庫存多 = 最近補貨，不是滯銷
 
         stock = 0
         if code in avail:
             d = avail[code]
             stock = d.get("available", 0) if isinstance(d, dict) else d
-        if stock >= min_stock:
+        if stock < min_stock:
+            continue
+
+        sold_90d = _sales_90d.get(code, 0)
+        turnover = round(sold_90d / stock, 2) if stock > 0 else 0
+
+        # 滯銷判斷：完全沒賣 OR 周轉率 < 0.5 且庫存 > 30
+        is_no_sale = code not in active
+        is_low_turnover = turnover < 0.5 and stock > 30
+
+        if is_no_sale or is_low_turnover:
             results.append({
                 "code": code, "name": name, "stock": stock,
                 "last_sale": last_out or "N/A",
+                "sold_90d": sold_90d,
+                "turnover": turnover,
                 "category": _classify(name),
             })
     results.sort(key=lambda x: -x["stock"])
