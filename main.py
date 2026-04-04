@@ -1130,11 +1130,6 @@ def _flush_media_only(
         _send_reply(reply_token, group_id, reply_text, line_api)
     else:
         # 1:1 客戶
-        if _in_quiet_hours():
-            for m in _all_media:
-                if m["type"] == "image":
-                    queue_store.add(user_id, "image", msg_id=m["msg_id"])
-            return
         # 只取第一張圖片做商品識別
         # 先辨識，存結果到 state，再等 5 秒看有沒有文字跟上
         if img_e:
@@ -2450,9 +2445,9 @@ async def lifespan(app: FastAPI):
     state_manager.restore_from_db() # 從 SQLite 恢復對話狀態
     _restore_txt_buffer()           # 恢復 reload 前未處理的文字 buffer
     asyncio.create_task(_refresh_data_loop())
-    asyncio.create_task(_queue_processor_loop())
+    # asyncio.create_task(_queue_processor_loop())  # 離峰佇列已停用
     # asyncio.create_task(_restock_notify_loop())  # 已停用，改用 14:00 _pickup_notify_loop
-    asyncio.create_task(_followup_loop())
+    # asyncio.create_task(_followup_loop())  # 24h 提醒已停用
     asyncio.create_task(_midnight_inventory_check_loop())
     asyncio.create_task(_rebate_sync_loop())
     asyncio.create_task(_sync_ecount_customers_loop())
@@ -2460,10 +2455,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_sync_failure_notify_loop())
     asyncio.create_task(_cart_cleanup_loop())
     asyncio.create_task(_pickup_notify_loop())
-    # 啟動時若已過 10:00 且佇列有待處理訊息，立刻補發（防止 server 重啟後錯過 10:00 觸發）
-    if datetime.now().hour >= 10 and queue_store.count_unprocessed() > 0:
-        print(f"[queue] 啟動補處理：發現 {queue_store.count_unprocessed()} 則未處理的離峰訊息")
-        asyncio.create_task(_process_queued_messages())
+    # 離峰佇列已停用
     yield
     # ── shutdown：持久化未處理的文字 buffer ──
     _persist_txt_buffer()
@@ -3440,6 +3432,33 @@ async def admin_pickup_notify_done(name: str):
     return {"ok": True}
 
 
+@app.get("/admin/carts")
+async def admin_carts():
+    """取得所有未結帳購物車"""
+    from storage import cart as _cart_admin
+    result = []
+    with _cart_admin._lock:
+        for uid, items in _cart_admin._carts.items():
+            if not items:
+                continue
+            cust = customer_store.get_by_line_id(uid)
+            name = (cust.get("real_name") or cust.get("display_name") or uid[:15]) if cust else uid[:15]
+            result.append({
+                "user_id": uid,
+                "customer_name": name,
+                "items": items,
+            })
+    return result
+
+
+@app.delete("/admin/carts/{user_id}")
+async def admin_cart_delete(user_id: str):
+    """刪除某客戶的購物車"""
+    from storage import cart as _cart_del
+    _cart_del.clear_cart(user_id)
+    return {"ok": True}
+
+
 @app.get("/admin/seen-groups")
 async def admin_seen_groups():
     """列出這次伺服器啟動後收到訊息的所有群組 ID"""
@@ -3931,7 +3950,7 @@ async def admin_list_takeovers():
 
 @app.get("/admin/recent-customers")
 async def admin_recent_customers():
-    """取得最近 30 位互動的客戶（供接手面板使用）"""
+    """取得最近 18 位互動的客戶（供接手面板使用）"""
     import sqlite3 as _sq, os as _os
     db_path = _os.path.join(_os.path.dirname(__file__), "data", "customers.db")
     try:
@@ -3941,7 +3960,7 @@ async def admin_recent_customers():
                 FROM customers
                 WHERE line_user_id IS NOT NULL
                 ORDER BY last_seen DESC
-                LIMIT 30
+                LIMIT 18
             """).fetchall()
         takeover_uids = {uid for uid, st in state_manager.all_states().items()
                          if st.get("action") == "human_takeover"}
@@ -4374,15 +4393,6 @@ def on_message(event: MessageEvent):
                 print(f"[group] 未知客戶群組: {gid}")
                 _unknown_groups[gid] = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        # ── 離峰時段（00:00 ~ 10:00）→ 靜默收集，不進緩衝 ────────────
-        if _in_quiet_hours() and source_type == "user":
-            current_state = state_manager.get(user_id)
-            if not current_state:
-                _q_intent = detect_intent(text)
-                if _q_intent not in _QUIET_HOURS_DIRECT_INTENTS:
-                    queue_store.add(user_id, "text", content=text)
-                    return
-
         # ── 真人介入中 → 凍結 bot，不進緩衝 ────────────────────────
         _check_id = group_id if source_type == "group" else user_id
         if (state_manager.get(_check_id) or {}).get("action") == "human_takeover":
@@ -4487,11 +4497,6 @@ def on_image_message(event: MessageEvent):
         if profile and profile.display_name:  # display_name 空白時不建立空記錄
             customer_store.upsert_from_line(user_id, profile.display_name)
 
-    # ── 離峰時段 → 直接收集，不走緩衝 ──
-    if _in_quiet_hours():
-        queue_store.add(user_id, "image", msg_id=message_id)
-        return
-
     # 存入緩衝，等待後續文字（如「5個」「有貨嗎」）
     _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
                  context="user", reply_token=event.reply_token)
@@ -4556,25 +4561,47 @@ def _handle_stateful(
         from handlers.inventory import _query_single_product
         candidates: list = state.get("candidates", [])   # [(code, name), ...]
 
-        chosen_code = None
+        # 支援多選：「3.6.7」「3、6、7」「3 6 7」「1,3,5」
+        import re as _re_clarify
+        _nums = _re_clarify.findall(r'\d+', text)
+        chosen_codes = []
+        for n in _nums:
+            idx = int(n) - 1
+            if 0 <= idx < len(candidates):
+                chosen_codes.append(candidates[idx])
 
-        # 用數字選（「1」「2」「3」）
-        qty = extract_quantity(text)
-        if qty and 1 <= qty <= len(candidates):
-            chosen_code = candidates[qty - 1][0]
-        else:
-            # 用品名子字串選（說「大顆」「A款」等）
+        if not chosen_codes:
+            # 用品名子字串選
             t = text.strip()
             for code, name in candidates:
                 if t in name or name in t:
-                    chosen_code = code
+                    chosen_codes.append((code, name))
                     break
 
-        if chosen_code:
+        # 檢查是否要照片
+        _want_photo = any(k in text for k in ["照片", "圖片", "圖", "看看", "有沒有照"])
+
+        if len(chosen_codes) == 1 and not _want_photo:
             state_manager.clear(user_id)
-            return _query_single_product(user_id, chosen_code, line_api)
+            return _query_single_product(user_id, chosen_codes[0][0], line_api)
+        elif chosen_codes:
+            state_manager.clear(user_id)
+            # 組合回覆文字
+            from services.ecount import ecount_client as _ec_multi
+            lines = [f"好的～以下是您選的 {len(chosen_codes)} 款："]
+            for code, name in chosen_codes:
+                item = _ec_multi.get_product_cache_item(code)
+                price = f"　${int(item['price'])}" if item and item.get("price") and item["price"] > 0 else ""
+                lines.append(f"  • {name}（{code}）{price}")
+            lines.append(f"\n{tone.boss()}各需要幾個呢？")
+            reply_text = "\n".join(lines)
+
+            # 附上圖片（取第一款的圖）
+            _img_urls = _get_product_image_urls([c for c, _ in chosen_codes])
+            if _img_urls:
+                return (reply_text, _img_urls)
+            return reply_text
         else:
-            # 選不到 → 再問一次
             return tone.ask_product_clarify(state.get("keyword", ""), candidates)
 
     # ── 改單/取消偵測（所有 stateful 狀態共用）──────────────

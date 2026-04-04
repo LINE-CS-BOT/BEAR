@@ -2849,27 +2849,15 @@ def handle_internal_product_photo(text: str, line_api) -> str | None:
     if not media_dir:
         return "⚠️ 產品照片磁碟機未連線"
 
-    from config import settings
-    group_id = settings.LINE_GROUP_ID
-
-    # 只取第一個產品的圖片，用 reply 送（節省 push 額度）
-    all_image_urls = []
-    results = []
-    for raw_code in codes:
-        prod_code = raw_code.upper()
-        files = _match_product_media_files(prod_code, media_dir)
-        if not files:
-            results.append(f"❌ {prod_code} 無照片")
-            continue
-        results.append(f"📷 {prod_code} 共 {len(files)} 張")
-        base = ngrok_url.rstrip("/")
-        for f in files[:4]:
-            if f.suffix.lower() in _IMG_EXTS:
-                all_image_urls.append(f"{base}/{f.name}")
-    text = "\n".join(results) if results else None
-    if text and all_image_urls:
-        return (text, all_image_urls[:4])
-    return text
+    prod_code = codes[0].upper()
+    files = _match_product_media_files(prod_code, media_dir)
+    if not files:
+        return f"❌ {prod_code} 無照片"
+    base = ngrok_url.rstrip("/")
+    image_urls = [f"{base}/{f.name}" for f in files[:4] if f.suffix.lower() in _IMG_EXTS]
+    if image_urls:
+        return (f"📷 {prod_code} 共 {len(files)} 張", image_urls[:4])
+    return f"📷 {prod_code} 共 {len(files)} 張（無圖片格式）"
 
 
 # ---------------------------------------------------------------------------
@@ -2891,50 +2879,22 @@ def handle_internal_product_po_photo(text: str, line_api) -> str | None:
     ngrok_url = _get_ngrok_url()
     media_dir = _get_media_dir()
 
-    results = []
-    first_po = None
-    first_image_urls = []
+    prod_code = codes[0].upper()
+    raw_po = _get_raw_po_block(prod_code)
+    files = _match_product_media_files(prod_code, media_dir) if media_dir else []
 
-    for i, raw_code in enumerate(codes):
-        prod_code = raw_code.upper()
-        raw_po = _get_raw_po_block(prod_code)
-        files = _match_product_media_files(prod_code, media_dir) if media_dir else []
+    if not raw_po and not files:
+        return f"❌ {prod_code} 無 PO 文、無圖片"
+    if not raw_po:
+        return f"❌ {prod_code} 無 PO 文"
+    if not files:
+        return f"❌ {prod_code} 無圖片"
 
-        if not raw_po and not files:
-            results.append(f"❌ {prod_code} 無 PO 文、無圖片")
-        elif not raw_po:
-            results.append(f"❌ {prod_code} 無 PO 文")
-        elif not files:
-            results.append(f"❌ {prod_code} 無圖片")
-        elif i == 0:
-            # 第一個產品：用 reply 送（免費）
-            first_po = raw_po
-            base = ngrok_url.rstrip("/")
-            for f in files[:4]:
-                if f.suffix.lower() in _IMG_EXTS:
-                    first_image_urls.append(f"{base}/{f.name}")
-        else:
-            # 後續產品：用 push 送（沒辦法，reply 只能用一次）
-            from config import settings
-            from linebot.v3.messaging import PushMessageRequest
-            group_id = settings.LINE_GROUP_ID
-            if group_id:
-                try:
-                    media_msgs = _build_media_messages(prod_code, files, ngrok_url)[:4]
-                    all_msgs = [TextMessage(text=raw_po)] + media_msgs
-                    line_api.push_message(PushMessageRequest(to=group_id, messages=all_msgs[:5]))
-                except Exception as e:
-                    results.append(f"❌ {prod_code} 推送失敗：{e}")
-
-    # 第一個產品用 reply 回傳（免費），錯誤訊息附在後面
-    if first_po:
-        text = first_po
-        if results:
-            text += "\n\n" + "\n".join(results)
-        if first_image_urls:
-            return (text, first_image_urls[:4])
-        return text
-    return "\n".join(results) if results else None
+    base = ngrok_url.rstrip("/")
+    image_urls = [f"{base}/{f.name}" for f in files[:4] if f.suffix.lower() in _IMG_EXTS]
+    if image_urls:
+        return (raw_po, image_urls[:4])
+    return raw_po
 
 
 def _get_ngrok_url() -> str:

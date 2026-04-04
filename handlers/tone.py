@@ -262,10 +262,15 @@ def ask_quantity(name: str) -> str:
 
 def ask_product_clarify(keyword: str, candidates: list) -> str:
     """多款商品符合關鍵字，請客戶選擇"""
-    lines = [f"請問「{keyword}」是哪一款呢？"]
+    from services.ecount import ecount_client as _ec_clarify
+    lines = [f"「{keyword}」有以下幾款有現貨唷～"]
     for i, (code, name) in enumerate(candidates, 1):
-        lines.append(f"{i}. {name}")
-    lines.append("\n回覆數字或品名就好嘿～")
+        item = _ec_clarify.get_product_cache_item(code)
+        price = ""
+        if item and item.get("price") and item["price"] > 0:
+            price = f"　${int(item['price'])}"
+        lines.append(f"{i}. {name}（{code}）{price}")
+    lines.append(f"\n{boss()}需要哪幾款呢？回覆數字就好～")
     return "\n".join(lines)
 
 
