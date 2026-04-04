@@ -55,9 +55,8 @@ PLATFORMS      = ["line", "fb"]
 # ── LINE API 推送通知 ─────────────────────────────────────────────────────────
 
 def _push_notify(group_id: str, text: str) -> None:
-    """推送訊息到內部群組"""
-    if not group_id:
-        return
+    """不推送通知（節省 push 額度）"""
+    return
     try:
         import os
         os.chdir(str(ROOT))
@@ -75,7 +74,7 @@ def _push_notify(group_id: str, text: str) -> None:
         cfg = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
         with ApiClient(cfg) as api:
             MessagingApi(api).push_message(PushMessageRequest(
-                to=group_id,
+                to=_ADMIN_UID,
                 messages=[TextMessage(text=text)],
             ))
     except Exception as e:
@@ -451,48 +450,15 @@ async def main(payload: dict) -> None:
 
     Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    # 預先去背所有產品圖
+    # 不去背，直接用原始素材圖
     import tempfile
-    try:
-        from rembg import remove as rembg_remove
-        from PIL import Image as PILImage
-        _has_rembg = True
-    except ImportError:
-        _has_rembg = False
-        print("[ad] ⚠️ rembg 未安裝，跳過去背")
-
-    rembg_images: dict[str, list[str]] = {}
-    for code in codes:
-        img_list = images.get(code, [])
-        if not img_list or not _has_rembg:
-            rembg_images[code] = img_list
-            continue
-        rembg_list = []
-        for img_path in img_list:
-            try:
-                p = Path(img_path)
-                if not p.exists():
-                    continue
-                print(f"[ad] {code} 去背中：{p.name}...", flush=True)
-                img = PILImage.open(p)
-                result = rembg_remove(img)
-                tmp = Path(tempfile.gettempdir()) / f"rembg_{p.stem}.png"
-                result.save(tmp)
-                rembg_list.append(str(tmp))
-                print(f"[ad] {code} 去背完成：{tmp.name}")
-            except Exception as e:
-                print(f"[ad] {code} 去背失敗（{e}），使用原圖")
-                rembg_list.append(img_path)
-        rembg_images[code] = rembg_list
 
     # 預先計算所有提示詞
-    # 優先讀 data/ad_prompts/{code}_{platform}.txt（由 generate_prompts.py 預先生成）
-    # 若不存在則用硬編碼模板
     from handlers.ad_maker import build_gemini_prompt
     PROMPT_DIR = ROOT / "data" / "ad_prompts"
     tasks = []
     for code in codes:
-        img_list = rembg_images.get(code, images.get(code, []))
+        img_list = images.get(code, [])
         for platform in PLATFORMS:
             txt = PROMPT_DIR / f"{code}_{platform}.txt"
             if txt.exists():
@@ -501,13 +467,13 @@ async def main(payload: dict) -> None:
             else:
                 prompt = build_gemini_prompt(code, platform)
                 print(f"[prompt] {code}/{platform} ← 使用預設模板")
-            # 加入去背指示
-            rembg_note = (
-                "\n\n⚠️ 重要：我上傳的產品照片已經去背（透明背景），"
-                "請直接使用這張去背圖作為產品主圖，不要重新繪製或替換產品外觀。"
-                "可以美化光影、加陰影、調亮度對比，但產品本體必須保留原圖。"
-            ) if _has_rembg else ""
-            tasks.append((code, img_list, prompt + rembg_note, platform))
+            # 提醒 Gemini 保留原圖
+            orig_note = (
+                "\n\n⚠️ 重要：我上傳的是原始產品照片，"
+                "必須完整保留商品盒型外觀，四個角清楚可見，"
+                "不可裁切、變形、更改盒子上的圖案和文字。"
+            )
+            tasks.append((code, img_list, prompt + orig_note, platform))
 
     total   = len(tasks)
     success = 0
@@ -567,6 +533,21 @@ async def main(payload: dict) -> None:
                 await page.wait_for_load_state("domcontentloaded", timeout=15000)
                 await page.wait_for_timeout(2000)
                 print("[gemini] ✅ 已開新對話")
+
+                # 點「建立圖像」按鈕
+                _img_btn_sels = [
+                    'button:has-text("建立圖像")',
+                    'button:has-text("Create image")',
+                    'button:has-text("Generate image")',
+                    '[data-test-id="image-generation"]',
+                ]
+                for _ib_sel in _img_btn_sels:
+                    _ib = page.locator(_ib_sel)
+                    if await _ib.count() > 0:
+                        await _ib.first.click()
+                        await page.wait_for_timeout(1500)
+                        print("[gemini] ✅ 已點選「建立圖像」")
+                        break
             except Exception as e:
                 print(f"[gemini] ⚠️  開新對話失敗（{e}），使用目前頁面")
 

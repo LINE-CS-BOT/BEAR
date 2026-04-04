@@ -1584,7 +1584,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         _send_reply(reply_token, user_id, reply_text, line_api)
                     elif _has_unknown_quotes:
                         issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的圖片：{combined[:50]}")
-                        _send_reply(reply_token, user_id, "稍等一下唷～等等處理嘿", line_api)
+                        from handlers.hours import _is_open_now as _io_q, next_open_reply as _nor_q
+                        from datetime import datetime as _dt_q
+                        import pytz as _pz_q
+                        _now_q = _dt_q.now(_pz_q.timezone(settings.BUSINESS_TZ))
+                        _q_reply = "稍等一下唷～等等處理嘿" if _io_q(_now_q) else _nor_q()
+                        _send_reply(reply_token, user_id, _q_reply, line_api)
                         return
 
                 # 1:1 圖片識別：優先從文字提取貨號，沒有才辨識圖片
@@ -1604,7 +1609,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             print(f"[quote] 引用圖片辨識失敗: {quoted_msg_id}", flush=True)
                             # 查不到對應產品 → 回覆稍等 + 記待處理
                             issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的圖片：{combined[:50]}")
-                            _send_reply(reply_token, user_id, "稍等一下唷～等等處理嘿", line_api)
+                            from handlers.hours import _is_open_now as _io_q, next_open_reply as _nor_q
+                            from datetime import datetime as _dt_q
+                            import pytz as _pz_q
+                            _now_q = _dt_q.now(_pz_q.timezone(settings.BUSINESS_TZ))
+                            _q_reply = "稍等一下唷～等等處理嘿" if _io_q(_now_q) else _nor_q()
+                            _send_reply(reply_token, user_id, _q_reply, line_api)
                             return
 
                 img_pcs = []
@@ -5648,7 +5658,13 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
         reason = cmd.get("reason", "")
         issue_store.add(user_id, "claude_escalate", f"Claude 轉真人：{reason}")
         print(f"[claude-cmd] escalate: {reason}", flush=True)
-        return "我幫您確認一下，稍後回覆您"
+        from handlers.hours import _is_open_now, next_open_reply
+        from datetime import datetime as _dt_esc
+        import pytz as _pz_esc
+        _now_esc = _dt_esc.now(_pz_esc.timezone(settings.BUSINESS_TZ))
+        if _is_open_now(_now_esc):
+            return "我幫您確認一下，稍後回覆您"
+        return next_open_reply()
 
     return None
 

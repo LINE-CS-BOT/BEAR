@@ -61,7 +61,7 @@ SKILL_AD_STYLE    = _load_skill("ad_style_optimizer_skill.txt")
 
 PLATFORMS = {
     "line": {
-        "size":    "1040×1040px，1:1 正方形，LINE 官方帳號貼文廣告",
+        "size":    "1080×1080px，1:1 正方形，LINE 官方帳號貼文廣告",
         "layout":  "中央聚焦型：品牌名（上12%）→ 產品主視覺（中52%）→ 商品名+貨號（中下26%）→ LINE ID（下10%）",
         "label":   "LINE 1040×1040",
     },
@@ -141,27 +141,43 @@ def step1_design(code: str, local_paths: list[str]) -> str | None:
     line_spec = PLATFORMS["line"]
     fb_spec   = PLATFORMS["fb"]
 
+    from handlers.ad_maker import _get_product_specs, _get_product_price
+    specs = _get_product_specs(code)
+    size_text = specs.get("size", "")
+    weight_text = specs.get("weight", "")
+    price = _get_product_price(code)
+
     user_msg = (
         f"請用 Read 工具讀取以下產品照片，依照廣告圖片設計規範設計以下兩張廣告並輸出完整設計規格與 AI 製圖提示詞。\n\n"
         f"產品照片路徑：\n{paths_str}\n\n"
         f"【重要：產品外觀描述要求】\n"
         f"- 仔細觀察照片中的所有元素：產品本體、包裝盒、配件、標籤、印刷圖案\n"
-        f"- 如果照片中有包裝盒，必須在提示詞中詳細描述包裝盒的外觀（形狀、顏色、印刷、文字）\n"
-        f"- 提示詞中的產品視覺描述要忠實還原照片，讓 AI 生成的圖片盡量接近真實產品\n"
-        f"- 描述顏色時請具體（如「深藍底印金色花紋」），避免模糊說法（如「彩色包裝」）\n\n"
+        f"- 必須在提示詞中用至少 300 字詳細描述產品外觀（盒型、顏色、文字、圖案位置等）\n"
+        f"- 描述顏色時請具體（如「深藍底印金色花紋」），避免模糊說法\n"
+        f"- 商品盒型必須完整呈現，四個角清楚可見，不可裁切、變形\n\n"
         f"產品資訊：\n"
         f"品牌：{STORE_NAME}\n"
         f"商品名稱：{prod_name}\n"
         f"貨號：{code}\n"
+        f"價格：{price}\n"
+        f"尺寸：{size_text}\n"
+        f"重量：{weight_text}\n"
         f"聯繫：{CONTACT_LINE}\n"
         f"商品描述：{po_text}\n\n"
         f"廣告 1 規格：{line_spec['size']}\n"
         f"廣告 1 版面：{line_spec['layout']}\n\n"
         f"廣告 2 規格：{fb_spec['size']}\n"
         f"廣告 2 版面：{fb_spec['layout']}\n\n"
-        f"必須顯示文字：品牌名「{STORE_NAME}」、商品名「{prod_name}」、"
-        f"貨號「{code}」、「{CONTACT_LINE}」（附LINE綠色圖示）\n\n"
-        f"廣告目標：導購\n\n"
+        f"【廣告圖必須顯示的文字】\n"
+        f"- 品牌名「{STORE_NAME}」\n"
+        f"- 商品名「{prod_name}」\n"
+        f"- 貨號「{code}」\n"
+        f"- 價格「{price}」\n"
+        f"- 尺寸「{size_text}」（有值才顯示）\n"
+        f"- 重量「{weight_text}」（有值才顯示）\n"
+        f"- 「{CONTACT_LINE}」（附LINE綠色圖示）\n\n"
+        f"【斟酌顯示】\n"
+        f"- 產品特色描述（從商品描述中挑 1-2 個賣點）\n\n"
         f"請輸出兩張廣告的完整設計規格與 AI 製圖提示詞（繁體中文）。"
     )
 
