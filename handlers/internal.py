@@ -1938,49 +1938,35 @@ def handle_internal_spec_query(text: str) -> str | None:
     if price_limit:
         specs = [s for s in specs if 0 < _price_val(s) <= price_limit]
 
-    result_lines = []
+    in_stock = []
+    out_of_stock = []
     for s in specs:
         code = s.get("code", "")
         name = s.get("name", code)
-        size = s.get("size", "")
-        price = s.get("price", "")
-        # 查庫存
         try:
             item = ecount_client.lookup(code)
-            qty        = item.get("qty") if item else None
-            preorder   = item.get("preorder") if item else None
-            warehouse  = item.get("balance") if item else None
-            unfulfilled = item.get("unfilled") if item else None
-            hq_pending = item.get("incoming") if item else None
+            qty = item.get("qty") if item else None
         except Exception:
-            qty = warehouse = unfulfilled = hq_pending = preorder = None
-        # 庫存模式：只列可售 > 0
-        if stock_only and (qty is None or qty <= 0):
-            continue
-        # 完整明細
-        detail = f"📦 {name}（{code}）"
-        if size or price:
-            detail += f"\n  {size}　{price}" if size else f"\n  {price}"
-        if warehouse is not None:
-            detail += f"\n  ├ 倉庫庫存：{warehouse} 個"
-        if unfulfilled is not None:
-            detail += f"\n  ├ ERP未出：{unfulfilled} 個"
-        if hq_pending is not None:
-            detail += f"\n  ├ 總公司未到：{hq_pending} 個"
-        if qty is not None:
-            if qty > 0:
-                detail += f"\n  ├ 可售庫存：{qty} 個"
-            else:
-                detail += f"\n  └ 可售庫存：{qty} 個（缺貨）"
-        if (preorder or 0) > 0:
-            detail += f"\n  └ 可預購：{preorder} 個"
-        result_lines.append(detail)
+            qty = None
+        if qty is not None and qty > 0:
+            in_stock.append(f"  {code}　{name}　可售:{qty}")
+        else:
+            if stock_only:
+                continue
+            out_of_stock.append(f"  {code}　{name}　缺貨")
 
-    if stock_only and not result_lines:
+    lines = [f"🔍 {label} 產品"]
+    if in_stock:
+        lines.append(f"\n✅ 有庫存（{len(in_stock)} 筆）：")
+        lines.extend(in_stock)
+    if out_of_stock and not stock_only:
+        lines.append(f"\n❌ 缺貨（{len(out_of_stock)} 筆）：")
+        lines.extend(out_of_stock)
+    if not in_stock and not out_of_stock:
+        return f"🔍 {label} 目前沒有產品"
+    if stock_only and not in_stock:
         return f"🔍 {label} 目前沒有有庫存的產品"
-
-    header = f"🔍 {label} {'有庫存的' if stock_only else ''}產品（共 {len(result_lines)} 筆）：\n"
-    return "\n".join([header] + result_lines)
+    return "\n".join(lines)
 
 
 # ── 5. 庫存查詢 ────────────────────────────────────────────────────────
@@ -2165,17 +2151,39 @@ def handle_internal_product_info(text: str, state_key: str | None = None) -> str
 
     results = []
     last_code, last_name = None, None
+    media_dir = _get_media_dir()
     for raw_code in codes:
         prod_code = raw_code.upper()
         po = _format_po(prod_code)
+        raw_po = _get_raw_po_block(prod_code)
         try:
             item = ecount_client.lookup(prod_code)
         except Exception as e:
             results.append(f"⚠️ {prod_code}：查詢失敗（{e}）")
             continue
         prod_name = (item.get("name") if item else "") or prod_code
-        stock_detail = _fmt_stock_lines(item, prod_code)
-        results.append(f"{po}\n{stock_detail}")
+        qty = item.get("qty") if item else None
+
+        # 檢查 PO 文 + 圖片
+        has_po = raw_po is not None
+        files = _match_product_media_files(prod_code, media_dir) if media_dir else []
+        has_img = len(files) > 0
+
+        # 庫存狀態
+        if qty is not None and qty > 0:
+            stock_str = f"可售庫存：{qty}"
+        elif qty is not None:
+            stock_str = f"可售庫存：{qty}（缺貨）"
+        else:
+            stock_str = "可售庫存：查詢失敗"
+
+        # 檢查狀態
+        check_lines = []
+        check_lines.append(f"PO文：{'✅' if has_po else '❌ 無'}")
+        check_lines.append(f"圖片：{'✅ ' + str(len(files)) + '張' if has_img else '❌ 無'}")
+        check_lines.append(stock_str)
+
+        results.append(f"{po}\n{'　'.join(check_lines)}")
         last_code, last_name = prod_code, prod_name
 
     return "\n\n".join(results) if results else None

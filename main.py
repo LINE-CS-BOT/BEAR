@@ -2151,15 +2151,15 @@ def _check_and_notify_pickup():
             ])
 
             if uid and not uid.startswith("_"):
+                # 先標記，避免重啟時重複通知
+                for p in non_preorder_items:
+                    notify_store.mark_notified(p["id"])
                 try:
                     line_api.push_message(PushMessageRequest(
                         to=uid, messages=[TextMessage(text=notify_msg)]
                     ))
                     print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(non_preorder_items)} 品項）", flush=True)
                     notified_count += 1
-                    # 只標記非預購品，預購品留著等到貨
-                    for p in non_preorder_items:
-                        notify_store.mark_notified(p["id"])
                 except Exception as e:
                     print(f"[pickup-notify] ❌ 通知 {cust_name} 失敗: {e}", flush=True)
             else:
@@ -4289,16 +4289,19 @@ def on_message(event: MessageEvent):
             from handlers.internal import handle_internal_spec_query as _spec_q
             from handlers.internal import handle_internal_inventory as _inv_q
             from handlers.internal import handle_internal_new_product as _new_prod
-            _quick_reply = (
-                _handle_missing_ecount_name(text)
-                or _new_prod(text)
-                or handle_internal_rebate(text)
-                or handle_internal_unfulfilled(text)
-                or handle_internal_unclaimed(text)
-                or _spec_q(text)
-                or _inv_q(text)
-                or handle_internal_order(text, line_api, group_id=event.source.group_id)
-            )
+            # 含 @ tag 的訊息是對話，不需要 bot 回覆
+            _quick_reply = None
+            if "@" not in text:
+                _quick_reply = (
+                    _handle_missing_ecount_name(text)
+                    or _new_prod(text)
+                    or handle_internal_rebate(text)
+                    or handle_internal_unfulfilled(text)
+                    or handle_internal_unclaimed(text)
+                    or _spec_q(text)
+                    or _inv_q(text)
+                    or handle_internal_order(text, line_api, group_id=event.source.group_id)
+                )
             if _quick_reply:
                 _send_reply(event.reply_token, event.source.group_id,
                             _quick_reply, line_api)
