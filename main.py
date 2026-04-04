@@ -162,6 +162,7 @@ def _get_profile_cached(line_api, user_id: str):
 # ── 月額度 429 全域開關 ─────────────────────────────────────
 _push_quota_exhausted = False        # True = 本月 push 額度已用完
 _push_quota_exhausted_at: str = ""   # 記錄首次偵測到的時間
+_pickup_notify_results: dict = {"notified_history": [], "no_line_id": []}  # 排程結果（供 admin 查看）
 
 def _mark_push_exhausted():
     global _push_quota_exhausted, _push_quota_exhausted_at
@@ -1995,12 +1996,21 @@ async def _sync_ecount_customers_loop():
 
 
 async def _pickup_notify_loop():
-    """每天下午 14:00 檢查：客戶訂單全部備好 → 通知取貨"""
+    """每天 16:00 和 22:00 檢查：客戶訂單全部備好 → 通知取貨（公休日不跑）"""
+    _NOTIFY_HOURS = [16, 22]
     while True:
         now = datetime.now()
-        target = now.replace(hour=14, minute=0, second=0, microsecond=0)
-        if now >= target:
-            target += timedelta(days=1)
+        # 找下一個觸發時間
+        targets = []
+        for h in _NOTIFY_HOURS:
+            t = now.replace(hour=h, minute=0, second=0, microsecond=0)
+            if t > now:
+                targets.append(t)
+        if not targets:
+            # 今天的都過了 → 明天第一個
+            tomorrow = now + timedelta(days=1)
+            targets = [tomorrow.replace(hour=_NOTIFY_HOURS[0], minute=0, second=0, microsecond=0)]
+        target = min(targets)
         await asyncio.sleep((target - now).total_seconds())
         # 公休日不跑
         if datetime.now().isoweekday() not in settings.business_days_list():
@@ -2089,6 +2099,7 @@ def _check_and_notify_pickup():
 
     no_line_id = []
     notified_count = 0
+    notified_list = []  # 已自動通知的客戶清單
 
     from linebot.v3.messaging import Configuration as _MsgConfig
     _cfg_pickup = _MsgConfig(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
@@ -2155,6 +2166,10 @@ def _check_and_notify_pickup():
                     ))
                     print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(non_preorder_items)} 品項）", flush=True)
                     notified_count += 1
+                    notified_list.append({
+                        "name": cust_name,
+                        "items": [{"prod_name": p["prod_name"], "qty": p.get("qty_wanted", 1)} for p in non_preorder_items],
+                    })
                 except Exception as e:
                     print(f"[pickup-notify] ❌ 通知 {cust_name} 失敗: {e}", flush=True)
             else:
@@ -2162,21 +2177,30 @@ def _check_and_notify_pickup():
                 for p in non_preorder_items:
                     notify_store.mark_notified(p["id"])
 
-        # 沒有 LINE ID 的推到內部群
-        if no_line_id and settings.LINE_GROUP_ID:
-            lines = ["📦 以下客戶貨已到齊，但無 LINE ID："]
-            for name, items in no_line_id:
-                item_str = "、".join(f"{p['prod_name'][:15]}×{p.get('qty_wanted',1)}" for p in items)
-                lines.append(f"  • {name}：{item_str}")
-            try:
-                line_api.push_message(PushMessageRequest(
-                    to=settings.LINE_GROUP_ID,
-                    messages=[TextMessage(text="\n".join(lines))]
-                ))
-            except Exception as e:
-                print(f"[pickup-notify] 內部群通知失敗: {e}", flush=True)
+        # 沒有 LINE ID 的 → 存到 _pickup_notify_results 讓 admin 看
+        # （不再推內部群，節省 push 額度）
 
-    print(f"[pickup-notify] 完成，通知 {notified_count} 位客戶", flush=True)
+    # 儲存結果供 admin 查看（保留近 2 天）
+    global _pickup_notify_results
+    now_ts = datetime.now().isoformat()
+    cutoff = (datetime.now() - timedelta(days=2)).isoformat()
+
+    # 追加這次自動通知的到 history，清掉 2 天前的
+    old_history = _pickup_notify_results.get("notified_history", [])
+    for n in notified_list:
+        n["timestamp"] = now_ts
+    old_history = [h for h in old_history if h.get("timestamp", "") >= cutoff]
+    old_history.extend(notified_list)
+
+    _pickup_notify_results = {
+        "timestamp": now_ts,
+        "notified_history": old_history,
+        "no_line_id": [
+            {"name": name, "items": [{"prod_name": p["prod_name"], "qty": p.get("qty_wanted", 1)} for p in items]}
+            for name, items in no_line_id
+        ],
+    }
+    print(f"[pickup-notify] 完成，通知 {notified_count} 位客戶，{len(no_line_id)} 位需手動通知", flush=True)
 
 
 async def _sync_cust_ecount_loop():
@@ -2343,12 +2367,13 @@ async def _sync_failure_notify_loop():
             for t, name, err in _sync_failures:
                 lines.append(f"• {t} {name}\n  {err}")
             msg = "\n".join(lines)
+            _ADMIN_UID = "Uac17599b38b673b836ccb48025204b19"  # 小熊批發（管理員）
             if not _push_quota_exhausted:
                 _line_api.push_message(PushMessageRequest(
-                    to=settings.LINE_GROUP_ID,
+                    to=_ADMIN_UID,
                     messages=[TextMessage(text=msg)],
                 ))
-                print(f"[sync-fail] 已通知內部群，{len(_sync_failures)} 項失敗", flush=True)
+                print(f"[sync-fail] 已通知管理員，{len(_sync_failures)} 項失敗", flush=True)
         except Exception as e:
             print(f"[sync-fail] 通知失敗: {e}", flush=True)
         _sync_failures.clear()
@@ -3394,6 +3419,25 @@ async def admin_visit_resolve(visit_id: int):
     """標記客人已到店"""
     ok = visit_store.mark_visited(visit_id)
     return {"ok": ok}
+
+
+@app.get("/admin/pickup-notify")
+async def admin_pickup_notify():
+    """取得最近一次到貨通知結果（14:00 排程）"""
+    return _pickup_notify_results or {"timestamp": None, "notified_history": [], "no_line_id": []}
+
+
+@app.post("/admin/pickup-notify/{name}/done")
+async def admin_pickup_notify_done(name: str):
+    """標記需手動通知的客戶為已通知"""
+    global _pickup_notify_results
+    if not _pickup_notify_results:
+        return {"ok": False}
+    _pickup_notify_results["no_line_id"] = [
+        c for c in _pickup_notify_results.get("no_line_id", [])
+        if c["name"] != name
+    ]
+    return {"ok": True}
 
 
 @app.get("/admin/seen-groups")

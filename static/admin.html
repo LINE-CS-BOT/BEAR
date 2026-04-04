@@ -435,6 +435,14 @@
     </div>
   </div>
 
+  <!-- ── 到貨通知結果 ── -->
+  <div class="section">
+    <div class="section-title">📦 到貨通知結果</div>
+    <div id="pickup-notify-inline" style="min-height:40px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
   <!-- 接手面板 -->
   <div class="card">
     <div class="report-toolbar">
@@ -1486,6 +1494,55 @@
     loadVisits();
   }
 
+  // ── 到貨通知結果 ─────────────────────────────────
+  async function loadPickupNotify() {
+    const wrap = document.getElementById('pickup-notify-inline');
+    try {
+      const r = await fetch('/admin/pickup-notify');
+      const d = await r.json();
+      if (!d.timestamp) {
+        wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">尚未執行到貨通知</div>';
+        return;
+      }
+      let html = '<div style="font-size:0.82rem;color:#888;margin-bottom:6px">上次執行：' + d.timestamp.substring(0,16).replace('T',' ') + '</div>';
+      const history = d.notified_history || [];
+      if (history.length > 0) {
+        html += '<div style="color:#4caf50;font-size:0.85rem;margin-bottom:4px">✅ 近兩天已自動通知 ' + history.length + ' 位客戶</div>';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin-bottom:8px">';
+        history.forEach(h => {
+          const items = h.items.map(i => i.prod_name + '×' + i.qty).join('、');
+          const ts = (h.timestamp || '').substring(5,16).replace('T',' ');
+          html += '<tr style="border-bottom:1px solid #f0f0f0"><td style="padding:2px 8px;color:#888">' + ts + '</td><td style="padding:2px 8px">' + h.name + '</td><td style="padding:2px 8px;color:#666">' + items + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      if (d.no_line_id && d.no_line_id.length > 0) {
+        html += '<div style="font-size:0.85rem;font-weight:600;margin:8px 0 4px">⚠️ 需手動通知（無 LINE ID）：</div>';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem">';
+        d.no_line_id.forEach(c => {
+          const items = c.items.map(i => i.prod_name + '×' + i.qty).join('、');
+          html += '<tr style="border-bottom:1px solid #eee">';
+          html += '<td style="padding:4px 8px">' + c.name + '</td>';
+          html += '<td style="padding:4px 8px">' + items + '</td>';
+          html += '<td style="padding:4px 8px;text-align:right"><button onclick="markPickupDone(\'' + c.name + '\')" style="font-size:0.78rem;padding:2px 8px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer">已通知</button></td>';
+          html += '</tr>';
+        });
+        html += '</table>';
+      } else if (d.notified_count === 0) {
+        wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">今天沒有需要通知的客戶</div>';
+        return;
+      }
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = '<div style="color:#e57373;font-size:0.85rem">載入失敗</div>';
+    }
+  }
+
+  async function markPickupDone(name) {
+    await fetch('/admin/pickup-notify/' + encodeURIComponent(name) + '/done', { method: 'POST' });
+    loadPickupNotify();
+  }
+
   // ── 群組管理 ─────────────────────────────────────
   function _shortGid(gid) {
     if (!gid || gid.length <= 14) return gid || '—';
@@ -1830,6 +1887,7 @@
   refreshAll();
   loadTagsConfig();  // 載入分類標籤設定
   loadVisits();
+  loadPickupNotify();
   setInterval(loadVisits, 60000);  // 每分鐘自動刷新
   loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
   scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
