@@ -102,6 +102,12 @@ class NotifyStore:
                 ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_status(self, notify_id: int) -> str:
+        """取得通知狀態"""
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute("SELECT status FROM notify WHERE id=?", (notify_id,)).fetchone()
+            return row[0] if row else "unknown"
+
     def mark_notified(self, notify_id: int) -> bool:
         """標記為已通知"""
         with sqlite3.connect(DB_PATH) as conn:

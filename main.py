@@ -2074,6 +2074,8 @@ async def _sync_ecount_customers_loop():
             _notify_sync_failure("Ecount 客戶名單同步", str(e))
 
 
+_PICKUP_LOCK_PATH = Path(__file__).parent / "data" / ".pickup_notify.lock"
+
 async def _pickup_notify_loop():
     """每天 16:00 和 22:00 檢查：客戶訂單全部備好 → 通知取貨（公休日不跑）"""
     _NOTIFY_HOURS = [16, 22]
@@ -2095,6 +2097,15 @@ async def _pickup_notify_loop():
         if datetime.now().isoweekday() not in settings.business_days_list():
             print("[pickup-notify] 今天公休，跳過", flush=True)
             continue
+        # 用檔案鎖防止多進程同時跑
+        import time as _t_lock
+        _lock_file = _PICKUP_LOCK_PATH
+        if _lock_file.exists():
+            _lock_age = _t_lock.time() - _lock_file.stat().st_mtime
+            if _lock_age < 120:  # 2 分鐘內有其他進程跑過
+                print(f"[pickup-notify] 另一個進程 {int(_lock_age)} 秒前已執行，跳過", flush=True)
+                continue
+        _lock_file.write_text(str(_t_lock.time()))
         try:
             await asyncio.to_thread(_check_and_notify_pickup)
         except Exception as e:
@@ -2229,21 +2240,28 @@ def _check_and_notify_pickup():
             if preorder_items:
                 po_names = "、".join(p['prod_name'][:10] for p in preorder_items)
                 po_note = f"\n\n（{po_names} 是預購品，到貨會再通知您）"
+            _auto_note = "\n\n此訊息為自動通知！如已經取貨～請自動忽略嘿～感謝您～"
             notify_msg = random.choice([
-                f"老闆您好～您訂的貨都到齊囉！\n{item_list}\n\n方便的時候可以來取貨哦{po_note}",
-                f"您好～通知您一下，以下品項都到貨了：\n{item_list}\n\n有空過來拿就可以囉～{po_note}",
-                f"老闆～您等的貨都到了！\n{item_list}\n\n歡迎隨時來取貨{po_note}",
+                f"老闆您好～您訂的貨都到齊囉！\n{item_list}\n\n方便的時候可以來取貨哦{po_note}{_auto_note}",
+                f"您好～通知您一下，以下品項都到貨了：\n{item_list}\n\n有空過來拿就可以囉～{po_note}{_auto_note}",
+                f"老闆～您等的貨都到了！\n{item_list}\n\n歡迎隨時來取貨{po_note}{_auto_note}",
             ])
 
             if uid and not uid.startswith("_"):
+                # 再查一次確認還是 pending（防止重複通知）
+                _still_pending = [p for p in non_preorder_items
+                                  if notify_store.get_status(p["id"]) == "pending"]
+                if not _still_pending:
+                    print(f"[pickup-notify] ⏭ {cust_name} 已通知過，跳過", flush=True)
+                    continue
                 # 先標記，避免重啟時重複通知
-                for p in non_preorder_items:
+                for p in _still_pending:
                     notify_store.mark_notified(p["id"])
                 try:
                     line_api.push_message(PushMessageRequest(
                         to=uid, messages=[TextMessage(text=notify_msg)]
                     ))
-                    print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(non_preorder_items)} 品項）", flush=True)
+                    print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(_still_pending)} 品項）", flush=True)
                     notified_count += 1
                     notified_list.append({
                         "name": cust_name,
@@ -2946,10 +2964,8 @@ async def get_full_report(days: int = 3):
 
 @app.post("/admin/check-restock-notify")
 async def check_restock_notify():
-    """手動觸發到貨通知檢查（測試用）"""
-    pending = notify_store.count_pending()
-    await _check_restock_notifications()
-    return {"status": "ok", "checked": pending}
+    """已停用 — 改用 pickup-notify 排程"""
+    return {"status": "disabled", "message": "舊通知系統已停用，改用 16:00/22:00 排程"}
 
 
 @app.post("/admin/update-customer-label")
