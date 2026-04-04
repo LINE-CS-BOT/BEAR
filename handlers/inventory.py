@@ -260,14 +260,12 @@ def query_product(user_id: str, product: str, line_api: MessagingApi = None) -> 
     if len(all_codes) == 1:
         return _query_single_product(user_id, all_codes[0], line_api)
 
-    # 多筆匹配 → 先篩有貨（qty > 0），最多 5 筆
+    # 多筆匹配 → 篩有貨（qty > 0）
     in_stock: list[tuple[str, str]] = []
-    for code in all_codes[:10]:
+    for code in all_codes:
         item = ecount_client.lookup(code)
         if item and (item.get("qty") or 0) > 0:
             in_stock.append((code, item.get("name") or code))
-        if len(in_stock) >= 5:
-            break
 
     if not in_stock:
         # 全部沒貨 → 第一筆走缺貨調貨流程
@@ -277,13 +275,15 @@ def query_product(user_id: str, product: str, line_api: MessagingApi = None) -> 
         # 剛好只有一款有貨 → 直接查
         return _query_single_product(user_id, in_stock[0][0], line_api)
 
-    # 多款有貨 → 讓客戶選
+    # 多款有貨 → 讓客戶選（最多顯示 20 筆）
+    display = in_stock[:20]
     state_manager.set(user_id, {
         "action":     "awaiting_product_clarify",
         "keyword":    product,
-        "candidates": in_stock,
+        "candidates": display,
     })
-    return tone.ask_product_clarify(product, in_stock)
+    extra = f"\n\n（共 {len(in_stock)} 款有貨，顯示前 20 筆）" if len(in_stock) > 20 else ""
+    return tone.ask_product_clarify(product, display) + extra
 
 
 def _find_case_variant(prod_cd: str) -> dict | None:
@@ -374,10 +374,13 @@ def notify_hq_restock(prod_name: str, qty: int, line_api: MessagingApi | None) -
 def _extract_product(text: str) -> str:
     """從訊息中嘗試提取產品編號或名稱（支援中英文）"""
 
+    # Step 0：清除標點符號
+    t = re.sub(r'[，,。.！!？?、；;：:～~\s]+', ' ', text).strip()
+
     # Step 1：剝離前綴（問候/代稱/助詞）
     t = re.sub(
-        r"^(?:請問|想問|問一下|查一下|你們|妳們|你們的|我想問|老闆|嗨|哈囉)\s*",
-        "", text,
+        r"^(?:請問|想問|問一下|查一下|你們|妳們|你們的|我想問|老闆|嗨|哈囉|嘿|喂)\s*",
+        "", t,
     )
     # 剝離動詞前綴（還有/有沒有 → 出現在產品名之前，可能無空格）
     t = re.sub(r"^(?:還有|有沒有)\s*", "", t)

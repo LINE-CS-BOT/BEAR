@@ -579,16 +579,15 @@ class EcountClient:
         return item["name"] if item else None
 
     def search_products_by_name(self, keyword: str) -> list[str]:
-        """以關鍵字模糊搜尋所有符合品名的產品編號清單（最多 20 筆）"""
+        """以關鍵字模糊搜尋所有符合品名的產品編號清單"""
         self._ensure_product_cache()
         kw = keyword.strip().upper()
         if not kw:
             return []
-        matched = [
+        return [
             item["code"] for item in self._product_cache
             if kw in item["name"].upper() or kw in item["code"].upper()
         ]
-        return matched[:20]
 
     def get_product_cache_item(self, prod_cd: str) -> dict | None:
         """從快取取得完整產品資料（含 unit, box_qty），O(1) 索引查找"""

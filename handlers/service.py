@@ -60,6 +60,19 @@ def handle_spec(user_id: str, text: str, line_api: MessagingApi) -> str:
     if not code:
         code = ecount_client._resolve_product_code(text)
 
+    # 2.5 還是沒有 → 從對話上下文找最近聊過的產品
+    if not code:
+        try:
+            from services.claude_ai import _get_chat_context
+            _ctx = _get_chat_context(user_id)
+            if _ctx:
+                _ctx_codes = re.findall(r'[A-Z]\d{4,}', _ctx.upper())
+                if _ctx_codes:
+                    code = _ctx_codes[-1]  # 最近的產品
+                    print(f"[spec] 從對話上下文找到產品: {code}", flush=True)
+        except Exception:
+            pass
+
     # 3. 查本地規格庫
     spec = None
     if code:

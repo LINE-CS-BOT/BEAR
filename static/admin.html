@@ -443,6 +443,14 @@
     </div>
   </div>
 
+  <!-- ── 未結帳購物車 ── -->
+  <div class="section">
+    <div class="section-title" style="display:flex;align-items:center;gap:8px">🛒 未結帳購物車 <button onclick="loadCarts()" style="font-size:0.75rem;padding:2px 8px;background:#1a73e8;color:#fff;border:none;border-radius:4px;cursor:pointer">🔄 更新</button></div>
+    <div id="cart-list-inline" style="min-height:40px">
+      <div style="color:#bbb;font-size:0.85rem">載入中...</div>
+    </div>
+  </div>
+
   <!-- 接手面板 -->
   <div class="card">
     <div class="report-toolbar">
@@ -1543,6 +1551,39 @@
     loadPickupNotify();
   }
 
+  // ── 未結帳購物車 ─────────────────────────────────
+  async function loadCarts() {
+    const wrap = document.getElementById('cart-list-inline');
+    try {
+      const r = await fetch('/admin/carts');
+      const carts = await r.json();
+      if (!carts.length) {
+        wrap.innerHTML = '<div style="color:#bbb;font-size:0.85rem">目前沒有未結帳的購物車</div>';
+        return;
+      }
+      let html = '<table style="width:100%;border-collapse:collapse;font-size:0.85rem">';
+      html += '<tr style="background:#f5f7fa;font-weight:600"><th style="padding:4px 8px;text-align:left">客戶</th><th style="padding:4px 8px;text-align:left">品項</th><th style="padding:4px 8px"></th></tr>';
+      carts.forEach(c => {
+        const items = c.items.map(i => (i.prod_cd || '') + ' ' + i.prod_name + '×' + i.qty + (i.note ? '（' + i.note + '）' : '')).join('、');
+        html += '<tr style="border-bottom:1px solid #eee">';
+        html += '<td style="padding:4px 8px">' + c.customer_name + '</td>';
+        html += '<td style="padding:4px 8px;color:#555">' + items + '</td>';
+        html += '<td style="padding:4px 8px;text-align:right"><button onclick="deleteCart(\'' + c.user_id + '\')" style="font-size:0.78rem;padding:2px 8px;background:#e57373;color:#fff;border:none;border-radius:4px;cursor:pointer">刪除</button></td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+      wrap.innerHTML = html;
+    } catch(e) {
+      wrap.innerHTML = '<div style="color:#e57373;font-size:0.85rem">載入失敗</div>';
+    }
+  }
+
+  async function deleteCart(userId) {
+    if (!confirm('確定要刪除這個購物車嗎？')) return;
+    await fetch('/admin/carts/' + encodeURIComponent(userId), { method: 'DELETE' });
+    loadCarts();
+  }
+
   // ── 群組管理 ─────────────────────────────────────
   function _shortGid(gid) {
     if (!gid || gid.length <= 14) return gid || '—';
@@ -1888,7 +1929,9 @@
   loadTagsConfig();  // 載入分類標籤設定
   loadVisits();
   loadPickupNotify();
-  setInterval(loadVisits, 60000);  // 每分鐘自動刷新
+  loadCarts();
+  setInterval(loadVisits, 60000);
+  setInterval(loadCarts, 60000);
   loadInventoryCheck(false);       // 載入庫存情況表（用快取；若無快取則重新查詢）
   scheduleInventoryMidnightRefresh(); // 每日 00:00 自動重載
   loadNewProducts();               // 載入待審核新品項
