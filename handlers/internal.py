@@ -77,6 +77,13 @@ class _ProdCodeFinder:
             code = m.group(1)
             if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
                 yield m
+    def sub(self, repl, text):
+        def _repl_fn(m):
+            code = m.group(1)
+            if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
+                return repl if isinstance(repl, str) else repl(m)
+            return m.group(0)
+        return _PROD_CODE_RE_RAW.sub(_repl_fn, text)
 _PROD_CODE_RE = _ProdCodeFinder()
 
 # 到貨觸發詞
@@ -2103,7 +2110,7 @@ def _fmt_stock_lines(item: dict, prod_code: str = "") -> str:
 _INFO_KW = ["資訊", "info", "INFO", "說明", "介紹"]
 
 
-def _fuzzy_product_search(query: str, max_results: int = 3) -> list[str]:
+def _fuzzy_product_search(query: str, max_results: int = 50) -> list[str]:
     """
     模糊品名搜尋：整串 → 逐詞 → 逐字縮短，直到有結果。
     回傳產品編號清單（最多 max_results 筆）。
@@ -2149,44 +2156,46 @@ def handle_internal_product_info(text: str, state_key: str | None = None) -> str
         if not codes:
             return f"🔍 找不到「{query}」的相關產品資訊"
 
-    results = []
+    in_stock = []
+    out_of_stock = []
     last_code, last_name = None, None
     media_dir = _get_media_dir()
     for raw_code in codes:
         prod_code = raw_code.upper()
-        po = _format_po(prod_code)
         raw_po = _get_raw_po_block(prod_code)
         try:
             item = ecount_client.lookup(prod_code)
-        except Exception as e:
-            results.append(f"⚠️ {prod_code}：查詢失敗（{e}）")
+        except Exception:
             continue
         prod_name = (item.get("name") if item else "") or prod_code
         qty = item.get("qty") if item else None
 
-        # 檢查 PO 文 + 圖片
         has_po = raw_po is not None
         files = _match_product_media_files(prod_code, media_dir) if media_dir else []
         has_img = len(files) > 0
 
-        # 庫存狀態
+        check_parts = []
+        check_parts.append(f"PO文：{'✅' if has_po else '❌'}")
+        check_parts.append(f"圖片：{'✅' + str(len(files)) + '張' if has_img else '❌'}")
+
         if qty is not None and qty > 0:
-            stock_str = f"可售庫存：{qty}"
-        elif qty is not None:
-            stock_str = f"可售庫存：{qty}（缺貨）"
+            check_parts.append(f"可售：{qty}")
+            in_stock.append(f"  {prod_code}　{prod_name}\n  {'　'.join(check_parts)}")
         else:
-            stock_str = "可售庫存：查詢失敗"
+            check_parts.append("缺貨")
+            out_of_stock.append(f"  {prod_code}　{prod_name}\n  {'　'.join(check_parts)}")
 
-        # 檢查狀態
-        check_lines = []
-        check_lines.append(f"PO文：{'✅' if has_po else '❌ 無'}")
-        check_lines.append(f"圖片：{'✅ ' + str(len(files)) + '張' if has_img else '❌ 無'}")
-        check_lines.append(stock_str)
-
-        results.append(f"{po}\n{'　'.join(check_lines)}")
         last_code, last_name = prod_code, prod_name
 
-    return "\n\n".join(results) if results else None
+    lines = []
+    if in_stock:
+        lines.append(f"✅ 有庫存（{len(in_stock)} 筆）：")
+        lines.extend(in_stock)
+    if out_of_stock:
+        lines.append(f"\n❌ 缺貨（{len(out_of_stock)} 筆）：")
+        lines.extend(out_of_stock)
+
+    return "\n".join(lines) if lines else None
 
 
 def handle_internal_product_info_by_name(text: str, state_key: str | None = None) -> str | None:
@@ -2861,6 +2870,67 @@ def handle_internal_product_photo(text: str, line_api) -> str | None:
         else:
             results.append(f"📷 {prod_code} 有 {len(files)} 張照片")
     return "\n".join(results)
+
+
+# ---------------------------------------------------------------------------
+# 產品圖文查詢：「Z3555圖文」「Z3555 T1202圖文」
+# ---------------------------------------------------------------------------
+_PO_PHOTO_KW = ["圖文"]
+
+
+def handle_internal_product_po_photo(text: str, line_api) -> str | None:
+    """
+    「Z3555圖文」→ 推送 PO 文 + 圖片到內部群。支援多產品。
+    """
+    if not any(kw in text for kw in _PO_PHOTO_KW):
+        return None
+    codes = _PROD_CODE_RE.findall(text)
+    if not codes:
+        return None
+
+    ngrok_url = _get_ngrok_url()
+    media_dir = _get_media_dir()
+
+    from config import settings
+    from linebot.v3.messaging import PushMessageRequest
+    group_id = settings.LINE_GROUP_ID
+
+    results = []
+    for raw_code in codes:
+        prod_code = raw_code.upper()
+        raw_po = _get_raw_po_block(prod_code)
+        files = _match_product_media_files(prod_code, media_dir) if media_dir else []
+
+        # 推 PO 文
+        if raw_po and group_id:
+            try:
+                line_api.push_message(PushMessageRequest(
+                    to=group_id, messages=[TextMessage(text=raw_po)]
+                ))
+            except Exception as e:
+                results.append(f"❌ {prod_code} PO文推送失敗：{e}")
+                continue
+
+        # 推圖片
+        if files and ngrok_url and group_id:
+            media_msgs = _build_media_messages(prod_code, files, ngrok_url)[:4]
+            if media_msgs:
+                try:
+                    line_api.push_message(PushMessageRequest(
+                        to=group_id, messages=media_msgs
+                    ))
+                except Exception as e:
+                    results.append(f"❌ {prod_code} 圖片推送失敗：{e}")
+                    continue
+
+        if not raw_po and not files:
+            results.append(f"❌ {prod_code} 無 PO 文、無圖片")
+        elif not raw_po:
+            results.append(f"❌ {prod_code} 無 PO 文")
+        elif not files:
+            results.append(f"❌ {prod_code} 無圖片")
+
+    return "\n".join(results) if results else None
 
 
 def _get_ngrok_url() -> str:
