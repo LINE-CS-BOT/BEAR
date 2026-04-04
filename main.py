@@ -2948,6 +2948,155 @@ async def process_queue():
     return {"status": "ok", "processed": pending}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 客戶下單網頁 API（LIFF）
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/shop/products")
+async def shop_products():
+    """取得可售庫存 > 10 的商品，按台型分類"""
+    import json as _json_shop
+    from services.ecount import ecount_client as _ec_shop
+
+    _ec_shop._ensure_product_cache()
+    avail_path = Path(__file__).parent / "data" / "available.json"
+    specs_path = Path(__file__).parent / "data" / "specs.json"
+
+    avail = _json_shop.loads(avail_path.read_text(encoding="utf-8")) if avail_path.exists() else {}
+    specs = _json_shop.loads(specs_path.read_text(encoding="utf-8")) if specs_path.exists() else {}
+
+    media_dir = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品照片")
+    base_url = "https://xmnline.duckdns.org/product-photo"
+
+    products = []
+    for code, data in avail.items():
+        if not isinstance(data, dict):
+            continue
+        qty = data.get("available", 0)
+        if qty <= 10:
+            continue
+        # 排除耗材
+        if code.upper().startswith("HH"):
+            continue
+
+        cache = _ec_shop.get_product_cache_item(code)
+        name = (cache.get("name") if cache else "") or code
+        price = (cache.get("price") if cache else 0) or 0
+        unit = (cache.get("unit") if cache else "") or "個"
+
+        spec = specs.get(code, {})
+        machine = spec.get("machine", [])
+        machine_label = "、".join(machine) if machine else "通用"
+
+        # 找第一張圖片
+        image_url = ""
+        if media_dir.exists():
+            for ext in [".jpg", ".jpeg", ".png"]:
+                # 優先找 A 圖
+                for suffix in ["A", "", "B"]:
+                    f = media_dir / f"{code}{suffix}{ext}"
+                    if f.exists():
+                        image_url = f"{base_url}/{f.name}"
+                        break
+                if image_url:
+                    break
+
+        products.append({
+            "code": code,
+            "name": name,
+            "price": int(price) if price else 0,
+            "unit": unit,
+            "machine": machine_label,
+            "image": image_url,
+        })
+
+    # 按台型分組
+    groups = {}
+    for p in products:
+        m = p["machine"]
+        if m not in groups:
+            groups[m] = []
+        groups[m].append(p)
+
+    # 每組按價格排序
+    for g in groups.values():
+        g.sort(key=lambda x: -x["price"])
+
+    return {"groups": groups, "total": len(products)}
+
+
+@app.get("/api/shop/profile")
+async def shop_profile(uid: str = ""):
+    """LIFF 用：取得客戶 real_name"""
+    if not uid:
+        return {"real_name": ""}
+    cust = customer_store.get_by_line_id(uid)
+    return {"real_name": (cust.get("real_name") or cust.get("display_name") or "") if cust else ""}
+
+
+@app.post("/api/shop/order")
+async def shop_order(request: Request):
+    """LIFF 下單：建立 Ecount 訂單 + 登記到貨通知"""
+    import json as _json_order
+    body = await request.json()
+
+    line_user_id = body.get("user_id", "")
+    items = body.get("items", [])  # [{"code": "Z3555", "qty": 2}, ...]
+
+    if not line_user_id or not items:
+        return {"ok": False, "error": "缺少 user_id 或 items"}
+
+    from services.ecount import ecount_client as _ec_order
+    from storage.notify import notify_store
+    from storage.customers import customer_store as _cs_order
+
+    # 取客戶 Ecount 代碼
+    cust = _cs_order.get_by_line_id(line_user_id)
+    cust_name = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
+    cust_code = (cust.get("ecount_cust_cd") or "") if cust else ""
+
+    if not cust_code:
+        # 沒有 Ecount 代碼 → 用預設
+        cust_code = settings.ECOUNT_DEFAULT_CUST_CD
+
+    phone = (cust.get("phone") or "") if cust else ""
+
+    # 建立訂單
+    order_items = []
+    for item in items:
+        code = item["code"].upper()
+        qty = int(item.get("qty", 1))
+        cache = _ec_order.get_product_cache_item(code)
+        name = (cache.get("name") if cache else "") or code
+        order_items.append({"prod_cd": code, "qty": qty, "name": name})
+
+    slip_no = _ec_order.save_order(
+        cust_code=cust_code,
+        items=[{"prod_cd": i["prod_cd"], "qty": i["qty"]} for i in order_items],
+        phone=phone,
+    )
+
+    if not slip_no:
+        return {"ok": False, "error": "訂單建立失敗"}
+
+    # 全部登記到貨通知
+    for i in order_items:
+        notify_store.add(
+            user_id=line_user_id,
+            prod_code=i["prod_cd"],
+            prod_name=i["name"],
+            source="staff",
+            qty_wanted=i["qty"],
+        )
+
+    return {
+        "ok": True,
+        "slip_no": slip_no,
+        "customer": cust_name,
+        "items": [{"code": i["prod_cd"], "name": i["name"], "qty": i["qty"]} for i in order_items],
+    }
+
+
 @app.post("/admin/full-report")
 async def push_full_report(days: int = 3):
     """推送完整報表（已處理 + 未處理）到內部群組，預設顯示 3 天內已處理記錄"""
