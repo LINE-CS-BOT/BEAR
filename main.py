@@ -280,10 +280,12 @@ def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
 
     if reply_token:
         try:
-            resp = line_api.reply_message(ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=messages,
-            ))
+            with ApiClient(_configuration) as _fresh_client:
+                _fresh_api = MessagingApi(_fresh_client)
+                resp = _fresh_api.reply_message(ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=messages,
+                ))
             # 記錄送出的圖片 message_id → product_code
             if image_codes and hasattr(resp, 'sent_messages') and resp.sent_messages:
                 _store_sent_image_ids(resp.sent_messages, image_codes)
@@ -1095,10 +1097,14 @@ def _flush_media_only(
 
     if context == "group":
         # ── 如果有「補圖/加圖/存圖」等待中 → 直接處理 ──
-        _st = state_manager.get(user_id)
+        # 先查 group_id 的 state（不同人傳圖也能觸發），再查 user_id
+        _st = state_manager.get(group_id) if group_id else None
+        if not _st or _st.get("action") not in ("pending_add_img", "pending_save_img"):
+            _st = state_manager.get(user_id)
         if _st and _st.get("action") == "pending_add_img":
             _add_code = _st["prod_code"]
             _add_gid = _st.get("group_id", group_id)
+            state_manager.clear(group_id)
             state_manager.clear(user_id)
             ack = handle_internal_add_images(_add_code, _all_media)
             if ack:
@@ -1107,6 +1113,7 @@ def _flush_media_only(
         if _st and _st.get("action") == "pending_save_img":
             _save_code = _st["prod_code"]
             _save_gid = _st.get("group_id", group_id)
+            state_manager.clear(group_id)
             state_manager.clear(user_id)
             ack = handle_internal_save_images(_save_code, _all_media)
             if ack:
@@ -1224,32 +1231,36 @@ def _msg_buf_flush_inner(user_id: str) -> None:
         # ── 回覆輔助：優先 reply_message，失敗才 push（共用 _send_reply）──
         _reply_token_used = [False]
 
-        def _send_group_ack(text: str) -> None:
+        def _send_group_ack(text_or_tuple) -> None:
             nonlocal reply_token
+            from linebot.v3.messaging import ImageMessage as _ImgMsg
+            # 支援 tuple: (text, [image_urls])
+            image_urls = []
+            if isinstance(text_or_tuple, tuple):
+                text, image_urls = text_or_tuple[0], text_or_tuple[1]
+            else:
+                text = text_or_tuple
             if len(text) > 4990:
                 text = text[:4950] + "\n\n...（內容過長，已截斷）"
+            messages = [TextMessage(text=text)]
+            for url in image_urls[:4]:
+                messages.append(_ImgMsg(original_content_url=url, preview_image_url=url))
             if reply_token and not _reply_token_used[0]:
                 try:
-                    line_api.reply_message(ReplyMessageRequest(
-                        reply_token=reply_token,
-                        messages=[TextMessage(text=text)],
-                    ))
+                    # 每次建新的 client 避免連線過期
+                    with ApiClient(_configuration) as _fresh_client:
+                        _fresh_api = MessagingApi(_fresh_client)
+                        _fresh_api.reply_message(ReplyMessageRequest(
+                            reply_token=reply_token,
+                            messages=messages[:5],
+                        ))
                     _reply_token_used[0] = True
                     return
                 except Exception as _reply_err:
                     print(f"[txt-buf] reply_message 失敗: {_reply_err}", flush=True)
                     reply_token = None  # 標記 token 已失效
-            if _push_quota_exhausted:
-                print(f"[txt-buf] 月額度已用完，跳過 push", flush=True)
-                return
-            try:
-                line_api.push_message(PushMessageRequest(
-                    to=group_id, messages=[TextMessage(text=text)]))
-            except Exception as _push_err:
-                if _is_quota_429(_push_err):
-                    _mark_push_exhausted()
-                else:
-                    print(f"[txt-buf] push_message 失敗: {_push_err}", flush=True)
+            # 內部群禁用 push，只用免費 reply
+            print(f"[txt-buf] 內部群 reply 失敗，不 fallback push（節省額度）", flush=True)
 
         # ════ 內部群組 ════
         if context == "group":
@@ -1280,6 +1291,38 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     state_manager.set(user_id, upload_state)
                     _new_prod_timer_reset(user_id, group_id, reply_token)
                     ack = None  # 靜默等待
+                if ack:
+                    _send_group_ack(ack)
+                return
+
+            # ── 補圖/存圖 Session 進行中（查 group_id + user_id）──────────
+            _pending_img_state = state_manager.get(group_id) if group_id else None
+            if not _pending_img_state or _pending_img_state.get("action") not in ("pending_add_img", "pending_save_img"):
+                _pending_img_state = upload_state if upload_state and upload_state.get("action") in ("pending_add_img", "pending_save_img") else None
+            if _pending_img_state:
+                if _INTERNAL_UPLOAD_FINISH_RE.match(combined.strip()):
+                    _action = _pending_img_state["action"]
+                    _code = _pending_img_state["prod_code"]
+                    _collected = _pending_img_state.get("media", [])
+                    if media_e:
+                        _collected.extend(media_e["media"])
+                    state_manager.clear(group_id)
+                    state_manager.clear(user_id)
+                    if not _collected:
+                        ack = f"❌ {_code} 沒有收到圖片"
+                    elif _action == "pending_add_img":
+                        ack = handle_internal_add_images(_code, _collected)
+                    else:
+                        ack = handle_internal_save_images(_code, _collected)
+                else:
+                    # 非完成指令 → 累積圖片
+                    if media_e:
+                        _existing = _pending_img_state.get("media", [])
+                        _existing.extend(media_e["media"])
+                        _pending_img_state["media"] = _existing
+                        _state_key = group_id if state_manager.get(group_id) else user_id
+                        state_manager.set(_state_key, _pending_img_state)
+                    ack = None
                 if ack:
                     _send_group_ack(ack)
                 return
@@ -1390,12 +1433,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 return
             elif _save_img_m and not media_e:
                 _save_code = _save_img_m.group(1).upper()
-                state_manager.set(user_id, {
+                # 用 group_id 存 state（內部群任何人傳圖都能觸發）
+                state_manager.set(group_id, {
                     "action": "pending_save_img",
                     "prod_code": _save_code,
                     "group_id": group_id,
                 })
-                _send_group_ack(f"📷 等待 {_save_code} 的圖片，請傳圖...")
                 return
 
             # ── 加圖 Z3432（保留舊圖，追加新圖片/影片）──────────────────
@@ -1407,14 +1450,13 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     _send_group_ack(ack)
                 return
             elif _add_img_m and not media_e:
-                # 文字先到，圖片還沒到 → 存 state 等圖片
+                # 文字先到，圖片還沒到 → 用 group_id 存 state
                 _add_code = _add_img_m.group(1).upper()
-                state_manager.set(user_id, {
+                state_manager.set(group_id, {
                     "action": "pending_add_img",
                     "prod_code": _add_code,
                     "group_id": group_id,
                 })
-                _send_group_ack(f"📷 等待 {_add_code} 的圖片，請傳圖...")
                 return
 
             # ── 存文（純文字 → PO文.txt）────────────────────────────────
@@ -1529,7 +1571,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         _lq_item = _ec_mq.get_product_cache_item(_lq_code)
                         _lq_name = (_lq_item.get("name") if _lq_item else "") or _lq_code
                         from storage import cart as _cart_mq
-                        _cart_mq.add_item(user_id, _lq_code, _lq_name, _lq_qty)
+                        _cart_mq.set_item(user_id, _lq_code, _lq_name, _lq_qty)
                         _added_items.append(f"  • {_lq_name}（{_lq_code}）× {_lq_qty}")
                         print(f"[quote-multi] {_lq_code} × {_lq_qty}", flush=True)
                     _has_unknown_quotes = any(

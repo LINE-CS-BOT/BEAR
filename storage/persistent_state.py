@@ -21,6 +21,7 @@ PERSISTENT_ACTIONS = {
     "awaiting_order_confirm",
     "awaiting_group_address_confirm",
     "awaiting_order_id",
+    "awaiting_product_clarify",
     "human_takeover",
 }
 

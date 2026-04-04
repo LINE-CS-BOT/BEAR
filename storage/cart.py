@@ -72,6 +72,25 @@ def add_item(user_id: str, prod_cd: str, prod_name: str, qty: int, note: str = "
         return list(cart)
 
 
+def set_item(user_id: str, prod_cd: str, prod_name: str, qty: int, note: str = "") -> list[dict]:
+    """設定品項數量（相同 prod_cd 則覆蓋數量，不累加），回傳目前購物車"""
+    prod_cd = prod_cd.upper()
+    with _lock:
+        cart = _carts.setdefault(user_id, [])
+        for item in cart:
+            if item["prod_cd"].upper() == prod_cd:
+                item["qty"] = qty
+                if note:
+                    item["note"] = note
+                _cart_timestamps[user_id] = time.time()
+                _save()
+                return list(cart)
+        cart.append({"prod_cd": prod_cd, "prod_name": prod_name, "qty": qty, "note": note})
+        _cart_timestamps[user_id] = time.time()
+        _save()
+        return list(cart)
+
+
 def set_note(user_id: str, note: str) -> bool:
     """替最後一個品項設定備註，回傳是否成功"""
     with _lock:
