@@ -2973,11 +2973,22 @@ async def shop_products():
         if not isinstance(data, dict):
             continue
         qty = data.get("available", 0)
-        if qty <= 10:
-            continue
         # 排除耗材
         if code.upper().startswith("HH"):
             continue
+        # 先取品名判斷是否為野獸國/美好（庫存 > 0 就上）
+        _cache_pre = _ec_shop.get_product_cache_item(code)
+        _name_pre = (_cache_pre.get("name") if _cache_pre else "") or ""
+        _is_special = "野獸國" in _name_pre or "美好" in _name_pre
+        # 檢查是否為預購品
+        from handlers.inventory import _check_preorder
+        _is_preorder = _check_preorder(code)
+        if _is_special or _is_preorder:
+            if qty <= 0 and not _is_preorder:
+                continue
+        else:
+            if qty <= 10:
+                continue
 
         cache = _ec_shop.get_product_cache_item(code)
         name = (cache.get("name") if cache else "") or code
@@ -3009,6 +3020,7 @@ async def shop_products():
             "machine": machine_label,
             "size": spec.get("size", ""),
             "weight": spec.get("weight", ""),
+            "preorder": qty <= 0,
         })
 
     # 加上品類標籤
@@ -3059,7 +3071,10 @@ async def shop_profile(uid: str = ""):
     if not uid:
         return {"real_name": ""}
     cust = customer_store.get_by_line_id(uid)
-    return {"real_name": (cust.get("real_name") or cust.get("display_name") or "") if cust else ""}
+    return {
+        "real_name": (cust.get("real_name") or cust.get("display_name") or "") if cust else "",
+        "ecount_cust_cd": (cust.get("ecount_cust_cd") or "") if cust else "",
+    }
 
 
 @app.post("/api/shop/order")
@@ -5816,4 +5831,4 @@ if __name__ == "__main__":
     _os.environ["WATCHFILES_FORCE_POLLING"] = "true"
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True,
                 reload_delay=1.5,
-                reload_excludes=["data", "*.log", "截圖用", "static"])
+                reload_excludes=["data", "*.log", "截圖用", "static", ".claude"])
