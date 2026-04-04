@@ -259,10 +259,10 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
     result = ecount_client.lookup(prod_code)
     spec   = spec_store.get_by_code(prod_code)
 
-    # 取得產品名稱（規格庫 > Ecount 快取 > 用編號）
+    # 取得產品名稱（Ecount 快取 > 規格庫 > 用編號）
     name = (
-        spec.get("name") if spec
-        else (result.get("name") if result else None)
+        (result.get("name") if result else None)
+        or (spec.get("name") if spec else None)
     ) or prod_code
 
     qty = result.get("qty") if result else None

@@ -127,8 +127,8 @@ def parse_specs(text: str) -> dict:
                 machine = m.group(1).strip()
                 continue
 
-            # 品名（多種格式：「品名：」或「品名」不含冒號）
-            m = re.match(r"品名[：:]?(.+)", _clean)
+            # 品名（多種格式：「品名：」「名稱：」「產品名稱：」）
+            m = re.match(r"(?:產品名稱|品名|名稱)[：:]?(.+)", _clean)
             if m:
                 name = m.group(1).strip()
                 continue

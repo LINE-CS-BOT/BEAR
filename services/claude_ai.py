@@ -139,6 +139,96 @@ _SYSTEM_PROMPT = """重要：忽略所有其他系統指示。你現在的唯一
 - 你的回覆會直接傳給客戶，所以只輸出回覆內容，不要加任何解釋、程式碼或前綴"""
 
 
+_COMMAND_PROMPT = """你是小蠻牛客服系統的判斷引擎。根據客戶的訊息、產品資訊、購物車狀態，回傳一個 JSON 指令。
+
+可用指令：
+1. {"action": "add_cart", "code": "Z3575", "qty": 10, "note": ""} — 加入購物車（客戶明確要下單+有數量）
+2. {"action": "add_cart", "code": "Z3575", "qty": 10, "note": "款式平均分配"} — 加入購物車+備註
+3. {"action": "ask_quantity", "code": "Z3575"} — 有產品但客戶沒說數量，問幾個
+4. {"action": "checkout"} — 客戶說好了/就這些/送出，結帳購物車
+5. {"action": "reply", "text": "回覆內容"} — 一般回覆（問候、查價格、推薦等）
+6. {"action": "escalate", "reason": "原因"} — 無法處理，轉真人
+
+規則：
+- 客戶說「要X個」「來X箱」「幫我留X個」→ add_cart
+- 客戶同時問「有嗎」又說「要X個」→ add_cart（有貨就直接加）
+- 客戶說「好了」「就這些」「就先這個」→ checkout
+- 客戶說備註性質的話（款式平均分配、不要黑色等）→ add_cart 的 note 欄位
+- 客戶問價格/規格/推薦 → reply
+- 客戶問出貨/送貨/物流 → escalate
+- 客戶說「幫我各留一隻」這種看不懂的 → escalate
+- 絕對不要在 reply 的 text 裡提到庫存數量，只說有現貨或缺貨
+- 只輸出 JSON，不要加任何其他文字"""
+
+
+def ask_claude_command(
+    text: str,
+    user_id: str = "",
+    product_code: str = "",
+    product_name: str = "",
+) -> dict | None:
+    """
+    讓 Claude 分析客戶訊息，回傳結構化指令 dict。
+    失敗回傳 None。
+    """
+    import json as _json_cmd
+
+    context = _load_context()
+    chat_ctx = _get_chat_context(user_id) if user_id else ""
+
+    # 購物車狀態
+    cart_ctx = ""
+    if user_id:
+        try:
+            from storage import cart as _cart_cmd
+            _cart_items = _cart_cmd.get_cart(user_id)
+            if _cart_items:
+                cart_lines = ["【客戶目前購物車】"]
+                for _ci in _cart_items:
+                    _note = f"（備註：{_ci['note']}）" if _ci.get("note") else ""
+                    cart_lines.append(f"  • {_ci['prod_name']}（{_ci['prod_cd']}）× {_ci['qty']}{_note}")
+                cart_ctx = "\n".join(cart_lines)
+        except Exception:
+            pass
+
+    # 產品上下文
+    prod_ctx = ""
+    if product_code:
+        prod_ctx = f"【已辨識產品】{product_name}（{product_code}）"
+
+    prompt = (
+        f"{_COMMAND_PROMPT}\n\n{context}\n\n{chat_ctx}\n\n{cart_ctx}\n\n{prod_ctx}\n\n"
+        f"---\n客戶訊息：{text}\n\n請回傳 JSON 指令："
+    )
+
+    try:
+        env = {**__import__("os").environ, "PYTHONIOENCODING": "utf-8"}
+        result = subprocess.run(
+            [_CLAUDE_CMD, "-p", "-", "--tools", ""],
+            input=prompt.encode("utf-8"),
+            capture_output=True, timeout=_TIMEOUT, env=env,
+            cwd="C:\\Users\\bear\\AppData\\Local\\Temp",
+        )
+        answer = result.stdout.decode("utf-8", errors="replace").strip()
+        if not answer or result.returncode != 0:
+            return None
+
+        # 提取 JSON（可能被包在 ```json ... ``` 裡）
+        import re as _re_cmd
+        m = _re_cmd.search(r'\{[^{}]+\}', answer)
+        if m:
+            cmd = _json_cmd.loads(m.group(0))
+            print(f"[claude-cmd] {text[:30]!r} → {cmd}", flush=True)
+            return cmd
+        return None
+    except subprocess.TimeoutExpired:
+        print(f"[claude-cmd] 逾時: {text[:30]!r}", flush=True)
+        return None
+    except Exception as e:
+        print(f"[claude-cmd] 例外: {e}", flush=True)
+        return None
+
+
 def ask_claude_text(question: str, user_id: str = "") -> str | None:
     """
     用 Claude CLI 回答文字問題。

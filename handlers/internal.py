@@ -3175,10 +3175,10 @@ _PO_FILE = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品PO文.txt")
 _IMG_DIR = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品照片")
 
 # 存圖指令正則：「存圖 Z3432」（替換舊圖）
-_SAVE_IMG_RE = re.compile(r'存圖\s+([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE)
+_SAVE_IMG_RE = re.compile(r'存圖\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE)
 
 # 加圖指令正則：「加圖 Z3432」（保留舊圖，追加新圖）
-_ADD_IMG_RE  = re.compile(r'(?:加圖|補圖)\s+([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE)
+_ADD_IMG_RE  = re.compile(r'(?:加圖|補圖)\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE)
 
 # Session 觸發詞與結束詞（「存圖」單獨傳也進 session；含貨號時走單品路徑）
 _UPLOAD_TRIGGERS  = {"上架", "存檔", "存圖"}
