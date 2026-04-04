@@ -268,7 +268,8 @@ def detect_intent(text: str) -> Intent:
 
     # 排除「有沒有空/時間/人/機會」等非庫存語境
     _INV_EXCLUDE = ["有沒有空", "有沒有時間", "有沒有人", "有沒有機會", "有沒有辦法", "有沒有問題",
-                    "忘記還有", "還有這個", "過去拿", "找時間", "去拿"]
+                    "忘記還有", "還有這個", "過去拿", "找時間", "去拿",
+                    "昨天有訂", "之前有訂", "上次有訂", "已經訂", "有訂購", "已訂購"]
     if not any(w in text for w in _INV_EXCLUDE):
         for kw in _INVENTORY_KEYWORDS:
             if kw in text:
