@@ -104,12 +104,12 @@ _STAFF_ORDER_HEADER_RE = re.compile(
 # group(1)=產品代碼  group(2)=數量  group(3)=單位（可為空）
 # 支援空白、*、× 作為分隔符，例：Z3598 1、Z3598*1、Z3598×1
 _STAFF_ORDER_ITEM_RE = re.compile(
-    rf'({_PROD_CODE_PAT})[\s×\*]+([零一二三四五六七八九十百千\d]+)\s*(個|件|盒|套|箱|組)?'
+    rf'({_PROD_CODE_PAT})[\s×\*xX]+([零一二三四五六七八九十百千\d]+)\s*(個|件|盒|套|箱|組)?'
 )
 # 格式C（無需「訂」關鍵字）：「姓名 產品代碼 數量個 [備註]」，例：方力緯 Z3562 5個 不要黑色
 # group(1)=姓名  group(2)=產品代碼  group(3)=數量  group(4)=單位  group(5)=尾段備註（可為空）
 _STAFF_ORDER_DIRECT_RE = re.compile(
-    rf'^(.+?)\s+({_PROD_CODE_PAT})[\s×\*]+([零一二三四五六七八九十百千\d]+)\s*(個|件|盒|套|箱|組)?\s*(.*?)$'
+    rf'^(.+?)\s+({_PROD_CODE_PAT})[\s×\*xX]+([零一二三四五六七八九十百千\d]+)\s*(個|件|盒|套|箱|組)?\s*(.*?)$'
 )
 _BULK_UNITS = {"件", "箱"}
 

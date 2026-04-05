@@ -1271,17 +1271,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 except Exception as _reply_err:
                     print(f"[txt-buf] reply_message 失敗: {_reply_err}", flush=True)
                     reply_token = None  # 標記 token 已失效
-            # 內部群 reply 失敗 → push 給管理員個人（1 則，不推群組）
-            _ADMIN_UID = "Uac17599b38b673b836ccb48025204b19"
-            if not _push_quota_exhausted:
-                try:
-                    line_api.push_message(PushMessageRequest(
-                        to=_ADMIN_UID, messages=messages[:5]))
-                    print(f"[txt-buf] 內部群 reply 失敗，push 給管理員", flush=True)
-                except Exception as _push_err:
-                    print(f"[txt-buf] push 管理員也失敗: {_push_err}", flush=True)
-            else:
-                print(f"[txt-buf] 內部群 reply 失敗，月額度用完跳過", flush=True)
+            print(f"[txt-buf] 內部群 reply 失敗，不回應", flush=True)
 
         # ════ 內部群組 ════
         if context == "group":
