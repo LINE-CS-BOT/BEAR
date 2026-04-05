@@ -278,10 +278,9 @@ async def generate_one(page, prod_code: str, image_paths: list[str],
         # 7. 下載 / 存圖
         saved = False
 
-        # 方法 A：hover 最新生成圖片 → 點「下載原尺寸」（最高品質）
+        # 方法 A：點圖片 → 右鍵另存新檔
         try:
             img_loc = None
-            # 找 src 等於 generated_src 的那張圖
             for sel in ['model-response img', '.response-container img', 'article img']:
                 loc = page.locator(sel)
                 cnt = await loc.count()
@@ -292,7 +291,6 @@ async def generate_one(page, prod_code: str, image_paths: list[str],
                         break
                 if img_loc:
                     break
-            # fallback：用最後一張
             if not img_loc:
                 for sel in ['model-response img', '.response-container img', 'article img']:
                     loc = page.locator(sel)
@@ -300,26 +298,38 @@ async def generate_one(page, prod_code: str, image_paths: list[str],
                         img_loc = loc.last
                         break
             if img_loc:
-                await img_loc.hover()
-                await page.wait_for_timeout(800)
-                dl_btn_sels = [
-                    'button[data-test-id="download-generated-image-button"]',
-                    'button[aria-label="下載原尺寸圖片"]',
-                    'button[aria-label*="下載原尺寸"]',
-                ]
-                for sel in dl_btn_sels:
-                    btn = page.locator(sel)
-                    if await btn.count() > 0:
-                        try:
-                            async with page.expect_download(timeout=20000) as dl_info:
-                                await btn.last.click()
-                            dl = await dl_info.value
-                            await dl.save_as(str(out_path))
-                            saved = True
-                            print(f"[gemini] ✅ 方法A（下載原尺寸）成功")
-                        except Exception as e:
-                            print(f"[gemini] 方法A 下載失敗（{e}）")
-                        break
+                # 點圖片打開大圖
+                await img_loc.click()
+                await page.wait_for_timeout(1000)
+                # 右鍵另存新檔
+                try:
+                    # 找大圖的 img 元素
+                    big_img = page.locator('img[style*="max-width"], img[style*="max-height"], .lightbox img, [role="dialog"] img').last
+                    if await big_img.count() == 0:
+                        big_img = img_loc
+                    async with page.expect_download(timeout=20000) as dl_info:
+                        await big_img.click(button="right")
+                        await page.wait_for_timeout(500)
+                        # 點「另存圖片」選項
+                        save_sels = [
+                            'text="另存圖片為..."',
+                            'text="Save image as..."',
+                            'text="另存圖片"',
+                        ]
+                        for ss in save_sels:
+                            sl = page.locator(ss)
+                            if await sl.count() > 0:
+                                await sl.first.click()
+                                break
+                    dl = await dl_info.value
+                    await dl.save_as(str(out_path))
+                    saved = True
+                    print(f"[gemini] ✅ 方法A（右鍵另存）成功")
+                except Exception as e:
+                    print(f"[gemini] 方法A 右鍵另存失敗（{e}），嘗試其他方法")
+                    # 按 Esc 關閉可能的大圖彈窗
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(500)
         except Exception as e:
             print(f"[gemini] 方法A 失敗（{e}）")
 
