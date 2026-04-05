@@ -564,30 +564,65 @@ async def main(payload: dict) -> None:
                 await page.wait_for_timeout(2000)
                 print("[gemini] ✅ 已開新對話")
 
-                # 點「建立圖像」/ 「生成圖片」按鈕
+                # 兩步驟：① 點「工具」按鈕 → ② 選「生成圖片」
                 _img_btn_clicked = False
-                _img_btn_sels = [
-                    # 截圖看到的是 chip 按鈕「🖼 生成圖片」
-                    'text="生成圖片"',
-                    ':has-text("生成圖片")',
-                    'text="建立圖像"',
-                    ':has-text("建立圖像")',
-                    'text="Create image"',
-                    'text="Generate image"',
-                ]
-                for _ib_sel in _img_btn_sels:
-                    try:
-                        _ib = page.locator(_ib_sel)
-                        if await _ib.count() > 0:
-                            await _ib.first.click()
+                try:
+                    # Step 1: 點輸入框下方的「工具」按鈕
+                    _tool_clicked = await page.evaluate("""() => {
+                        const candidates = document.querySelectorAll('button, [role="button"], a');
+                        for (const el of candidates) {
+                            const txt = (el.textContent || '').trim();
+                            if (txt === '工具' || txt === 'Tools') {
+                                el.click();
+                                return txt;
+                            }
+                        }
+                        return null;
+                    }""")
+                    if _tool_clicked:
+                        print(f"[gemini] ✅ 已點「{_tool_clicked}」按鈕")
+                        await page.wait_for_timeout(1500)
+
+                        # 截圖看工具選單
+                        try:
+                            await page.screenshot(path=str(ROOT / "data" / "_debug_tools_menu.png"))
+                        except Exception:
+                            pass
+
+                        # Step 2: 在彈出的選單中找「生成圖片」/「建立圖像」
+                        _img_clicked = await page.evaluate("""() => {
+                            const keywords = ['生成圖片', '建立圖像', 'Image generation',
+                                              'Create image', 'Generate image', 'Imagen'];
+                            const candidates = document.querySelectorAll(
+                                'button, [role="menuitem"], [role="option"], [role="button"], '
+                                + '[role="listbox"] *, [class*="menu"] *, [class*="option"], '
+                                + '[class*="item"], label, span, div'
+                            );
+                            for (const el of candidates) {
+                                const txt = (el.textContent || '').trim();
+                                if (txt.length > 30) continue;
+                                for (const kw of keywords) {
+                                    if (txt.includes(kw)) {
+                                        el.click();
+                                        return txt;
+                                    }
+                                }
+                            }
+                            return null;
+                        }""")
+                        if _img_clicked:
                             await page.wait_for_timeout(2000)
-                            print(f"[gemini] ✅ 已點選「建立圖像」(selector: {_ib_sel})")
+                            print(f"[gemini] ✅ 已選「{_img_clicked}」工具")
                             _img_btn_clicked = True
-                            break
-                    except Exception:
-                        continue
+                        else:
+                            print("[gemini] ⚠️ 工具選單中找不到生成圖片選項")
+                    else:
+                        print("[gemini] ⚠️ 找不到「工具」按鈕")
+                except Exception as _e:
+                    print(f"[gemini] ⚠️ 工具選擇失敗：{_e}")
+
                 if not _img_btn_clicked:
-                    print("[gemini] ⚠️ 找不到「建立圖像」按鈕，直接貼提示詞")
+                    print("[gemini] ⚠️ 無法啟用生成圖片工具，直接貼提示詞")
             except Exception as e:
                 print(f"[gemini] ⚠️  開新對話失敗（{e}），使用目前頁面")
 
