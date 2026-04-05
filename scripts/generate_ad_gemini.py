@@ -49,7 +49,7 @@ sys.stdout = _Tee(sys.stdout, _LOG_PATH)
 sys.stderr = _Tee(sys.stderr, _LOG_PATH)
 
 GEMINI_URL     = "https://gemini.google.com/app"
-GEMINI_PROFILE = str(ROOT / "data" / "gemini_chrome_session")
+GEMINI_PROFILE = str(ROOT / "data" / "gemini_chrome_session_new")
 PLATFORMS      = ["line", "fb"]
 
 # ── LINE API 推送通知 ─────────────────────────────────────────────────────────
@@ -278,8 +278,9 @@ async def generate_one(page, prod_code: str, image_paths: list[str],
         # 7. 下載 / 存圖
         saved = False
 
-        # 方法 A：點圖片 → 右鍵另存新檔
+        # 方法 A：點聊天中的圖片 → 開啟編輯器覆蓋層 → 點上方工具列的下載按鈕
         try:
+            # 找到聊天中生成的圖片
             img_loc = None
             for sel in ['model-response img', '.response-container img', 'article img']:
                 loc = page.locator(sel)
@@ -298,38 +299,57 @@ async def generate_one(page, prod_code: str, image_paths: list[str],
                         img_loc = loc.last
                         break
             if img_loc:
-                # 點圖片打開大圖
+                # 點圖片 → 開啟上層編輯器
                 await img_loc.click()
-                await page.wait_for_timeout(1000)
-                # 右鍵另存新檔
-                try:
-                    # 找大圖的 img 元素
-                    big_img = page.locator('img[style*="max-width"], img[style*="max-height"], .lightbox img, [role="dialog"] img').last
-                    if await big_img.count() == 0:
-                        big_img = img_loc
-                    async with page.expect_download(timeout=20000) as dl_info:
-                        await big_img.click(button="right")
-                        await page.wait_for_timeout(500)
-                        # 點「另存圖片」選項
-                        save_sels = [
-                            'text="另存圖片為..."',
-                            'text="Save image as..."',
-                            'text="另存圖片"',
-                        ]
-                        for ss in save_sels:
-                            sl = page.locator(ss)
-                            if await sl.count() > 0:
-                                await sl.first.click()
+                await page.wait_for_timeout(2000)
+                print("[gemini] 已點圖片，等待編輯器開啟...", flush=True)
+
+                # 在上層工具列找下載按鈕（⬇️ 箭頭）
+                dl_sels = [
+                    'button[aria-label="下載原尺寸"]',
+                    'button[aria-label*="下載原尺寸"]',
+                    'button[aria-label="下載"]',
+                    'button[aria-label*="下載"]',
+                    'button[aria-label="Download"]',
+                    'button[aria-label*="download"]',
+                    'button[aria-label*="Download"]',
+                    # mat-icon 下載圖示
+                    'button:has([data-mat-icon-name="download"])',
+                    'button:has(mat-icon)',
+                ]
+                for ss in dl_sels:
+                    try:
+                        sb = page.locator(ss)
+                        cnt = await sb.count()
+                        if cnt > 0:
+                            # 可能有多個，取最後一個（覆蓋層的）
+                            target_btn = sb.last
+                            # 確認按鈕可見
+                            if await target_btn.is_visible():
+                                async with page.expect_download(timeout=20000) as dl_info:
+                                    await target_btn.click()
+                                dl = await dl_info.value
+                                await dl.save_as(str(out_path))
+                                saved = True
+                                print(f"[gemini] ✅ 方法A（編輯器下載按鈕）成功，selector: {ss}")
                                 break
-                    dl = await dl_info.value
-                    await dl.save_as(str(out_path))
-                    saved = True
-                    print(f"[gemini] ✅ 方法A（右鍵另存）成功")
-                except Exception as e:
-                    print(f"[gemini] 方法A 右鍵另存失敗（{e}），嘗試其他方法")
-                    # 按 Esc 關閉可能的大圖彈窗
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(500)
+                    except Exception as _e:
+                        continue
+
+                if not saved:
+                    print("[gemini] 方法A 找不到下載按鈕，列出所有按鈕:", flush=True)
+                    # Debug: 列出頁面上所有 button 的 aria-label
+                    all_btns = page.locator('button[aria-label]')
+                    btn_count = await all_btns.count()
+                    for bi in range(min(btn_count, 20)):
+                        label = await all_btns.nth(bi).get_attribute("aria-label") or ""
+                        visible = await all_btns.nth(bi).is_visible()
+                        if visible:
+                            print(f"  button: '{label}'", flush=True)
+
+                # 按 Esc 關閉編輯器
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(500)
         except Exception as e:
             print(f"[gemini] 方法A 失敗（{e}）")
 
@@ -544,20 +564,30 @@ async def main(payload: dict) -> None:
                 await page.wait_for_timeout(2000)
                 print("[gemini] ✅ 已開新對話")
 
-                # 點「建立圖像」按鈕
+                # 點「建立圖像」/ 「生成圖片」按鈕
+                _img_btn_clicked = False
                 _img_btn_sels = [
-                    'button:has-text("建立圖像")',
-                    'button:has-text("Create image")',
-                    'button:has-text("Generate image")',
-                    '[data-test-id="image-generation"]',
+                    # 截圖看到的是 chip 按鈕「🖼 生成圖片」
+                    'text="生成圖片"',
+                    ':has-text("生成圖片")',
+                    'text="建立圖像"',
+                    ':has-text("建立圖像")',
+                    'text="Create image"',
+                    'text="Generate image"',
                 ]
                 for _ib_sel in _img_btn_sels:
-                    _ib = page.locator(_ib_sel)
-                    if await _ib.count() > 0:
-                        await _ib.first.click()
-                        await page.wait_for_timeout(1500)
-                        print("[gemini] ✅ 已點選「建立圖像」")
-                        break
+                    try:
+                        _ib = page.locator(_ib_sel)
+                        if await _ib.count() > 0:
+                            await _ib.first.click()
+                            await page.wait_for_timeout(2000)
+                            print(f"[gemini] ✅ 已點選「建立圖像」(selector: {_ib_sel})")
+                            _img_btn_clicked = True
+                            break
+                    except Exception:
+                        continue
+                if not _img_btn_clicked:
+                    print("[gemini] ⚠️ 找不到「建立圖像」按鈕，直接貼提示詞")
             except Exception as e:
                 print(f"[gemini] ⚠️  開新對話失敗（{e}），使用目前頁面")
 
