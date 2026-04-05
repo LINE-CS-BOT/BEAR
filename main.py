@@ -1174,14 +1174,26 @@ def _msg_buf_flush(user_id: str) -> None:
         if user_id not in _user_flush_locks:
             _user_flush_locks[user_id] = _threading.Lock()
         user_lock = _user_flush_locks[user_id]
-    with user_lock:
+    # trylock：如果已在處理中，不排隊等待（讓新訊息繼續累積在 buffer 裡）
+    acquired = user_lock.acquire(blocking=False)
+    if not acquired:
+        # 前一則還在處理，把這次的 timer 延後 3 秒再試
+        _t = _threading.Timer(3.0, _msg_buf_flush, args=(user_id,))
+        _t.daemon = True
+        _t.start()
+        return
+    try:
         _msg_buf_flush_inner(user_id)
+    finally:
+        user_lock.release()
 
 # keep old name as alias so inspect.getsource(_txt_buf_flush) still works
 _txt_buf_flush = _msg_buf_flush
 
 
 def _msg_buf_flush_inner(user_id: str) -> None:
+    # 如果前一則正在處理中，新訊息可能剛加進來，先檢查 buffer 有沒有被更新
+    # （防止 per-user lock 排隊導致每則分開處理）
     """
     Timer 到期後觸發：合併所有緩衝文字 + 媒體，統一處理並回覆。
     """
@@ -5663,8 +5675,8 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
         import pytz as _pz_esc
         _now_esc = _dt_esc.now(_pz_esc.timezone(settings.BUSINESS_TZ))
         if _is_open_now(_now_esc):
-            return "我幫您確認一下，稍後回覆您"
-        return next_open_reply()
+            return "您的問題我已經登記起來了喔～我幫您確認一下，稍後回覆您"
+        return "您的問題我已經登記起來了喔～" + next_open_reply()
 
     return None
 
