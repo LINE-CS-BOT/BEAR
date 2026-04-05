@@ -457,17 +457,16 @@ def handle_ad_update_trigger(text: str, group_id: str,
             "請確認檔名格式，例如：Z3432.jpg 或 Z3432A.jpg"
         )
 
-    # ── 過濾：廣告圖已存在且比產品圖新 → 跳過 ───────────────────────────────
+    # ── 過濾：輸出資料夾有任何檔名含該貨號的圖就跳過 ─────────────────────────
     def _needs_update(code: str, img_paths: list[str]) -> bool:
-        """任一平台廣告圖不存在，或比產品圖舊 → 需要重新生成"""
-        src_mtime = max(Path(p).stat().st_mtime for p in img_paths)
-        for platform in ("line", "fb"):
-            ad_file = AD_OUTPUT_DIR / f"{code}_{platform}.png"
-            if not ad_file.exists():
-                return True
-            if ad_file.stat().st_mtime < src_mtime:
-                return True
-        return False
+        """輸出資料夾裡有任何檔名包含該貨號的圖片就不需要生成"""
+        try:
+            for f in AD_OUTPUT_DIR.iterdir():
+                if f.is_file() and code in f.stem.upper():
+                    return False
+        except OSError:
+            pass
+        return True
 
     found: dict[str, list[str]] = {
         code: imgs for code, imgs in all_found.items()
