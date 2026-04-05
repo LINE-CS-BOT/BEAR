@@ -241,7 +241,8 @@ def detect_intent(text: str) -> Intent:
     _SHIPPING_WORDS = ["運費", "含運", "免運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
     if any(w in text for w in _SHIPPING_WORDS):
         return Intent.UNKNOWN
-    if True:
+    _PRICE_EXCLUDE = ["銷貨單", "訂單金額", "帳單", "匯款", "轉帳", "總金額", "全部金額"]
+    if not any(w in text for w in _PRICE_EXCLUDE):
         for kw in _PRICE_KEYWORDS:
             if kw in text:
                 return Intent.PRICE
