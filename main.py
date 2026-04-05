@@ -3087,11 +3087,16 @@ async def shop_images(code: str):
 
 
 @app.get("/api/shop/profile")
-async def shop_profile(uid: str = ""):
-    """LIFF 用：取得客戶 real_name"""
-    if not uid:
-        return {"real_name": ""}
-    cust = customer_store.get_by_line_id(uid)
+async def shop_profile(uid: str = "", name: str = ""):
+    """LIFF 用：取得客戶 real_name + ecount_cust_cd"""
+    cust = None
+    if uid:
+        cust = customer_store.get_by_line_id(uid)
+    if not cust and name:
+        # userId 查不到 → 用 displayName 或 real_name 查
+        matches = customer_store.search_by_name(name, real_name_only=False)
+        if matches:
+            cust = matches[0]
     return {
         "real_name": (cust.get("real_name") or cust.get("display_name") or "") if cust else "",
         "ecount_cust_cd": (cust.get("ecount_cust_cd") or "") if cust else "",
