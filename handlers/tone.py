@@ -98,6 +98,23 @@ def in_stock_low(name: str) -> str:
     return random.choice(templates)
 
 
+# ── 客戶問庫存數量（不透露數字）────────────────────
+def ask_qty_deflect() -> str:
+    """客戶問有多少個 → 不透露數量，給回覆時間"""
+    from datetime import datetime
+    import zoneinfo
+    now = datetime.now(zoneinfo.ZoneInfo("Asia/Taipei"))
+    h = now.hour
+    # 營業時間 13~21：等等回覆；非營業：明天回覆
+    if 13 <= h < 20:
+        time_hint = "等等回覆您"
+    elif 20 <= h < 21:
+        time_hint = "明天回覆您"
+    else:
+        time_hint = "明天營業時間回覆您"
+    return f"我查一下唷～ {time_hint}"
+
+
 # ── 無貨回覆 ──────────────────────────────────────
 def out_of_stock(name: str) -> str:
     templates = [
