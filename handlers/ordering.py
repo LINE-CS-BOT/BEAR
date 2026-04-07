@@ -552,7 +552,7 @@ def handle_checkout(
     if slip_no:
         print(f"[ordering] 購物車訂單建立成功: {slip_no} | {cust_code} | {len(cart)} 項")
         # 所有品項自動登記到貨通知
-        from handlers.inventory import _check_preorder, notify_hq_restock
+        from handlers.inventory import _check_preorder
         from storage.notify import notify_store
         _oos_items = []  # 缺貨品項（需通知總公司調貨）
         _po_items = []   # 預購品項
@@ -574,14 +574,13 @@ def handle_checkout(
                 if not _item_qty or _item_qty < item["qty"]:
                     _short = item["qty"] - (_item_qty or 0)
                     _oos_items.append({**item, "short": _short, "stock": _item_qty or 0})
-        # 缺貨品項 → 一次通知總公司 + 一筆待處理
+        # 缺貨品項 → 登記待處理（不通知總公司）
         if _oos_items:
             from storage.issues import issue_store
             _oos_desc = "、".join(
                 f"{i['prod_name']}（{i['prod_cd']}）×{i['qty']}" for i in _oos_items)
             issue_store.add(user_id, "restock_inquiry", f"缺貨調貨：{_oos_desc}")
-            _notify_hq_restock_batch(_oos_items, line_api)
-            print(f"[ordering] 缺貨品批次通知總公司: {_oos_desc}")
+            print(f"[ordering] 缺貨品登記待處理: {_oos_desc}")
         cart_store.clear_cart(user_id)
         return tone.checkout_confirmed(cart, oos_items=_oos_items, po_items=_po_items)
     else:
@@ -591,29 +590,6 @@ def handle_checkout(
         issue_store.add(user_id, "order_failed", desc)
         return "⚠️ 訂單處理時發生問題，請稍後再試或聯繫客服。"
 
-
-def _notify_hq_restock_batch(oos_items: list[dict], line_api) -> None:
-    """一次通知總公司群組所有缺貨品項"""
-    from config import settings
-    from linebot.v3.messaging import PushMessageRequest, TextMessage
-
-    if not line_api or not settings.LINE_GROUP_ID_HQ:
-        print(f"[總公司通知] 未設定 LINE_GROUP_ID_HQ，跳過")
-        return
-
-    lines = ["⚠️ 客戶已下單，以下品項庫存不足，麻煩盡快確認調貨："]
-    for item in oos_items:
-        short = item.get("short", item["qty"])
-        lines.append(f"📦 {item['prod_name']}（{item['prod_cd']}）需調 {short} 個")
-    try:
-        line_api.push_message(
-            PushMessageRequest(
-                to=settings.LINE_GROUP_ID_HQ,
-                messages=[TextMessage(text="\n".join(lines))],
-            )
-        )
-    except Exception as e:
-        print(f"[總公司通知] 批次推送失敗: {e}")
 
 
 def _notify_staff(
