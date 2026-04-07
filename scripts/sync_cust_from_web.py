@@ -510,6 +510,9 @@ async def _download_and_parse_excel(page) -> list[dict] | None:
             await excel_btn.click(timeout=5000)
         dl = await dl_info.value
         await dl.save_as(str(tmp_path))
+        if tmp_path.stat().st_size == 0:
+            print("  [warn] Excel 下載為空檔（0 bytes），視為失敗")
+            return None
         print(f"  [info] 已下載 → {tmp_path.name}")
 
     except Exception:
@@ -526,6 +529,9 @@ async def _download_and_parse_excel(page) -> list[dict] | None:
                     await dropdown.click(timeout=5000)
                 dl = await dl_info.value
                 await dl.save_as(str(tmp_path))
+                if tmp_path.stat().st_size == 0:
+                    print("  [warn] Excel 下載為空檔（0 bytes），視為失敗")
+                    return None
                 print(f"  [info] 已下載 → {tmp_path.name}")
             except Exception as e:
                 print(f"  [info] Excel 下載失敗: {e}")
