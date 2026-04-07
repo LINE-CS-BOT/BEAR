@@ -353,23 +353,6 @@ def _query_single_product(user_id: str, prod_cd: str, line_api: MessagingApi = N
         return tone.out_of_stock_ask_qty(name)
 
 
-def notify_hq_restock(prod_name: str, qty: int, line_api: MessagingApi | None) -> None:
-    """通知總公司群組詢問調貨及到貨時間（公開函式，供 main.py 呼叫）"""
-    if not line_api or not settings.LINE_GROUP_ID_HQ:
-        print(f"[總公司通知] 未設定 LINE_GROUP_ID_HQ，跳過（{prod_name} × {qty}個）")
-        return
-
-    msg = f"請問一下\n📦 {prod_name} × {qty} 個\n是否有數量可以調貨? 如果叫貨需要多久時間?"
-    try:
-        line_api.push_message(
-            PushMessageRequest(
-                to=settings.LINE_GROUP_ID_HQ,
-                messages=[TextMessage(text=msg)],
-            )
-        )
-    except Exception as e:
-        print(f"[總公司通知] 推送失敗: {e}")
-
 
 def _extract_product(text: str) -> str:
     """從訊息中嘗試提取產品編號或名稱（支援中英文）"""
@@ -377,9 +360,9 @@ def _extract_product(text: str) -> str:
     # Step 0：清除標點符號
     t = re.sub(r'[，,。.！!？?、；;：:～~\s]+', ' ', text).strip()
 
-    # Step 1：剝離前綴（問候/代稱/助詞）
+    # Step 1：剝離前綴（問候/代稱/助詞/動詞）
     t = re.sub(
-        r"^(?:請問|想問|問一下|查一下|你們|妳們|你們的|我想問|老闆|嗨|哈囉|嘿|喂)\s*",
+        r"^(?:我要查詢|我要查|我想查詢|我想查|我要問|我想問|請問|想問|問一下|查一下|你們|妳們|你們的|老闆|嗨|哈囉|嘿|喂)\s*",
         "", t,
     )
     # 剝離動詞前綴（還有/有沒有 → 出現在產品名之前，可能無空格）
@@ -391,6 +374,7 @@ def _extract_product(text: str) -> str:
         "", t,
     )
     t = re.sub(r"\s*嗎\s*$", "", t)
+    t = re.sub(r"的$", "", t)
     t = t.strip()
 
     # 如果有剝離到東西，就用結果（排除太通用的字）
@@ -405,7 +389,8 @@ def _extract_product(text: str) -> str:
 
     # Step 4：最後手段 — 暴力刪除所有問句關鍵字
     cleaned = re.sub(
-        r"(還有貨嗎|還有沒有貨|還有嗎|還有貨|有貨嗎|有沒有貨|可以訂嗎|能訂嗎|有得訂|訂購|缺貨|有嗎|有貨|能訂|可訂|請問|想問|問一下|查一下|有沒有|還有|庫存|你們|妳們|嗎)",
+        r"(我要查詢|我要查|我想查詢|我想查|我要問|我想問|還有貨嗎|還有沒有貨|還有嗎|還有貨|有貨嗎|有沒有貨|可以訂嗎|能訂嗎|有得訂|訂購|缺貨|有嗎|有貨|能訂|可訂|請問|想問|問一下|查一下|有沒有|還有|庫存|你們|妳們|嗎)",
         "", text,
     ).strip()
+    cleaned = re.sub(r"的$", "", cleaned).strip()
     return cleaned

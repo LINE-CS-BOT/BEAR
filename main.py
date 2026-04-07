@@ -48,7 +48,6 @@ from handlers.orders import handle_order_tracking
 from handlers.delivery import handle_delivery
 from handlers.hours import handle_business_hours
 from handlers.ordering import handle_order_quantity, handle_checkout, extract_quantity
-from handlers.inventory import notify_hq_restock
 from handlers.restock import handle_hq_reply
 from handlers.internal import (
     handle_internal_arrival, handle_internal_order,
