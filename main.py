@@ -4934,8 +4934,15 @@ def _handle_stateful(
 
     # ── 等待數量：客戶確認要購買幾個 ──────────────
     if action == "awaiting_quantity":
+        # 問庫存數量攔截：「有多少個」「大概幾個」「還剩多少」→ 不透露數量
+        _ask_qty_kw = ["多少個", "幾個", "多少", "剩多少", "剩幾", "有幾個", "有多少"]
+        if any(kw in text for kw in _ask_qty_kw):
+            from storage.issues import issue_store
+            prod_name = state.get("prod_name", "")
+            issue_store.add(user_id, "ask_stock_qty", f"客戶問數量：{prod_name}")
+            return tone.ask_qty_deflect()
         # 問句排除：「是不是三個顏色」「有幾個顏色」不是回答數量
-        _question_kw = ["請問", "是不是", "是否", "有幾", "嗎", "？", "?", "顏色", "款式", "種"]
+        _question_kw = ["請問", "是不是", "是否", "有幾", "幾個", "多少", "嗎", "呢", "？", "?", "顏色", "款式", "種"]
         _is_question = any(kw in text for kw in _question_kw)
         qty = extract_quantity(text)
         if qty and not _is_question:
