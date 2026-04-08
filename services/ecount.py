@@ -87,7 +87,12 @@ class EcountClient:
         # 先找出對應的 PROD_CD
         prod_cd = self._resolve_product_code(keyword)
         if not prod_cd:
-            return None
+            # 可能是新品項，強制刷新快取再試一次
+            self._cache_expires = 0
+            self._ensure_product_cache()
+            prod_cd = self._resolve_product_code(keyword)
+            if not prod_cd:
+                return None
 
         # 從快取取得中文名稱
         name = self._get_product_name(prod_cd) or prod_cd

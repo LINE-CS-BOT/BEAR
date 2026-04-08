@@ -648,13 +648,25 @@ async def run() -> list[dict]:
         print("[web] 自動導向客戶清單頁面 ...")
         nav_ok = await _navigate_to_cust_list(page, ec_sid)
         if not nav_ok:
-            print("[web] ✗ 無法自動導向到客戶清單頁面")
-            print("[web]")
-            print("[web] 請做一次手動設定：")
-            print("[web]   1. 在 Chrome 中點開「客戶清單」頁面")
-            print("[web]   2. 重新執行此腳本（會自動捕捉 prgId 並永久儲存）")
-            await browser.close()
-            return []
+            # session 可能過期，重新登入再試一次
+            print("[web] 導航失敗，嘗試重新登入...")
+            await page.goto(ERP_URL, timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            ec_sid2 = await ensure_logged_in(page)
+            if ec_sid2 and ec_sid2 != ec_sid:
+                print(f"[web] 取得新 session，重試導航...")
+                nav_ok = await _navigate_to_cust_list(page, ec_sid2)
+            if not nav_ok:
+                print("[web] ✗ 無法自動導向到客戶清單頁面")
+                print("[web]")
+                print("[web] 請做一次手動設定：")
+                print("[web]   1. 在 Chrome 中點開「客戶清單」頁面")
+                print("[web]   2. 重新執行此腳本（會自動捕捉 prgId 並永久儲存）")
+                await browser.close()
+                return []
 
         # 提取客戶資料
         print("[web] ✓ 導向成功，開始提取客戶資料...")
