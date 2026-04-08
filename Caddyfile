@@ -5,3 +5,7 @@
 xmnline.duckdns.org {
     reverse_proxy localhost:8000
 }
+
+chunlian.duckdns.org {
+    reverse_proxy localhost:8001
+}
