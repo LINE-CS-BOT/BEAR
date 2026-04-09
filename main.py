@@ -3022,7 +3022,7 @@ async def shop_products():
         # 找第一張圖片（列表頁用，點進去再載入全部）
         image = ""
         if media_dir.exists():
-            for suffix in ["A", "", "B"]:
+            for suffix in ["A", "", "B", "C", "D", "E"]:
                 for ext in [".jpg", ".jpeg", ".png"]:
                     f = media_dir / f"{code}{suffix}{ext}"
                     if f.exists():
