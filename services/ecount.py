@@ -534,9 +534,35 @@ class EcountClient:
                     item["name"].upper(): item for item in self._product_cache
                 }
                 self._cache_expires = time.time() + 2 * 3600  # 上班時間 2 小時 TTL
+                # 偵測新品項 → 記錄到 new_products.json
+                self._detect_new_products()
                 print(f"[Ecount] 品項快取刷新，共 {len(self._product_cache)} 筆（已排除 Z+英文 開頭貨號）")
         except Exception as e:
             print(f"[Ecount] 品項快取刷新失敗: {e}")
+
+    def _detect_new_products(self):
+        """比對快取，偵測新品項並記錄到 new_products.json"""
+        import json
+        from datetime import datetime
+        np_path = Path(__file__).parent.parent / "data" / "new_products.json"
+        try:
+            existing = json.loads(np_path.read_text(encoding="utf-8")) if np_path.exists() else {}
+        except Exception:
+            existing = {}
+        current_codes = {item["code"].upper() for item in self._product_cache}
+        known_codes = set(existing.keys())
+        new_codes = current_codes - known_codes
+        if new_codes:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            for code in new_codes:
+                item = self._product_by_code.get(code, {})
+                existing[code] = {
+                    "name": item.get("name", ""),
+                    "price": item.get("price", 0),
+                    "first_seen": now,
+                }
+            np_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[Ecount] 偵測到 {len(new_codes)} 個新品項")
 
     def _resolve_product_code(self, keyword: str) -> str | None:
         """

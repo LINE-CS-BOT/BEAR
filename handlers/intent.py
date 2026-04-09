@@ -237,6 +237,11 @@ def detect_intent(text: str) -> Intent:
     if any(kw in text for kw in _BANK_KW):
         return Intent.BANK_ACCOUNT
 
+    # 匯款回報（末三碼、已匯、已轉）→ UNKNOWN（靜默+待處理）
+    _PAYMENT_CONFIRM_KW = ["末三碼", "末3碼", "末五碼", "末5碼", "已匯", "已轉", "已付款", "匯好了", "轉好了"]
+    if any(kw in text for kw in _PAYMENT_CONFIRM_KW):
+        return Intent.UNKNOWN
+
     # 運費/免運相關問題 → 直接 UNKNOWN（轉真人靜默）
     _SHIPPING_WORDS = ["運費", "含運", "免運", "郵寄", "宅配費", "快遞費", "物流費", "運送費"]
     if any(w in text for w in _SHIPPING_WORDS):
