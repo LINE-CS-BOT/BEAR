@@ -33,6 +33,13 @@ _WEEKDAY_LABEL = ["一", "二", "三", "四", "五", "六", "日"]
 
 
 def is_visit_message(text: str) -> bool:
+    # 含下單意圖（幫我留/要X個/訂X個）→ 不當到店預告
+    import re as _re_v
+    _ORDER_HINTS = ["幫我留", "幫我訂", "要訂", "留給我", "幫我拿"]
+    if any(h in text for h in _ORDER_HINTS):
+        return False
+    if _re_v.search(r'\d+\s*[個箱件盒組條]', text):
+        return False
     return any(kw in text for kw in VISIT_KEYWORDS)
 
 
