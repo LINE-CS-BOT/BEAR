@@ -358,12 +358,12 @@ def _new_prod_timer_cancel(user_id: str) -> None:
             t.cancel()
 
 
-def _upload_auto_finish(user_id: str, group_id: str, reply_token: str | None) -> None:
-    """30 秒無後續 → 自動執行 upload finish 並通知群組（需有至少 1 張圖片才執行）"""
+def _upload_auto_finish(session_id: str, group_id: str, reply_token: str | None) -> None:
+    """15 秒無後續 → 自動執行 upload finish 並通知群組（需有至少 1 張圖片才執行）"""
     with _upload_finish_timers_lock:
-        _upload_finish_timers.pop(user_id, None)
+        _upload_finish_timers.pop(session_id, None)
     # 確認有圖片，避免只有 PO 文就觸發
-    _state = state_manager.get(user_id)
+    _state = state_manager.get(session_id)
     if not _state:
         return
     _has_media = (
@@ -371,33 +371,33 @@ def _upload_auto_finish(user_id: str, group_id: str, reply_token: str | None) ->
         or any(len(g.get("media", [])) > 0 for g in _state.get("groups", []))
     )
     if not _has_media:
-        print(f"[upload-auto] {user_id[:10]}... 無圖片，跳過 auto-finish", flush=True)
+        print(f"[upload-auto] {session_id[:10]}... 無圖片，跳過 auto-finish", flush=True)
         return
-    ack = handle_internal_upload_finish(user_id)
+    ack = handle_internal_upload_finish(session_id)
     if ack:
         _send_reply(reply_token, group_id, ack, _line_api)
 
 
-def _upload_timer_reset(user_id: str, group_id: str, reply_token: str | None) -> None:
-    """每次收到新媒體就重置 30 秒 timer"""
+def _upload_timer_reset(session_id: str, group_id: str, reply_token: str | None) -> None:
+    """每次收到新媒體就重置 auto-finish timer"""
     with _upload_finish_timers_lock:
-        old = _upload_finish_timers.pop(user_id, None)
+        old = _upload_finish_timers.pop(session_id, None)
         if old:
             old.cancel()
         t = _threading.Timer(
             _UPLOAD_AUTO_FINISH_SECS,
             _upload_auto_finish,
-            args=(user_id, group_id, reply_token),
+            args=(session_id, group_id, reply_token),
         )
         t.daemon = True
-        _upload_finish_timers[user_id] = t
+        _upload_finish_timers[session_id] = t
     t.start()
 
 
-def _upload_timer_cancel(user_id: str) -> None:
+def _upload_timer_cancel(session_id: str) -> None:
     """手動說「完成」時取消 auto-finish timer"""
     with _upload_finish_timers_lock:
-        t = _upload_finish_timers.pop(user_id, None)
+        t = _upload_finish_timers.pop(session_id, None)
         if t:
             t.cancel()
 
@@ -460,7 +460,10 @@ def _msg_buf_add(
         has_media = bool(existing["media"])
         has_text = bool(existing["lines"])
 
-        if _is_upload_cmd:
+        _is_finish_cmd = _INTERNAL_UPLOAD_FINISH_RE.match(all_text.strip()) if all_text.strip() else False
+        if _is_finish_cmd:
+            wait_secs = 0.3  # 「完成」立即處理
+        elif _is_upload_cmd:
             wait_secs = _MSG_UPLOAD_COALESCE_SECS
         elif has_media and not has_text:
             wait_secs = _MSG_IMAGE_COALESCE_SECS
@@ -1118,11 +1121,13 @@ def _flush_media_only(
             if ack:
                 _send_reply(reply_token, _save_gid, ack, line_api)
             return
-        # ── upload session 進行中 → 直接追加 ──
-        if _st and _st.get("action") == "uploading":
+        # ── upload session 進行中（per-group）→ 直接追加 ──
+        # 先查 group_id 的上架 session
+        _upload_st = state_manager.get(group_id) if group_id else None
+        if _upload_st and _upload_st.get("action") == "uploading":
             for m in _all_media:
-                handle_internal_upload_add_media(user_id, m["msg_id"], m["type"])
-            _upload_timer_reset(user_id, group_id, reply_token)
+                handle_internal_upload_add_media(group_id, m["msg_id"], m["type"])
+            _upload_timer_reset(group_id, group_id, reply_token)
             print(f"[msg-buf] upload session 進行中，媒體已追加", flush=True)
             return
         # ── 單張圖片 → 商品識別；多張/含影片 → 提示 ──
@@ -1274,9 +1279,9 @@ def _msg_buf_flush_inner(user_id: str) -> None:
 
         # ════ 內部群組 ════
         if context == "group":
-            # 上架 session：per-user（各人獨立上架）
-            upload_state = state_manager.get(user_id)
-            print(f"[txt-buf] 內部群 flush: user={user_id[:10]}... upload_state={upload_state.get('action') if upload_state else None} combined={combined[:30]!r}", flush=True)
+            # 上架 session：per-group（認指令不認人）
+            upload_state = state_manager.get(group_id)
+            print(f"[txt-buf] 內部群 flush: user={user_id[:10]}... upload_state(group)={upload_state.get('action') if upload_state else None} combined={combined[:30]!r}", flush=True)
             # 訂單 state：per-group（任何人都能接下「客戶名 N個」）
             group_order_state = state_manager.get(group_id)
 
@@ -1337,23 +1342,23 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     _send_group_ack(ack)
                 return
 
-            # ── 批次上架 Session 進行中 ──────────────────────────────────
+            # ── 批次上架 Session 進行中（per-group）─────────────────────
             if upload_state and upload_state.get("action") == "uploading":
                 if _INTERNAL_UPLOAD_FINISH_RE.match(combined.strip()):
-                    _upload_timer_cancel(user_id)
+                    _upload_timer_cancel(group_id)
                     # 補進統一 buffer 中等待的圖片/影片
                     if media_e:
                         for _mi in media_e["media"]:
-                            handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
-                    ack = handle_internal_upload_finish(user_id)
+                            handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
+                    ack = handle_internal_upload_finish(group_id)
                 else:
                     # 收到文字也重置 timer，避免文字和 auto-finish 同時觸發兩個回覆
-                    _upload_timer_reset(user_id, group_id, reply_token)
-                    ack = handle_internal_upload_text(user_id, combined)
+                    _upload_timer_reset(group_id, group_id, reply_token)
+                    ack = handle_internal_upload_text(group_id, combined)
                     # 補進跟文字一起到達的圖片/影片（屬於新 PO文）
                     if media_e:
                         for _mi in media_e["media"]:
-                            handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
+                            handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
                 if ack:
                     _send_group_ack(ack)
                 return
@@ -1361,7 +1366,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
             # ── 觸發批次上架 Session ─────────────────────────────────────
             _first_line = combined.split('\n')[0].strip()
             if _first_line in _INTERNAL_UPLOAD_TRIGGERS:
-                ack = handle_internal_upload_start(user_id)
+                ack = handle_internal_upload_start(group_id)
                 if ack:
                     _send_group_ack(ack)
                 _remaining = combined[len(_first_line):].strip()
@@ -1376,7 +1381,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     if _finish_idx >= 0:
                         _po_part = "\n".join(_rem_lines[:_finish_idx]).strip()
                         if _po_part:
-                            handle_internal_upload_text(user_id, _po_part)
+                            handle_internal_upload_text(group_id, _po_part)
                         # 補進統一 buffer 中的媒體 — 利用 after_text 按順序分配給各 PO文組
                         if media_e:
                             _raw_lines = entry.get("lines", [])
@@ -1390,7 +1395,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             if len(_code_line_indices) > 1:
                                 # 多組 PO文：按 after_text 分配圖片
                                 from storage.state import state_manager as _sm
-                                _st = _sm.get(user_id)
+                                _st = _sm.get(group_id)
                                 if _st:
                                     _grps = _st.get("groups", [])
                                     # 為每組建立 media list（按 after_text 切割）
@@ -1409,28 +1414,28 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                                             _grps[_owner_idx].setdefault("media", []).append(_mi)
                                         else:
                                             # 屬於 current（最後一組）
-                                            handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
+                                            handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
                                     _st["groups"] = _grps
-                                    _sm.set(user_id, _st)
+                                    _sm.set(group_id, _st)
                             else:
                                 # 單一貨號：全部圖片給 current
                                 for _mi in media_e["media"]:
-                                    handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
-                        ack2 = handle_internal_upload_finish(user_id)
+                                    handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
+                        ack2 = handle_internal_upload_finish(group_id)
                     else:
-                        ack2 = handle_internal_upload_text(user_id, _remaining)
+                        ack2 = handle_internal_upload_text(group_id, _remaining)
                         # 補進 media_buf（圖片/影片在 txt_buf 15s 內到達的情況）
                         if media_e:
                             for _mi in media_e["media"]:
-                                handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
-                            _upload_timer_reset(user_id, group_id, reply_token)
+                                handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
+                            _upload_timer_reset(group_id, group_id, reply_token)
                     if ack2:
                         _send_group_ack(ack2)
                 elif media_e:
                     # 只有 "上架" 沒有 PO文，但有圖片（快速傳送情境）
                     for _mi in media_e["media"]:
-                        handle_internal_upload_add_media(user_id, _mi["msg_id"], _mi["type"])
-                    _upload_timer_reset(user_id, group_id, reply_token)
+                        handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
+                    _upload_timer_reset(group_id, group_id, reply_token)
                 return
 
             # ── 存圖 Z3432（替換舊圖 + 圖片/影片）──────────────────────
@@ -2563,7 +2568,9 @@ async def lifespan(app: FastAPI):
     queue_store.init()              # 建立離峰佇列 table
     notify_store._init_db()         # 確保到貨通知 table 存在
     visit_store.init()              # 建立客戶到店記錄 table
-    check_and_refresh()             # 啟動時檢查並刷新規格/圖片資料庫
+    # check_and_refresh 改背景執行，避免 Ecount 連不上時阻塞啟動
+    import threading as _t
+    _t.Thread(target=check_and_refresh, daemon=True).start()
     state_manager.restore_from_db() # 從 SQLite 恢復對話狀態
     _restore_txt_buffer()           # 恢復 reload 前未處理的文字 buffer
     asyncio.create_task(_refresh_data_loop())
@@ -4565,15 +4572,15 @@ def on_message(event: MessageEvent):
                     messages=[TextMessage(text=ack)],
                 ))
                 return
-            # ── 批次上架 Session 進行中 ──
-            _hq_upload_state = state_manager.get(user_id)
+            # ── 批次上架 Session 進行中（per-group）──
+            _hq_upload_state = state_manager.get(hq_group_id)
             if _hq_upload_state and _hq_upload_state.get("action") == "uploading":
                 if _INTERNAL_UPLOAD_FINISH_RE.match(text.strip()):
-                    _upload_timer_cancel(user_id)
-                    ack = handle_internal_upload_finish(user_id)
+                    _upload_timer_cancel(hq_group_id)
+                    ack = handle_internal_upload_finish(hq_group_id)
                 else:
-                    _upload_timer_reset(user_id, hq_group_id, event.reply_token)
-                    ack = handle_internal_upload_text(user_id, text)
+                    _upload_timer_reset(hq_group_id, hq_group_id, event.reply_token)
+                    ack = handle_internal_upload_text(hq_group_id, text)
                 if ack:
                     line_api.reply_message(ReplyMessageRequest(
                         reply_token=event.reply_token,
@@ -4593,13 +4600,13 @@ def on_message(event: MessageEvent):
 
             # ── 觸發批次上架 Session ──
             if text.strip() in _INTERNAL_UPLOAD_TRIGGERS:
-                ack = handle_internal_upload_start(user_id)
+                ack = handle_internal_upload_start(hq_group_id)
                 if ack:
                     line_api.reply_message(ReplyMessageRequest(
                         reply_token=event.reply_token,
                         messages=[TextMessage(text=ack)],
                     ))
-                _upload_timer_reset(user_id, hq_group_id, event.reply_token)
+                _upload_timer_reset(hq_group_id, hq_group_id, event.reply_token)
                 return
 
             # 其他 HQ 訊息
@@ -4632,10 +4639,10 @@ def on_message(event: MessageEvent):
         if (source_type == "group"
                 and settings.LINE_GROUP_ID
                 and event.source.group_id == settings.LINE_GROUP_ID):
-            # 上架 session 進行中 → 跳過 quick_reply，所有文字都當上架內容
-            _up_st = state_manager.get(user_id)
+            # 上架 session 進行中（per-group）→ 跳過 quick_reply，所有文字都當上架內容
+            _up_st = state_manager.get(event.source.group_id)
             if _up_st and _up_st.get("action") == "uploading":
-                _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+                _upload_timer_reset(event.source.group_id, event.source.group_id, event.reply_token)
                 print(f"[on_msg] 上架中收到文字，跳過 quick_reply: {text[:30]!r}", flush=True)
                 _msg_buf_add(user_id, text=text, context="group",
                              group_id=event.source.group_id,
@@ -4750,7 +4757,8 @@ def on_image_message(event: MessageEvent):
             and settings.LINE_GROUP_ID
             and event.source.group_id == settings.LINE_GROUP_ID):
         # 批次上架 Session 進行中
-        _st = state_manager.get(user_id)
+        _gid = event.source.group_id
+        _st = state_manager.get(_gid)
         if _st and _st.get("action") == "uploading":
             # 若有文字正在 buffer 中（新 PO文即將到來），圖片先存 buffer
             # 等文字 flush 時再一起分配，避免圖片被歸到錯誤的 PO文組
@@ -4758,11 +4766,11 @@ def on_image_message(event: MessageEvent):
                 _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
                 _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
-                             context="group", group_id=event.source.group_id,
+                             context="group", group_id=_gid,
                              reply_token=event.reply_token)
             else:
-                handle_internal_upload_add_media(user_id, message_id, "image")
-                _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+                handle_internal_upload_add_media(_gid, message_id, "image")
+                _upload_timer_reset(_gid, _gid, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
         # 一般模式 → 存媒體緩衝，等文字跟上；timer 到期再單獨處理
         _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
@@ -4774,17 +4782,18 @@ def on_image_message(event: MessageEvent):
     if (source_type == "group"
             and settings.LINE_GROUP_ID_HQ
             and event.source.group_id == settings.LINE_GROUP_ID_HQ):
-        _st = state_manager.get(user_id)
+        _hq_gid = event.source.group_id
+        _st = state_manager.get(_hq_gid)
         if _st and _st.get("action") == "uploading":
             with _msg_buffer_lock:
                 _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
                 _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
-                             context="group", group_id=event.source.group_id,
+                             context="group", group_id=_hq_gid,
                              reply_token=event.reply_token)
             else:
-                handle_internal_upload_add_media(user_id, message_id, "image")
-                _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+                handle_internal_upload_add_media(_hq_gid, message_id, "image")
+                _upload_timer_reset(_hq_gid, _hq_gid, event.reply_token)
             return
         # 非上架 session → 靜默
         return
@@ -4831,18 +4840,19 @@ def on_video_message(event: MessageEvent):
     if (source_type == "group"
             and settings.LINE_GROUP_ID
             and event.source.group_id == settings.LINE_GROUP_ID):
-        # 批次上架 Session 進行中
-        _st = state_manager.get(user_id)
+        # 批次上架 Session 進行中（per-group）
+        _vid_gid = event.source.group_id
+        _st = state_manager.get(_vid_gid)
         if _st and _st.get("action") == "uploading":
             with _msg_buffer_lock:
                 _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
                 _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
-                             context="group", group_id=event.source.group_id,
+                             context="group", group_id=_vid_gid,
                              reply_token=event.reply_token)
             else:
-                handle_internal_upload_add_media(user_id, event.message.id, "video")
-                _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+                handle_internal_upload_add_media(_vid_gid, event.message.id, "video")
+                _upload_timer_reset(_vid_gid, _vid_gid, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
         _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
                      context="group", group_id=event.source.group_id,
@@ -4853,17 +4863,18 @@ def on_video_message(event: MessageEvent):
     if (source_type == "group"
             and settings.LINE_GROUP_ID_HQ
             and event.source.group_id == settings.LINE_GROUP_ID_HQ):
-        _st = state_manager.get(user_id)
+        _hq_vid_gid = event.source.group_id
+        _st = state_manager.get(_hq_vid_gid)
         if _st and _st.get("action") == "uploading":
             with _msg_buffer_lock:
                 _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
             if _has_pending_text:
                 _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
-                             context="group", group_id=event.source.group_id,
+                             context="group", group_id=_hq_vid_gid,
                              reply_token=event.reply_token)
             else:
-                handle_internal_upload_add_media(user_id, event.message.id, "video")
-                _upload_timer_reset(user_id, event.source.group_id, event.reply_token)
+                handle_internal_upload_add_media(_hq_vid_gid, event.message.id, "video")
+                _upload_timer_reset(_hq_vid_gid, _hq_vid_gid, event.reply_token)
             return
 
 
