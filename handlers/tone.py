@@ -602,11 +602,17 @@ def spec_color_escalate() -> str:
 
 # ── 退換貨已記錄 ──────────────────────────────────────
 def return_ack() -> str:
-    return random.choice([
-        "收到！現在忙碌中，等等回覆您唷",
-        "好的！現在忙碌中，等等回覆您哦",
-        "收到唷，現在忙碌中，等等回覆您嘿",
-    ])
+    from handlers.hours import _is_open_now, next_open_reply
+    from datetime import datetime
+    import pytz
+    now = datetime.now(pytz.timezone(_settings.BUSINESS_TZ))
+    if _is_open_now(now):
+        return random.choice([
+            "收到！現在忙碌中，等等回覆您唷",
+            "好的！現在忙碌中，等等回覆您哦",
+            "收到唷，現在忙碌中，等等回覆您嘿",
+        ])
+    return f"收到唷！{next_open_reply()}"
 
 
 # ── 地址更改已記錄 ────────────────────────────────────
@@ -632,22 +638,33 @@ def address_change_ack() -> str:
 
 # ── 投訴已記錄（安撫語氣） ────────────────────────────
 def complaint_ack() -> str:
-    b = boss()
-    return random.choice([
-        f"非常抱歉{suffix_light()} 問題已記錄，稍等下唷～",
-        f"不好意思{suffix_light()} 已記錄您的問題，馬上幫您處理",
-        f"抱歉嘿，問題已經記錄了，稍等下唷～",
-    ])
+    from handlers.hours import _is_open_now, next_open_reply
+    from datetime import datetime
+    import pytz
+    now = datetime.now(pytz.timezone(_settings.BUSINESS_TZ))
+    if _is_open_now(now):
+        return random.choice([
+            f"非常抱歉{suffix_light()} 問題已記錄，稍等下唷～",
+            f"不好意思{suffix_light()} 已記錄您的問題，馬上幫您處理",
+            f"抱歉嘿，問題已經記錄了，稍等下唷～",
+        ])
+    return f"非常抱歉{suffix_light()} 問題已記錄，{next_open_reply()}"
 
 
 # ── 催貨安撫（非制式催問，人工跟進） ─────────────────────
 def urgent_order_ack() -> str:
+    from handlers.hours import _is_open_now, next_open_reply
+    from datetime import datetime
+    import pytz
     b = boss()
-    return random.choice([
-        f"不好意思讓{b}久等了，我確認一下等等回您{suffix_light()}",
-        f"抱歉嘿，讓{b}等了，我問一下幫您確認，等等回覆您哦",
-        f"不好意思{suffix_light()} {b}稍等我一下，我去確認看看再跟您說哦",
-    ])
+    now = datetime.now(pytz.timezone(_settings.BUSINESS_TZ))
+    if _is_open_now(now):
+        return random.choice([
+            f"不好意思讓{b}久等了，我確認一下等等回您{suffix_light()}",
+            f"抱歉嘿，讓{b}等了，我問一下幫您確認，等等回覆您哦",
+            f"不好意思{suffix_light()} {b}稍等我一下，我去確認看看再跟您說哦",
+        ])
+    return f"不好意思讓{b}久等了，問題已記錄，{next_open_reply()}"
 
 
 # ── 複合詢問引導（找不到編號時才用） ──────────────────────
