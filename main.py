@@ -4760,17 +4760,9 @@ def on_image_message(event: MessageEvent):
         _gid = event.source.group_id
         _st = state_manager.get(_gid)
         if _st and _st.get("action") == "uploading":
-            # 若有文字正在 buffer 中（新 PO文即將到來），圖片先存 buffer
-            # 等文字 flush 時再一起分配，避免圖片被歸到錯誤的 PO文組
-            with _msg_buffer_lock:
-                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
-            if _has_pending_text:
-                _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
-                             context="group", group_id=_gid,
-                             reply_token=event.reply_token)
-            else:
-                handle_internal_upload_add_media(_gid, message_id, "image")
-                _upload_timer_reset(_gid, _gid, event.reply_token)
+            # per-group：直接追加到 group session
+            handle_internal_upload_add_media(_gid, message_id, "image")
+            _upload_timer_reset(_gid, _gid, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
         # 一般模式 → 存媒體緩衝，等文字跟上；timer 到期再單獨處理
         _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
@@ -4785,15 +4777,8 @@ def on_image_message(event: MessageEvent):
         _hq_gid = event.source.group_id
         _st = state_manager.get(_hq_gid)
         if _st and _st.get("action") == "uploading":
-            with _msg_buffer_lock:
-                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
-            if _has_pending_text:
-                _msg_buf_add(user_id, media_msg_id=message_id, media_type="image",
-                             context="group", group_id=_hq_gid,
-                             reply_token=event.reply_token)
-            else:
-                handle_internal_upload_add_media(_hq_gid, message_id, "image")
-                _upload_timer_reset(_hq_gid, _hq_gid, event.reply_token)
+            handle_internal_upload_add_media(_hq_gid, message_id, "image")
+            _upload_timer_reset(_hq_gid, _hq_gid, event.reply_token)
             return
         # 非上架 session → 靜默
         return
@@ -4844,15 +4829,8 @@ def on_video_message(event: MessageEvent):
         _vid_gid = event.source.group_id
         _st = state_manager.get(_vid_gid)
         if _st and _st.get("action") == "uploading":
-            with _msg_buffer_lock:
-                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
-            if _has_pending_text:
-                _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
-                             context="group", group_id=_vid_gid,
-                             reply_token=event.reply_token)
-            else:
-                handle_internal_upload_add_media(_vid_gid, event.message.id, "video")
-                _upload_timer_reset(_vid_gid, _vid_gid, event.reply_token)
+            handle_internal_upload_add_media(_vid_gid, event.message.id, "video")
+            _upload_timer_reset(_vid_gid, _vid_gid, event.reply_token)
             return  # 靜默，上架作業全程不回覆，直到完成才通知
         _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
                      context="group", group_id=event.source.group_id,
@@ -4866,15 +4844,8 @@ def on_video_message(event: MessageEvent):
         _hq_vid_gid = event.source.group_id
         _st = state_manager.get(_hq_vid_gid)
         if _st and _st.get("action") == "uploading":
-            with _msg_buffer_lock:
-                _has_pending_text = user_id in _msg_buffer and bool(_msg_buffer[user_id].get("lines"))
-            if _has_pending_text:
-                _msg_buf_add(user_id, media_msg_id=event.message.id, media_type="video",
-                             context="group", group_id=_hq_vid_gid,
-                             reply_token=event.reply_token)
-            else:
-                handle_internal_upload_add_media(_hq_vid_gid, event.message.id, "video")
-                _upload_timer_reset(_hq_vid_gid, _hq_vid_gid, event.reply_token)
+            handle_internal_upload_add_media(_hq_vid_gid, event.message.id, "video")
+            _upload_timer_reset(_hq_vid_gid, _hq_vid_gid, event.reply_token)
             return
 
 
