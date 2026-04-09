@@ -482,8 +482,8 @@ def handle_order_quantity(
         if _new_item:
             prod_name = _new_item.get("name", prod_name)
 
-    # ── 加入購物車 ────────────────────────────────
-    cart = cart_store.add_item(user_id, prod_cd, prod_name, qty)
+    # ── 加入購物車（同品項覆蓋數量，不累加）────────
+    cart = cart_store.set_item(user_id, prod_cd, prod_name, qty)
     print(f"[ordering] 加入購物車: {user_id} | {prod_name} x{qty} | 共 {len(cart)} 項")
     return tone.cart_item_added(cart)
 

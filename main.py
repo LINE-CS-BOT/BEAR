@@ -4922,11 +4922,24 @@ def _handle_stateful(
             return tone.ask_product_clarify(state.get("keyword", ""), candidates)
 
     # ── 改單/取消偵測（所有 stateful 狀態共用）──────────────
-    _CHANGE_KW = ["改訂單", "改數量", "改成", "改為", "改下單",
-                  "取消訂單", "我取消", "不要了", "我不要",
-                  "減少", "少叫", "多叫", "加訂", "追加",
-                  "幫我改", "幫改", "修改訂單"]
-    if any(kw in text for kw in _CHANGE_KW):
+    _CHANGE_QTY_KW = ["改成", "改為", "改"]
+    _CANCEL_KW_ORDER = ["取消訂單", "我取消", "不要了", "我不要"]
+    _OTHER_CHANGE_KW = ["改訂單", "改數量", "改下單",
+                        "減少", "少叫", "多叫", "加訂", "追加",
+                        "幫我改", "幫改", "修改訂單"]
+    # 購物車有東西 + 「改X個」→ 直接改數量
+    if any(kw in text for kw in _CHANGE_QTY_KW):
+        _change_qty = extract_quantity(text)
+        if _change_qty:
+            from storage import cart as _cart_chg
+            _chg_cart = _cart_chg.get_cart(user_id)
+            if _chg_cart:
+                _last = _chg_cart[-1]
+                _cart_chg.set_item(user_id, _last["prod_cd"], _last["prod_name"], _change_qty)
+                _new_cart = _cart_chg.get_cart(user_id)
+                print(f"[stateful] 改數量: {_last['prod_name']} → {_change_qty}", flush=True)
+                return tone.cart_item_added(_new_cart)
+    if any(kw in text for kw in _CANCEL_KW_ORDER + _OTHER_CHANGE_KW):
         state_manager.clear(user_id)
         issue_store.add(user_id, "order_change", text)
         print(f"[stateful] 改單/取消 → 清除狀態，進待處理 user={user_id[:10]}...: {text!r}")

@@ -687,8 +687,8 @@ def handle_internal_cart(text: str, line_api=None, staff_id: str = "") -> str | 
         _set_cart_session(staff_id or "default", line_id, label)
         info = ecount_client.lookup(code)
         prod_name = (info.get("name") if info else None) or code
-        cart = cart_store.add_item(line_id, code, prod_name, qty_str)
-        return f"✅ 已加購 {prod_name} × {qty_str}\n" + _format_cart(label, cart)
+        cart = cart_store.set_item(line_id, code, prod_name, qty_str)
+        return f"✅ 已設定 {prod_name} × {qty_str}\n" + _format_cart(label, cart)
 
     # ── 代結帳（指定客戶名）──
     m = _CART_CHECKOUT_RE.match(t)
@@ -711,15 +711,31 @@ def handle_internal_cart(text: str, line_api=None, staff_id: str = "") -> str | 
         line_id = session["line_id"]
         label = session["label"]
 
-        # 快速加購：T0101*6
+        # 快速加購/改數量：T0101*6（同品項覆蓋數量）
         m = _CART_QUICK_ADD_RE.match(t)
         if m:
             code, qty_str = m.group(1).upper(), int(m.group(2))
             _touch_cart_session(staff_id or "default")
             info = ecount_client.lookup(code)
             prod_name = (info.get("name") if info else None) or code
-            cart = cart_store.add_item(line_id, code, prod_name, qty_str)
-            return f"✅ 已加購 {prod_name} × {qty_str}\n" + _format_cart(label, cart)
+            existing_cart = cart_store.get_cart(line_id)
+            _was_in_cart = any(i["prod_cd"].upper() == code for i in existing_cart)
+            cart = cart_store.set_item(line_id, code, prod_name, qty_str)
+            _verb = "已修改" if _was_in_cart else "已加購"
+            return f"✅ {_verb} {prod_name} × {qty_str}\n" + _format_cart(label, cart)
+
+        # 快速改數量：「改6」「改6個」→ 改最後一個品項
+        _chg_m = re.match(r'^改\s*(\d+)\s*[個箱件盒組條]?', t)
+        if _chg_m:
+            _touch_cart_session(staff_id or "default")
+            cart = cart_store.get_cart(line_id)
+            if not cart:
+                return f"❌ {label} 的購物車是空的"
+            _last = cart[-1]
+            _new_qty = int(_chg_m.group(1))
+            cart_store.set_item(line_id, _last["prod_cd"], _last["prod_name"], _new_qty)
+            cart = cart_store.get_cart(line_id)
+            return f"✅ 已修改 {_last['prod_name']} → {_new_qty}\n" + _format_cart(label, cart)
 
         # 快速送出
         if t in _CART_QUICK_SUBMIT:
