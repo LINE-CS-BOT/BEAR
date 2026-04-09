@@ -3064,66 +3064,47 @@ _SHOWCASE_TRIGGER = "看貨群"
 
 def handle_internal_showcase_push(text: str, line_api) -> str | None:
     """
-    偵測「看貨群」+ 產品編碼，推送 PO文+圖片到看貨群。
-    格式：
-      看貨群
-      T1122
-      Z3456
-    或單行：看貨群 T1122 Z3456
+    偵測「看貨群」→ 列出最近 7 天新增的品項（依建立時間排序）。
+    新品定義：new_products.json 中 first_seen 在最近 7 天內的品項。
     """
     if _SHOWCASE_TRIGGER not in text:
         return None
 
-    return "⚠️ 看貨群推送暫停使用中"
+    import json as _json_sc
+    from datetime import datetime, timedelta
+    from pathlib import Path as _Path_sc
 
-    # 提取產品編碼
-    remaining = text.replace(_SHOWCASE_TRIGGER, "").strip()
-    codes = _PROD_CODE_RE.findall(remaining)
-    if not codes:
-        return "❌ 請指定產品編碼\n格式：看貨群\nT1122\nZ3456"
+    np_path = _Path_sc(__file__).parent.parent / "data" / "new_products.json"
+    if not np_path.exists():
+        return "📋 目前沒有新品資料（尚未偵測到新品項）"
 
-    products = _resolve_push_products(" ".join(codes))
-    if not products:
-        return f"❌ 找不到產品：{' '.join(codes)}"
+    try:
+        all_products = _json_sc.loads(np_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "❌ 讀取新品資料失敗"
 
-    # 取 ngrok URL + 媒體資料夾
-    ngrok_url = _get_ngrok_url()
-    media_dir = _get_media_dir()
-
-    # 收集每個產品的推送資料，檢查 PO 文 + 圖片
-    pushed = []
-    skipped = []
-    for prod_code, prod_name in products:
-        raw_po = _get_raw_po_block(prod_code)
-        if not raw_po:
-            skipped.append(f"{prod_name}（{prod_code}）無 PO 文")
-            continue
-
-        media_msgs = []
-        files = []
-        if ngrok_url and media_dir:
-            files = _match_product_media_files(prod_code, media_dir)
-            media_msgs = _build_media_messages(prod_code, files, ngrok_url)
-
-        if not files:
-            skipped.append(f"{prod_name}（{prod_code}）無圖片")
-            continue
-
+    cutoff = datetime.now() - timedelta(days=14)
+    recent = []
+    for code, info in all_products.items():
+        first_seen = info.get("first_seen", "")
         try:
-            text_msg = TextMessage(text=raw_po)
-            _push_messages_chunked(line_api, showcase_gid, text_msg, media_msgs)
-            pushed.append(f"{prod_name}（{prod_code}）")
-        except Exception as e:
-            print(f"[showcase-push] 推送失敗 {prod_code}: {e}")
-            skipped.append(f"{prod_name}（{prod_code}）推送失敗")
+            dt = datetime.strptime(first_seen, "%Y-%m-%d %H:%M")
+        except (ValueError, TypeError):
+            continue
+        if dt >= cutoff:
+            recent.append((code, info.get("name", ""), info.get("price", 0), dt))
 
-    lines = []
-    if pushed:
-        lines.append(f"📣 已推送至看貨群！\n產品：{'、'.join(pushed)}")
-    if skipped:
-        lines.append(f"⚠️ 跳過（需有 PO 文 + 圖片）：\n" + "\n".join(f"  • {s}" for s in skipped))
-    if not pushed and not skipped:
-        lines.append("❌ 沒有產品可推送")
+    if not recent:
+        return "📋 最近 14 天沒有新增品項"
+
+    # 依建立時間排序（最新在前）
+    recent.sort(key=lambda x: x[3], reverse=True)
+
+    lines = [f"📋 最近 14 天新品（共 {len(recent)} 筆）："]
+    for code, name, price, dt in recent:
+        price_str = f"　${int(price)}" if price else ""
+        lines.append(f"  {code}　{name}{price_str}\n  　建立：{dt.strftime('%m/%d %H:%M')}")
+
     return "\n".join(lines)
 
 
