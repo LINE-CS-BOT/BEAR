@@ -3033,7 +3033,8 @@ async def shop_products():
                 for ext in [".jpg", ".jpeg", ".png"]:
                     f = media_dir / f"{code}{suffix}{ext}"
                     if f.exists():
-                        image = f"{base_url}/{f.name}"
+                        _mtime = int(f.stat().st_mtime)
+                        image = f"{base_url}/{f.name}?v={_mtime}"
                         break
                 if image:
                     break
@@ -3088,7 +3089,8 @@ async def shop_images(code: str):
             key=lambda f: f.stem.upper()
         )
         for f in _found[:4]:
-            images.append(f"{base_url}/{f.name}")
+            _mtime = int(f.stat().st_mtime)
+            images.append(f"{base_url}/{f.name}?v={_mtime}")
     return {"code": code, "images": images}
 
 
