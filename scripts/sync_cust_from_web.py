@@ -778,8 +778,9 @@ def _do_sync(ecount_custs: list[dict], dry_run: bool):
 
         if not matched:
             unmatched += 1
-            # 舊代碼若存在（如 L-XXXX）→ 清空，讓下單時走即時解析流程
-            if old_cd:
+            # 舊代碼若存在且是自動生成的（如 L-XXXX）→ 清空
+            # M 開頭的代碼可能是手動設定的共用帳號，不清除
+            if old_cd and old_cd.startswith("L-"):
                 if dry_run:
                     print(f"  [清除] {name or uid}  {old_cd} → (空白)")
                 else:
