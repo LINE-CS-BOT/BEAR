@@ -211,7 +211,8 @@ def _notify_sync_failure(task_name: str, error: str):
 # ── 統一訊息合併緩衝（文字 + 圖片 + 影片，同一 timer）──────────
 import threading as _threading
 
-_MSG_COALESCE_SECS = 5.0           # 預設等待秒數
+_MSG_COALESCE_SECS = 5.0           # 預設等待秒數（內部群）
+_MSG_COALESCE_USER_SECS = 15.0    # 1對1客戶等待秒數
 _MSG_UPLOAD_COALESCE_SECS = 15.0   # 上架指令等待秒數
 _MSG_IMAGE_COALESCE_SECS = 8.0     # 有圖片 / 庫存問句等待秒數
 
@@ -481,7 +482,8 @@ def _msg_buf_add(
         elif _may_have_image:
             wait_secs = _MSG_IMAGE_COALESCE_SECS
         else:
-            wait_secs = _MSG_COALESCE_SECS
+            _is_user = existing.get("context") == "user"
+            wait_secs = _MSG_COALESCE_USER_SECS if _is_user else _MSG_COALESCE_SECS
 
         timer = _threading.Timer(wait_secs, _msg_buf_flush, args=(user_id,))
         timer.daemon = True
@@ -5062,6 +5064,41 @@ def _handle_stateful(
             prod_name = state.get("prod_name", "這款")
             return tone.ask_quantity(prod_name)
 
+    # ── 多產品清單：客戶問照片 → 發照片，其他 → 清 state 走正常流程 ──────
+    elif action == "recent_products":
+        _photo_kw = ["照片", "圖片", "看圖", "有圖", "看一下", "看看", "給我看"]
+        if any(kw in text for kw in _photo_kw):
+            _rp_codes = state.get("prod_codes", [])
+            if _rp_codes:
+                _rp_imgs = _get_product_image_urls(_rp_codes, max_images=4)
+                state_manager.clear(user_id)
+                if _rp_imgs:
+                    return (f"這些是產品照片唷～\n有喜歡的跟我說要哪個、幾個！", _rp_imgs)
+            state_manager.clear(user_id)
+            return "目前這些產品沒有照片，有喜歡的跟我說要哪個、幾個！"
+        # 非照片請求 → 清 state，走正常流程
+        state_manager.clear(user_id)
+        return None
+
+    # ── 模糊描述產品確認：附照片問「是這款嗎？」──────
+    elif action == "awaiting_product_confirm":
+        prod_cd   = state.get("prod_cd", "")
+        prod_name = state.get("prod_name", "此商品")
+        qty       = state.get("qty", 1)
+        note      = state.get("note", "")
+        if any(kw in text for kw in _YES_KW):
+            state_manager.clear(user_id)
+            from storage import cart as _cart_confirm
+            _cart_confirm.add_item(user_id, prod_cd, prod_name, qty, note=note)
+            print(f"[stateful] awaiting_product_confirm 確認 → 加購物車: {prod_cd} x{qty}", flush=True)
+            return tone.cart_item_added(_cart_confirm.get_cart(user_id))
+        elif any(kw in text for kw in _NO_KW):
+            state_manager.clear(user_id)
+            print(f"[stateful] awaiting_product_confirm 取消: {prod_cd}", flush=True)
+            return f"好的{tone.suffix_light()} 那請問{tone.boss()}要找的是哪款呢？可以提供更多資訊嗎？"
+        else:
+            return f"請問是「{prod_name}」這款嗎？跟我說「是」或「不是」唷"
+
     # ── 多圖+各X 確認：等待確認送出或其他回覆靜默 ──────
     elif action == "awaiting_multi_img_confirm":
         if any(kw == text.strip() for kw in _YES_KW):
@@ -5736,17 +5773,28 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api, original_text: st
         from services.ecount import ecount_client as _ec_cmd
         item = _ec_cmd.get_product_cache_item(code)
         name = (item.get("name") if item else "") or code
+        # 模糊描述（客戶沒報貨號）→ 先確認再加購物車
+        _has_code = bool(_PROD_CODE_RE.search(original_text)) if original_text else False
+        if not _has_code:
+            from storage.state import state_manager as _sm_ac
+            _sm_ac.set(user_id, {
+                "action":    "awaiting_product_confirm",
+                "prod_cd":   code,
+                "prod_name": name,
+                "qty":       qty,
+                "note":      note,
+            })
+            _price = f"　${int(item['price'])}" if item and item.get("price") and item["price"] > 0 else ""
+            _confirm_text = f"請問是這款嗎？\n\n「{name}」（{code}）{_price}\n× {qty} 個\n\n確認的話跟我說「是」，不是的話跟我說「不是」唷"
+            _confirm_imgs = _get_product_image_urls([code], max_images=1)
+            print(f"[claude-cmd] add_cart 模糊 → 先確認: {code} x{qty}", flush=True)
+            if _confirm_imgs:
+                return (_confirm_text, _confirm_imgs)
+            return _confirm_text
         from storage import cart as _cart_cmd
         _cart_cmd.add_item(user_id, code, name, qty, note=note)
         print(f"[claude-cmd] add_cart: {code} x{qty} note={note!r}", flush=True)
-        _ac_text = tone.cart_item_added(_cart_cmd.get_cart(user_id))
-        # 模糊描述（客戶沒報貨號）→ 附產品照片讓客戶確認
-        _has_code = bool(_PROD_CODE_RE.search(original_text)) if original_text else False
-        if not _has_code:
-            _ac_imgs = _get_product_image_urls([code], max_images=1)
-            if _ac_imgs:
-                return (_ac_text, _ac_imgs)
-        return _ac_text
+        return tone.cart_item_added(_cart_cmd.get_cart(user_id))
 
     elif action == "ask_quantity":
         code = cmd.get("code", "").upper()
@@ -5797,8 +5845,16 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api, original_text: st
                     "prod_name": _r_name,
                 })
                 print(f"[claude-cmd] reply 設 awaiting_quantity: {_rc}", flush=True)
+            elif len(_reply_codes) > 1:
+                # 多產品清單 → 記住貨號，客戶問照片時可以發
+                from storage.state import state_manager as _sm_multi
+                _sm_multi.set(user_id, {
+                    "action":       "recent_products",
+                    "prod_codes":   _reply_codes[:8],
+                })
+                print(f"[claude-cmd] reply 多產品，記 recent_products: {_reply_codes[:8]}", flush=True)
             if _reply_codes:
-                _reply_imgs = _get_product_image_urls(_reply_codes, max_images=1)
+                _reply_imgs = _get_product_image_urls(_reply_codes, max_images=4 if len(_reply_codes) > 1 else 1)
                 if _reply_imgs:
                     return (reply_text, _reply_imgs)
             return reply_text
@@ -5976,7 +6032,12 @@ def _dispatch(
                 })
                 print(f"[claude-ai] 設 awaiting_quantity: {_cc} ({_cl_name})", flush=True)
             elif len(_claude_codes) > 1:
-                print(f"[claude-ai] 回覆含多個產品 {_claude_codes}，不設 state", flush=True)
+                from storage.state import state_manager as _sm_multi2
+                _sm_multi2.set(user_id, {
+                    "action":       "recent_products",
+                    "prod_codes":   _claude_codes[:8],
+                })
+                print(f"[claude-ai] 回覆含多個產品，記 recent_products: {_claude_codes[:8]}", flush=True)
             if _claude_codes:
                 _img_urls = _get_product_image_urls(_claude_codes)
                 if _img_urls:
