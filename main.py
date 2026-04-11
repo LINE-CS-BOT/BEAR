@@ -1781,7 +1781,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         _cmd = _acc_img(combined, user_id=user_id,
                                         product_code=img_pc, product_name=_un)
                         if _cmd:
-                            _cmd_result = _execute_claude_command(user_id, _cmd, line_api)
+                            _cmd_result = _execute_claude_command(user_id, _cmd, line_api, original_text=combined)
                             if _cmd_result:
                                 _send_reply(reply_token, user_id, _cmd_result, line_api)
                                 return
@@ -1895,7 +1895,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     _iwt_cmd = _acc_iwt(combined, user_id=user_id,
                                         product_code=_iwt_code, product_name=_iwt_name)
                     if _iwt_cmd:
-                        reply_text = _execute_claude_command(user_id, _iwt_cmd, line_api)
+                        reply_text = _execute_claude_command(user_id, _iwt_cmd, line_api, original_text=combined)
                     if not reply_text:
                         # Claude 指令引擎沒回應 → 用產品資訊回覆
                         reply_text = handle_image_product(user_id, current_state.get("msg_id", ""), line_api)
@@ -4279,12 +4279,34 @@ async def admin_takeover(user_id: str, display_name: str = ""):
 
 @app.post("/admin/release")
 async def admin_release(user_id: str):
-    """釋放客戶，bot 恢復回覆"""
+    """釋放客戶，bot 恢復回覆。自動從 LINE OA 讀取接管期間的對話。"""
     st = state_manager.get(user_id) or {}
     if st.get("action") == "human_takeover":
         state_manager.clear(user_id)
-        # 在對話紀錄標記：人工已處理，前面的問題不用再回覆
         from services.claude_ai import add_chat_history
+
+        # 嘗試從 LINE OA Manager 讀取接管期間的對話
+        cust = customer_store.get_by_line_id(user_id)
+        cust_name = (cust.get("real_name") or cust.get("chat_label") or cust.get("display_name") or "") if cust else ""
+        if cust_name:
+            try:
+                import threading as _t_rel
+                def _sync_oa_chat():
+                    try:
+                        from services.line_oa_chat import read_chat_sync
+                        msgs = read_chat_sync(cust_name, max_messages=20)
+                        if msgs:
+                            # 找接管期間真人回覆的訊息，存到 chat_history
+                            staff_msgs = [m for m in msgs if m["role"] == "staff"]
+                            for m in staff_msgs[-5:]:  # 最多存最近 5 則真人回覆
+                                add_chat_history(user_id, "bot", f"（真人回覆）{m['text']}")
+                            print(f"[takeover] LINE OA 對話已同步：{len(staff_msgs)} 則真人回覆")
+                    except Exception as e:
+                        print(f"[takeover] LINE OA 對話同步失敗: {e}")
+                _t_rel.Thread(target=_sync_oa_chat, daemon=True).start()
+            except Exception:
+                pass
+
         add_chat_history(user_id, "bot", "（以上問題已由真人客服處理完成，不需要再回覆之前的問題）")
         print(f"[takeover] 釋放: {user_id[:10]}...")
     return {"status": "ok", "user_id": user_id}
@@ -4997,6 +5019,16 @@ def _handle_stateful(
 
     # ── 等待數量：客戶確認要購買幾個 ──────────────
     if action == "awaiting_quantity":
+        # 客戶要看照片 → 發產品照片
+        _photo_kw = ["照片", "圖片", "看圖", "有圖", "看一下", "長什麼樣", "長怎樣", "看看"]
+        if any(kw in text for kw in _photo_kw):
+            prod_cd = state.get("prod_cd", "")
+            prod_name = state.get("prod_name", "這款")
+            if prod_cd:
+                _ph_imgs = _get_product_image_urls([prod_cd], max_images=1)
+                if _ph_imgs:
+                    return (f"這就是「{prod_name}」的照片唷～\n請問{tone.boss()}要幾個呢？", _ph_imgs)
+            return f"這款目前沒有照片{tone.suffix_light()} 請問{tone.boss()}需要幾個「{prod_name}」呢？"
         # 問庫存數量攔截：「有多少個」「大概幾個」「還剩多少」→ 不透露數量
         _ask_qty_kw = ["多少個", "幾個", "多少", "剩多少", "剩幾", "有幾個", "有多少"]
         if any(kw in text for kw in _ask_qty_kw):
@@ -5691,7 +5723,7 @@ def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
     return reply
 
 
-def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
+def _execute_claude_command(user_id: str, cmd: dict, line_api, original_text: str = "") -> str | None:
     """執行 Claude 指令引擎回傳的結構化指令"""
     action = cmd.get("action")
 
@@ -5707,7 +5739,14 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
         from storage import cart as _cart_cmd
         _cart_cmd.add_item(user_id, code, name, qty, note=note)
         print(f"[claude-cmd] add_cart: {code} x{qty} note={note!r}", flush=True)
-        return tone.cart_item_added(_cart_cmd.get_cart(user_id))
+        _ac_text = tone.cart_item_added(_cart_cmd.get_cart(user_id))
+        # 模糊描述（客戶沒報貨號）→ 附產品照片讓客戶確認
+        _has_code = bool(_PROD_CODE_RE.search(original_text)) if original_text else False
+        if not _has_code:
+            _ac_imgs = _get_product_image_urls([code], max_images=1)
+            if _ac_imgs:
+                return (_ac_text, _ac_imgs)
+        return _ac_text
 
     elif action == "ask_quantity":
         code = cmd.get("code", "").upper()
@@ -5723,7 +5762,14 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
             "prod_name": name,
         })
         print(f"[claude-cmd] ask_quantity: {code}", flush=True)
-        return tone.ask_quantity(name)
+        _aq_text = tone.ask_quantity(name)
+        # 模糊描述（客戶沒報貨號）→ 附產品照片讓客戶確認是否是這款
+        _has_code = bool(_PROD_CODE_RE.search(original_text)) if original_text else False
+        if not _has_code:
+            _aq_imgs = _get_product_image_urls([code], max_images=1)
+            if _aq_imgs:
+                return (_aq_text, _aq_imgs)
+        return _aq_text
 
     elif action == "checkout":
         from storage import cart as _cart_co
@@ -5875,6 +5921,16 @@ def _dispatch(
         # 購物車有東西 → 判斷客戶意圖
         from storage import cart as _cart_chk
         if not _cart_chk.is_empty(user_id):
+            # 客戶要看購物車裡產品的照片
+            _photo_cart_kw = ["照片", "圖片", "看圖", "有圖", "看一下照片", "看一下圖"]
+            if any(kw in text for kw in _photo_cart_kw):
+                _cart_items = _cart_chk.get_cart(user_id)
+                _cart_codes = [it["prod_cd"] for it in _cart_items if it.get("prod_cd")]
+                if _cart_codes:
+                    _cart_imgs = _get_product_image_urls(_cart_codes[-1:], max_images=1)
+                    if _cart_imgs:
+                        _last_name = _cart_items[-1].get("prod_name", "")
+                        return (f"這是「{_last_name}」的照片唷～", _cart_imgs)
             _cancel_kw = ["不用", "算了", "取消", "不要"]
             if any(kw in text for kw in _cancel_kw):
                 _cart_chk.clear_cart(user_id)
@@ -5897,7 +5953,7 @@ def _dispatch(
         from services.claude_ai import ask_claude_command, ask_claude_text
         _cmd = ask_claude_command(text, user_id=user_id)
         if _cmd:
-            _cmd_result = _execute_claude_command(user_id, _cmd, line_api)
+            _cmd_result = _execute_claude_command(user_id, _cmd, line_api, original_text=text)
             if _cmd_result:
                 return _cmd_result
 
@@ -5933,19 +5989,43 @@ def _dispatch(
                 issue_store.add(user_id, "cancel_defer", f"客戶取消/延後：{text[:80]}")
                 print(f"[claude-ai] 客戶取消/延後，記待處理: {text[:30]!r}", flush=True)
 
-            # Claude 回覆「確認一下」「稍後回覆」→ 代表無法回答
+            # Claude 回覆「確認一下」「稍後回覆」→ 代表無法回答，嘗試從 LINE OA 補上下文重試
             _unsure_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍等", "查一下", "幫您查", "幫你查", "沒有資料"]
             if any(k in _claude_reply for k in _unsure_kw):
-                issue_store.add(user_id, "claude_unsure", f"Claude 無法回答：{text[:50]}")
-                print(f"[claude-ai] 回覆含不確定語氣，記待處理: {text[:30]!r}", flush=True)
-                # 休息時間 → 改回覆下次上班時間
-                from handlers.hours import _is_open_now, next_open_reply
-                from datetime import datetime as _dt_cl
-                import pytz as _pz_cl
-                from config import settings as _cfg_cl
-                _now_cl = _dt_cl.now(_pz_cl.timezone(_cfg_cl.BUSINESS_TZ))
-                if not _is_open_now(_now_cl):
-                    _claude_reply = next_open_reply()
+                print(f"[claude-ai] 回覆含不確定語氣，嘗試從 LINE OA 補上下文: {text[:30]!r}", flush=True)
+                # 嘗試從 LINE OA 抓最近對話補上下文
+                _oa_retry_ok = False
+                try:
+                    _cust_oa = customer_store.get_by_line_id(user_id)
+                    _cust_name_oa = (_cust_oa.get("real_name") or _cust_oa.get("chat_label") or _cust_oa.get("display_name") or "") if _cust_oa else ""
+                    if _cust_name_oa:
+                        from services.line_oa_chat import read_chat_sync
+                        _oa_msgs = read_chat_sync(_cust_name_oa, max_messages=15)
+                        if _oa_msgs:
+                            _oa_context = "\n".join(
+                                f"{'客服' if m['role'] == 'staff' else '客戶'}：{m['text']}"
+                                for m in _oa_msgs[-10:]
+                            )
+                            _retry_prompt = f"【LINE 官方帳號完整對話紀錄】\n{_oa_context}\n\n---\n客戶最新訊息：{text}"
+                            _retry_reply = ask_claude_text(_retry_prompt, user_id=user_id)
+                            if _retry_reply and not any(k in _retry_reply for k in _unsure_kw):
+                                print(f"[claude-ai] LINE OA 上下文重試成功", flush=True)
+                                _claude_reply = _retry_reply
+                                _oa_retry_ok = True
+                except Exception as _e_oa:
+                    print(f"[claude-ai] LINE OA 上下文重試失敗: {_e_oa}", flush=True)
+
+                if not _oa_retry_ok:
+                    issue_store.add(user_id, "claude_unsure", f"Claude 無法回答：{text[:50]}")
+                    print(f"[claude-ai] 重試仍無法回答，記待處理", flush=True)
+                    # 休息時間 → 改回覆下次上班時間
+                    from handlers.hours import _is_open_now, next_open_reply
+                    from datetime import datetime as _dt_cl
+                    import pytz as _pz_cl
+                    from config import settings as _cfg_cl
+                    _now_cl = _dt_cl.now(_pz_cl.timezone(_cfg_cl.BUSINESS_TZ))
+                    if not _is_open_now(_now_cl):
+                        _claude_reply = next_open_reply()
             return _claude_reply
         return handle_unknown(user_id, text, line_api)
 
