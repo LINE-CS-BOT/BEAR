@@ -41,55 +41,48 @@ _ORDER_HASH = (
 _PAGE_LOADED_SEL = "#tabIng"
 
 
-async def _download_excel(page, tmp_path: Path) -> bool:
-    """點頁面上的 Excel 按鈕下載檔案"""
-    excel_selectors = [
-        '[data-cid="Excel"]',
-        '[data-cid="excel"]',
-        '[data-cid*="Excel"]',
-        'button:has-text("Excel")',
-        '.btn:has-text("Excel")',
-    ]
-    excel_btn = None
-    for sel in excel_selectors:
-        loc = page.locator(sel)
-        if await loc.count() > 0:
-            excel_btn = loc.first
-            break
+async def _download_excel(page, tmp_path: Path, label: str = "unfulfilled") -> bool:
+    """點頁面上的 Excel 按鈕下載檔案，最多重試 3 次"""
+    for _attempt in range(3):
+        excel_selectors = [
+            '[data-cid="Excel"]',
+            '[data-cid="excel"]',
+            '[data-cid*="Excel"]',
+            'button:has-text("Excel")',
+            '.btn:has-text("Excel")',
+        ]
+        excel_btn = None
+        for sel in excel_selectors:
+            loc = page.locator(sel)
+            if await loc.count() > 0:
+                excel_btn = loc.first
+                break
 
-    if excel_btn is None:
-        print("[unfulfilled] ✗ 找不到 Excel 按鈕")
-        return False
-
-    try:
-        async with page.expect_download(timeout=15000) as dl_info:
-            await excel_btn.click(timeout=5000)
-        dl = await dl_info.value
-        await dl.save_as(str(tmp_path))
-        if tmp_path.stat().st_size == 0:
-            print("[unfulfilled] ✗ Excel 下載為空檔")
+        if excel_btn is None:
+            print(f"[{label}] ⚠️ 第{_attempt+1}次：找不到 Excel 按鈕")
+            if _attempt < 2:
+                await asyncio.sleep(3)
+                continue
             return False
-        print(f"[unfulfilled] ✓ Excel 已下載 → {tmp_path.name}")
-        return True
-    except Exception as e:
-        # 嘗試下拉選單
-        await asyncio.sleep(0.8)
-        dropdown = page.locator(
-            'li:has-text("Excel"), a:has-text("Excel"), '
-            '[data-cid*="xls"], [data-cid*="excel"], [data-cid*="Excel"]'
-        ).first
+
         try:
             async with page.expect_download(timeout=15000) as dl_info:
-                await dropdown.click(timeout=5000)
+                await excel_btn.click(timeout=5000)
             dl = await dl_info.value
             await dl.save_as(str(tmp_path))
             if tmp_path.stat().st_size == 0:
-                return False
-            print(f"[unfulfilled] ✓ Excel 已下載 → {tmp_path.name}")
-            return True
-        except Exception as e2:
-            print(f"[unfulfilled] ✗ Excel 下載失敗: {e2}")
-            return False
+                print(f"[{label}] ⚠️ 第{_attempt+1}次：Excel 下載為空檔")
+            else:
+                print(f"[{label}] ✓ Excel 已下載 → {tmp_path.name}（第{_attempt+1}次）")
+                return True
+        except Exception as e:
+            print(f"[{label}] ⚠️ 第{_attempt+1}次 Excel 下載失敗: {e}")
+
+        if _attempt < 2:
+            await asyncio.sleep(3)
+
+    print(f"[{label}] ✗ Excel 3 次下載都失敗")
+    return False
 
 
 def _parse_unfulfilled_excel(xlsx_path: Path) -> list[dict]:
