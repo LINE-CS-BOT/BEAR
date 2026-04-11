@@ -231,8 +231,102 @@ async def _enable_include_zero(page) -> bool:
     return False
 
 
+def _parse_inventory_excel(xlsx_path: Path) -> dict[str, dict]:
+    """解析庫存情況 Excel，回傳 {code: {incoming, unfilled, balance, available, preorder, unit_price}, ...}"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(xlsx_path), data_only=True)
+    ws = wb.active
+
+    # 動態尋找表頭列
+    hdrs = None
+    header_row_idx = 1
+    _HDR_KEYWORDS = ["品號", "貨號", "入庫", "結存", "可售", "未出"]
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=15, values_only=True)):
+        vals = [str(v or "").strip() for v in row]
+        joined = " ".join(vals)
+        if sum(1 for kw in _HDR_KEYWORDS if kw in joined) >= 2:
+            hdrs = vals
+            header_row_idx = i + 1
+            break
+
+    if not hdrs:
+        print(f"[sync] ✗ Excel 找不到表頭列")
+        return {}
+
+    print(f"[sync] Excel 表頭（第{header_row_idx}列）: {hdrs}")
+
+    # 建立欄位索引
+    col_map = {}
+    _ALIASES = {
+        "code":       ["品號", "貨號", "品項編碼", "Prod"],
+        "incoming":   ["入庫量", "入庫", "未進貨", "Incoming"],
+        "unfilled":   ["未出量", "未出庫", "未出貨", "未出", "Unfilled"],
+        "balance":    ["結存量", "結存", "庫存數量", "Balance"],
+        "available":  ["可售量", "可售", "可售庫存", "Available"],
+        "preorder":   ["預購量", "預購", "可預購數量", "可預購", "Pre-order"],
+        "unit_price": ["出庫單價", "單價", "Unit Price"],
+    }
+    for key, aliases in _ALIASES.items():
+        for i, h in enumerate(hdrs):
+            if any(a in h for a in aliases):
+                col_map[key] = i
+                break
+
+    print(f"[sync] Excel 欄位對應: {col_map}")
+
+    if "code" not in col_map:
+        print("[sync] ✗ Excel 找不到品號欄位")
+        return {}
+
+    # 解析資料
+    result = {}
+    for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+        vals = list(row)
+        code_idx = col_map["code"]
+        if code_idx >= len(vals):
+            continue
+        code = str(vals[code_idx] or "").strip().upper()
+        if not code or not re.match(r'^[A-Za-z0-9\-]+$', code):
+            continue
+
+        def _num(key):
+            idx = col_map.get(key)
+            if idx is None or idx >= len(vals):
+                return 0
+            v = str(vals[idx] or "").strip().replace(",", "")
+            try:
+                return round(float(v)) if v else 0
+            except ValueError:
+                return 0
+
+        def _float(key):
+            idx = col_map.get(key)
+            if idx is None or idx >= len(vals):
+                return 0.0
+            v = str(vals[idx] or "").strip().replace(",", "")
+            try:
+                return float(v) if v else 0.0
+            except ValueError:
+                return 0.0
+
+        entry = {
+            "incoming":  _num("incoming"),
+            "unfilled":  _num("unfilled"),
+            "balance":   _num("balance"),
+            "available": _num("available"),
+            "preorder":  _num("preorder"),
+        }
+        if "unit_price" in col_map:
+            entry["unit_price"] = _float("unit_price")
+        result[code] = entry
+
+    print(f"[sync] ✓ Excel 解析完成：{len(result)} 筆")
+    return result
+
+
 async def _fill_and_extract(page) -> dict[str, dict]:
-    """填倉庫=101 → 啟用包含0 → 點查詢 → 提取庫存數量（含出庫單價，若有）"""
+    """填倉庫=101 → 啟用包含0 → 點查詢 → 下載 Excel 提取庫存數量"""
 
     # 填倉庫代碼（noneEvent class，用 JS 設值）
     try:
@@ -284,186 +378,48 @@ async def _fill_and_extract(page) -> dict[str, dict]:
         print(f"[sync] ✗ 等待結果逾時: {e}")
         return {}
 
-    # ── 嘗試切換每頁顯示筆數到最大（搜尋頁面所有 select 元素）────────
-    try:
-        changed = await page.evaluate("""
-            () => {
-                // 搜尋所有 select，找到有「數字選項」且最大值 >= 100 的（like 50/100/200/500/ALL）
-                for (const sel of document.querySelectorAll('select')) {
-                    const nums = Array.from(sel.options)
-                        .map(o => parseInt(o.value, 10))
-                        .filter(n => !isNaN(n) && n > 0);
-                    if (nums.length < 2 || Math.max(...nums) < 100) continue;
-                    // 找最大 option
-                    let best = null, bestVal = 0;
-                    for (const opt of sel.options) {
-                        const v = opt.value.toLowerCase();
-                        if (v === 'all' || v === '전체' || v === '全部') { best = opt; break; }
-                        const n = parseInt(opt.value, 10);
-                        if (!isNaN(n) && n > bestVal) { bestVal = n; best = opt; }
-                    }
-                    if (best && best.value !== sel.value) {
-                        sel.value = best.value;
-                        sel.dispatchEvent(new Event('change', {bubbles: true}));
-                        return (sel.name || sel.id || '?') + '→' + best.value;
-                    }
-                }
-                return null;
-            }
-        """)
-        if changed:
-            print(f"[sync] 每頁筆數切換: {changed}，等待重新載入...")
-            await page.wait_for_load_state("networkidle", timeout=15000)
-            await page.wait_for_timeout(2000)
-            await page.wait_for_selector("#grid-main tr:nth-child(2)", timeout=20000)
-        else:
-            print("[sync] 未找到每頁筆數控制項，嘗試滾動載入全部資料...")
-    except Exception as e:
-        print(f"[sync] 切換每頁筆數略過: {e}")
-
-    # ── 提取（支援虛擬滾動：一頁到底但 DOM 只渲染可見行）────────────────
-    # ── 先偵測欄位標題，找出各欄的索引位置 ────────────────────────────
-    _HEADER_JS = r"""
-        () => {
-            // 嘗試從 #grid-head 或 #grid-main 第一行讀取欄位標題
-            const headTable = document.getElementById('grid-head')
-                           || document.getElementById('grid-main');
-            if (!headTable) return [];
-            const headerRow = headTable.rows[0];
-            if (!headerRow) return [];
-            return Array.from(headerRow.cells).map((c, i) => ({
-                index: i,
-                text: c.textContent.trim().replace(/\s+/g, ' ')
-            }));
-        }
-    """
-    headers_raw = await page.evaluate(_HEADER_JS)
-    # 印出欄位清單（方便除錯與確認出庫單價位置）
-    if headers_raw:
-        header_list = "  ".join(f"[{h['index']}]{h['text']}" for h in headers_raw)
-        print(f"[sync] 欄位清單: {header_list}")
-
-    # 建立 欄位名稱 → 索引 的對照表
-    col_idx: dict[str, int] = {}
-    _COL_ALIASES = {
-        "code":      ["品號", "貨號", "Prod. Code", "제품코드"],
-        "incoming":  ["入庫量", "入庫", "Incoming", "입고"],
-        "unfilled":  ["未出量", "未出庫", "Unfilled", "미출"],
-        "balance":   ["結存量", "結存", "Balance", "재고"],
-        "available": ["可售量", "可售", "Available", "가용"],
-        "preorder":  ["預購量", "預購", "Pre-order", "예약"],
-        "unit_price":["出庫單價", "單價", "Unit Price", "단가"],
-    }
-    for key, aliases in _COL_ALIASES.items():
-        for h in headers_raw:
-            if any(a in h["text"] for a in aliases):
-                col_idx[key] = h["index"]
+    # ── 下載 Excel（比爬 HTML 更準確完整，最多重試 3 次）──────────────
+    _TMP_XLSX = ROOT / "data" / "_tmp_inventory.xlsx"
+    for _attempt in range(3):
+        excel_selectors = [
+            '[data-cid="Excel"]',
+            '[data-cid="excel"]',
+            '[data-cid*="Excel"]',
+            'button:has-text("Excel")',
+            '.btn:has-text("Excel")',
+        ]
+        excel_btn = None
+        for sel in excel_selectors:
+            loc = page.locator(sel)
+            if await loc.count() > 0:
+                excel_btn = loc.first
                 break
 
-    # 欄位未偵測到時用原始固定索引作為後備
-    _FALLBACK = {
-        "code": 1, "incoming": 6, "unfilled": 7,
-        "balance": 8, "available": 9, "preorder": 10,
-        # unit_price 沒有 fallback（沒偵測到就不抓）
-    }
-    for key, fb in _FALLBACK.items():
-        if key not in col_idx:
-            col_idx[key] = fb
-
-    has_unit_price = "unit_price" in col_idx
-    if has_unit_price:
-        print(f"[sync] ✓ 找到「出庫單價」欄（索引 {col_idx['unit_price']}）")
-    else:
-        print("[sync] ⚠️ 未找到「出庫單價」欄，只抓庫存數量")
-
-    _EXTRACT_JS = f"""
-        () => {{
-            const table = document.getElementById('grid-main');
-            if (!table) return {{error: 'no #grid-main'}};
-            const available = {{}};
-            let totalRows = 0;
-            const n  = s => Math.round(parseFloat((s || '').replace(/,/g,'')) || 0);
-            const f  = s => parseFloat((s || '').replace(/,/g,'')) || 0;
-            const CI = {json.dumps(col_idx)};
-            const HAS_PRICE = {str(has_unit_price).lower()};
-            for (let i = 1; i < table.rows.length; i++) {{
-                const row  = table.rows[i];
-                const code = row.cells[CI.code]?.textContent?.trim();
-                if (!code || !/^[A-Za-z0-9\\-]+$/.test(code)) continue;
-                totalRows++;
-                const entry = {{
-                    incoming:  n(row.cells[CI.incoming]?.textContent?.trim()),
-                    unfilled:  n(row.cells[CI.unfilled]?.textContent?.trim()),
-                    balance:   n(row.cells[CI.balance]?.textContent?.trim()),
-                    available: n(row.cells[CI.available]?.textContent?.trim()),
-                    preorder:  n(row.cells[CI.preorder]?.textContent?.trim()),
-                }};
-                if (HAS_PRICE) {{
-                    entry.unit_price = f(row.cells[CI.unit_price]?.textContent?.trim());
-                }}
-                available[code.toUpperCase()] = entry;
-            }}
-            return {{totalRows, available}};
-        }}
-    """
-    _SCROLL_JS = """
-        (amount) => {
-            // 嘗試多種可能的捲動容器
-            const containers = [
-                document.getElementById('grid-main')?.closest('.grid-wrap'),
-                document.getElementById('grid-main')?.closest('[style*="overflow"]'),
-                document.getElementById('grid-main')?.parentElement,
-                document.querySelector('.grid-body'),
-                document.querySelector('.body_wrap'),
-                document.documentElement,
-                document.body,
-            ].filter(Boolean);
-            for (const c of containers) {
-                const before = c.scrollTop;
-                c.scrollTop += amount;
-                if (c.scrollTop !== before) return true;
-            }
-            window.scrollBy(0, amount);
-            return true;
-        }
-    """
-
-    all_data = {}
-    prev_count = -1
-    scroll_round = 0
-
-    # 先抓一次（不捲動）
-    result = await page.evaluate(_EXTRACT_JS)
-    if "error" in result:
-        print(f"[sync] ✗ 提取失敗: {result['error']}")
-        return {}
-    all_data.update(result["available"])
-    print(f"[sync] ✓ 初始 {result['totalRows']} 筆，累計 {len(all_data)} 筆")
-
-    # 若 DOM 行數等於全資料（沒有虛擬滾動）就直接結束
-    # 否則捲動繼續載入，直到沒有新資料為止
-    while True:
-        if len(all_data) == prev_count:
-            break          # 捲動後沒有新資料 → 結束
-        prev_count = len(all_data)
-        scroll_round += 1
-        if scroll_round > 100:
-            print("[sync] ⚠️ 超過捲動上限，停止")
+        if not excel_btn:
+            print(f"[sync] ⚠️ 第{_attempt+1}次：找不到 Excel 按鈕")
+            if _attempt < 2:
+                await page.wait_for_timeout(3000)
+                continue
             break
 
-        await page.evaluate(_SCROLL_JS, 1500)   # 每次捲 1500px（確保行列不被跳過）
-        await page.wait_for_timeout(800)
+        try:
+            async with page.expect_download(timeout=30000) as dl_info:
+                await excel_btn.click(timeout=5000)
+            dl = await dl_info.value
+            await dl.save_as(str(_TMP_XLSX))
+            if _TMP_XLSX.stat().st_size > 0:
+                print(f"[sync] ✓ Excel 已下載 → {_TMP_XLSX.name}（第{_attempt+1}次）")
+                return _parse_inventory_excel(_TMP_XLSX)
+            else:
+                print(f"[sync] ⚠️ 第{_attempt+1}次：Excel 下載為空檔")
+        except Exception as e:
+            print(f"[sync] ⚠️ 第{_attempt+1}次 Excel 下載失敗: {e}")
 
-        result = await page.evaluate(_EXTRACT_JS)
-        if "error" in result:
-            break
-        new_rows = len(result["available"])
-        all_data.update(result["available"])
-        if scroll_round % 5 == 0 or new_rows > 0:
-            print(f"[sync] 捲動 {scroll_round} 次，累計 {len(all_data)} 筆")
+        if _attempt < 2:
+            await page.wait_for_timeout(3000)
 
-    print(f"[sync] ✓ 最終 {len(all_data)} 筆")
-    return all_data
+    print("[sync] ✗ Excel 3 次下載都失敗，不更新庫存資料")
+    return {}
 
 
 # ---------------------------------------------------------------------------

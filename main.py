@@ -2167,30 +2167,69 @@ def _check_and_notify_pickup():
     print("[pickup-notify] 更新資料中...", flush=True)
     import time as _t
 
-    # 1. 庫存
-    avail_path = Path(__file__).parent / "data" / "available.json"
-    if not avail_path.exists():
-        print("[pickup-notify] available.json 不存在，跳過", flush=True)
-        return
-    if _t.time() - avail_path.stat().st_mtime > 30 * 60:
+    _ADMIN_UID = "Uac17599b38b673b836ccb48025204b19"  # 管理員 LINE ID
+
+    def _notify_admin_sync_fail(reason: str):
+        """同步失敗時通知管理員"""
+        print(f"[pickup-notify] ⚠️ {reason}，跳過到貨通知", flush=True)
         try:
-            from services.ecount import ecount_client
-            ecount_client._ensure_available()
+            from linebot.v3.messaging import PushMessageRequest
+            from linebot.v3.messaging import Configuration as _MsgCfg
+            with ApiClient(_MsgCfg(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)) as _ac:
+                _api = MessagingApi(_ac)
+                _api.push_message(PushMessageRequest(
+                    to=_ADMIN_UID,
+                    messages=[TextMessage(text=f"⚠️ 到貨通知排程失敗\n{reason}\n今日到貨通知已跳過")],
+                ))
         except Exception:
             pass
 
-    # 2. 未備貨 + 已備貨未取
+    # 1. 庫存同步（Excel 下載）
+    avail_path = Path(__file__).parent / "data" / "available.json"
+    _avail_ok = False
     try:
         import subprocess as _sp_pn
         _python_pn = _sys.executable
         _root_pn = str(Path(__file__).parent)
         _flags_pn = _sp_pn.CREATE_NO_WINDOW if _sys.platform == "win32" else 0
-        _sp_pn.run([_python_pn, "-m", "scripts.sync_unfulfilled"],
+        _proc_avail = _sp_pn.run([_python_pn, "-m", "scripts.auto_sync_unfulfilled"],
+                   cwd=_root_pn, timeout=180, creationflags=_flags_pn,
+                   capture_output=True, text=True)
+        _stdout_avail = _proc_avail.stdout or ""
+        if "更新" in _stdout_avail and "筆" in _stdout_avail:
+            _avail_ok = True
+            print("[pickup-notify] 庫存已更新", flush=True)
+        elif avail_path.exists() and _t.time() - avail_path.stat().st_mtime < 60 * 60:
+            # 最近 1 小時內有更新過，視為 OK
+            _avail_ok = True
+            print("[pickup-notify] 庫存使用既有資料（1 小時內）", flush=True)
+        else:
+            print(f"[pickup-notify] 庫存同步可能失敗: {_stdout_avail[-200:]}", flush=True)
+    except Exception as _e_avail:
+        print(f"[pickup-notify] 庫存同步失敗: {_e_avail}", flush=True)
+
+    if not _avail_ok:
+        _notify_admin_sync_fail("庫存 Excel 同步失敗")
+        return
+
+    # 2. 未備貨 + 已備貨未取（Excel 下載）
+    _unfulfilled_ok = False
+    try:
+        _proc_pn = _sp_pn.run([_python_pn, "-m", "scripts.sync_unfulfilled"],
                    cwd=_root_pn, timeout=120, creationflags=_flags_pn,
-                   capture_output=True)
-        print("[pickup-notify] 未備貨+未取已更新", flush=True)
+                   capture_output=True, text=True)
+        _stdout_pn = _proc_pn.stdout or ""
+        if "✓" in _stdout_pn and "已存" in _stdout_pn:
+            _unfulfilled_ok = True
+            print("[pickup-notify] 未備貨+未取已更新", flush=True)
+        else:
+            print(f"[pickup-notify] 未備貨同步可能失敗: {_stdout_pn[-200:]}", flush=True)
     except Exception as _e_sync:
-        print(f"[pickup-notify] 同步失敗: {_e_sync}", flush=True)
+        print(f"[pickup-notify] 未備貨同步失敗: {_e_sync}", flush=True)
+
+    if not _unfulfilled_ok:
+        _notify_admin_sync_fail("未備貨 Excel 同步失敗")
+        return
 
     avail = json.loads(avail_path.read_text(encoding="utf-8"))
 
