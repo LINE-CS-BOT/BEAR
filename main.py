@@ -2254,11 +2254,27 @@ def _check_and_notify_pickup():
                 continue
 
             # 檢查客戶是否還有非預購的未備貨訂單
+            # 收集所有可能的客戶名稱（real_name、display_name、Ecount 客戶名）
             cust = customer_store.get_by_line_id(uid)
-            cust_name_check = (cust.get("real_name") or cust.get("display_name") or "") if cust else ""
+            _name_candidates = set()
+            if cust:
+                for _nk in ("real_name", "display_name", "chat_label"):
+                    _nv = (cust.get(_nk) or "").strip()
+                    if _nv:
+                        _name_candidates.add(_nv)
+                # 也用 Ecount 客戶代碼查 Ecount 客戶名
+                _ec_cd = (cust.get("ecount_cust_cd") or "").strip()
+                if _ec_cd:
+                    from handlers.internal import _load_ec_customers
+                    for _ec in _load_ec_customers():
+                        if _ec.get("code") == _ec_cd:
+                            _ec_name = (_ec.get("name") or "").strip()
+                            if _ec_name:
+                                _name_candidates.add(_ec_name)
+                            break
             non_preorder_uf = [
                 o for o in unfulfilled
-                if cust_name_check and cust_name_check in o.get("customer", "")
+                if any(nc and nc in o.get("customer", "") for nc in _name_candidates)
                 and not _check_preorder(o.get("code", ""))
             ]
             if non_preorder_uf:
