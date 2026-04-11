@@ -543,7 +543,33 @@ def handle_checkout(
                 state_manager.set(user_id, {"action": "awaiting_contact_info_checkout"})
                 return tone.ask_contact_info()
 
-    # ── 一次送出所有品項 ──────────────────────────
+    # ── 先登記到貨通知（防 reload 中斷導致漏登）──────
+    from handlers.inventory import _check_preorder
+    from storage.notify import notify_store
+    _oos_items = []
+    _po_items = []
+    _notify_ids = []  # 記錄已登記的通知 ID，訂單失敗時可回滾
+    for item in cart:
+        nid = notify_store.add(
+            user_id=user_id,
+            prod_code=item["prod_cd"],
+            prod_name=item["prod_name"],
+            source="staff",
+            qty_wanted=item["qty"],
+        )
+        if nid:
+            _notify_ids.append(nid)
+        print(f"[ordering] 預登記到貨通知: {item['prod_name']} x{item['qty']}")
+        if _check_preorder(item["prod_cd"]):
+            _po_items.append(item)
+        else:
+            _item_info = ecount_client.lookup(item["prod_cd"])
+            _item_qty = _item_info.get("qty") if _item_info else None
+            if not _item_qty or _item_qty < item["qty"]:
+                _short = item["qty"] - (_item_qty or 0)
+                _oos_items.append({**item, "short": _short, "stock": _item_qty or 0})
+
+    # ── 再建立訂單 ──────────────────────────────────
     from storage.customers import customer_store as _cs_ord
     _phone = (_cs_ord.get_by_line_id(user_id) or {}).get("phone", "") or ""
     items = [{"prod_cd": i["prod_cd"], "qty": i["qty"], "note": i.get("note", "")} for i in cart]
@@ -551,29 +577,6 @@ def handle_checkout(
 
     if slip_no:
         print(f"[ordering] 購物車訂單建立成功: {slip_no} | {cust_code} | {len(cart)} 項")
-        # 所有品項自動登記到貨通知
-        from handlers.inventory import _check_preorder
-        from storage.notify import notify_store
-        _oos_items = []  # 缺貨品項（需通知總公司調貨）
-        _po_items = []   # 預購品項
-        for item in cart:
-            notify_store.add(
-                user_id=user_id,
-                prod_code=item["prod_cd"],
-                prod_name=item["prod_name"],
-                source="staff",
-                qty_wanted=item["qty"],
-            )
-            print(f"[ordering] 自動登記到貨通知: {item['prod_name']} x{item['qty']}")
-            if _check_preorder(item["prod_cd"]):
-                _po_items.append(item)
-            else:
-                # 非預購品 → 檢查庫存是否足夠
-                _item_info = ecount_client.lookup(item["prod_cd"])
-                _item_qty = _item_info.get("qty") if _item_info else None
-                if not _item_qty or _item_qty < item["qty"]:
-                    _short = item["qty"] - (_item_qty or 0)
-                    _oos_items.append({**item, "short": _short, "stock": _item_qty or 0})
         # 缺貨品項 → 登記待處理（不通知總公司）
         if _oos_items:
             from storage.issues import issue_store
@@ -584,7 +587,13 @@ def handle_checkout(
         cart_store.clear_cart(user_id)
         return tone.checkout_confirmed(cart, oos_items=_oos_items, po_items=_po_items)
     else:
-        print(f"[ordering] 購物車訂單建立失敗: {cust_code}")
+        print(f"[ordering] 購物車訂單建立失敗: {cust_code}，回滾到貨通知")
+        # 訂單失敗 → 取消已登記的到貨通知
+        for nid in _notify_ids:
+            try:
+                notify_store.cancel(nid)
+            except Exception:
+                pass
         from storage.issues import issue_store
         desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart)
         issue_store.add(user_id, "order_failed", desc)
