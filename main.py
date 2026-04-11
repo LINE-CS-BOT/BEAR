@@ -5736,6 +5736,25 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api) -> str | None:
         reply_text = cmd.get("text", "")
         if reply_text:
             print(f"[claude-cmd] reply: {reply_text[:30]!r}", flush=True)
+            # 從回覆中提取貨號 → 附 1 張產品圖 + 設 awaiting_quantity
+            _reply_codes = _PROD_CODE_RE.findall(reply_text)
+            _reply_codes = list(dict.fromkeys(c.upper() for c in _reply_codes))
+            if len(_reply_codes) == 1:
+                _rc = _reply_codes[0]
+                from services.ecount import ecount_client as _ec_reply
+                _r_item = _ec_reply.get_product_cache_item(_rc)
+                _r_name = (_r_item.get("name") if _r_item else None) or _rc
+                from storage.state import state_manager as _sm_reply
+                _sm_reply.set(user_id, {
+                    "action":    "awaiting_quantity",
+                    "prod_cd":   _rc,
+                    "prod_name": _r_name,
+                })
+                print(f"[claude-cmd] reply 設 awaiting_quantity: {_rc}", flush=True)
+            if _reply_codes:
+                _reply_imgs = _get_product_image_urls(_reply_codes, max_images=1)
+                if _reply_imgs:
+                    return (reply_text, _reply_imgs)
             return reply_text
         return None
 
@@ -5864,9 +5883,13 @@ def _dispatch(
             from handlers.ordering import extract_quantity as _eq_cart
             if _eq_cart(text):
                 return f"請問要訂什麼商品呢？或是跟我說「好了」幫您送出目前的訂單唷"
+            # 「謝謝」「麻煩了」等禮貌語 + 購物車有東西 → 結帳確認
+            _polite_kw = ["謝謝", "感謝", "麻煩了", "辛苦", "先這樣", "就這些", "就先這樣", "就好"]
+            if any(k in text for k in _polite_kw):
+                return handle_checkout(user_id, line_api)
             # 備註性質的訊息 → 存到最後一個品項的備註
-            _note_kw = ["麻煩", "備註", "幫我", "請幫", "分配", "混裝", "平均",
-                        "顏色", "款式", "不要", "要", "換", "配"]
+            _note_kw = ["備註", "幫我", "請幫", "分配", "混裝", "平均",
+                        "顏色", "款式", "不要黑", "不要白", "不要紅", "換色"]
             if any(k in text for k in _note_kw) and not any(k in text for k in _cancel_kw):
                 _cart_chk.set_note(user_id, text.strip())
                 return f"好的，已備註：{text.strip()}"

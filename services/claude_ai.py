@@ -14,32 +14,68 @@ _BASE = Path(__file__).parent.parent
 _TIMEOUT = 60  # 秒
 _CLAUDE_CMD = r"C:\Users\bear\AppData\Roaming\npm\claude.cmd"
 
-# ── 對話紀錄（in-memory，每個客戶保留最近 10 輪）──────────────
+# ── 對話紀錄（SQLite 持久化，每個客戶保留最近 20 輪）──────────────
 import threading
-_chat_history: dict[str, list[dict]] = {}  # user_id → [{"role": "user"/"bot", "text": "..."}]
+import sqlite3
+from datetime import datetime
+
+_CHAT_DB = Path(__file__).parent.parent / "data" / "chat_history.db"
+_MAX_HISTORY = 20
 _chat_lock = threading.Lock()
-_MAX_HISTORY = 10
+
+
+def _init_chat_db():
+    """確保 chat_history table 存在"""
+    with sqlite3.connect(_CHAT_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_history(user_id)")
+
+_init_chat_db()
 
 
 def add_chat_history(user_id: str, role: str, text: str) -> None:
-    """記錄一輪對話（role: 'user' 或 'bot'）"""
+    """記錄一輪對話（role: 'user' 或 'bot'），持久化到 SQLite"""
     with _chat_lock:
-        if user_id not in _chat_history:
-            _chat_history[user_id] = []
-        _chat_history[user_id].append({"role": role, "text": text[:200]})
-        # 只保留最近 N 輪
-        if len(_chat_history[user_id]) > _MAX_HISTORY * 2:
-            _chat_history[user_id] = _chat_history[user_id][-_MAX_HISTORY * 2:]
+        try:
+            with sqlite3.connect(_CHAT_DB) as conn:
+                conn.execute(
+                    "INSERT INTO chat_history (user_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+                    (user_id, role, text[:500], datetime.now().isoformat()),
+                )
+                # 只保留最近 N 筆
+                conn.execute("""
+                    DELETE FROM chat_history WHERE user_id=? AND id NOT IN (
+                        SELECT id FROM chat_history WHERE user_id=? ORDER BY id DESC LIMIT ?
+                    )
+                """, (user_id, user_id, _MAX_HISTORY * 2))
+        except Exception as e:
+            print(f"[chat] 記錄失敗: {e}")
 
 
 def _get_chat_context(user_id: str) -> str:
     """取得該客戶最近的對話紀錄"""
     with _chat_lock:
-        history = _chat_history.get(user_id, [])
-    if not history:
+        try:
+            with sqlite3.connect(_CHAT_DB) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT role, text FROM chat_history WHERE user_id=? ORDER BY id DESC LIMIT ?",
+                    (user_id, _MAX_HISTORY * 2),
+                ).fetchall()
+        except Exception:
+            return ""
+    if not rows:
         return ""
     lines = ["【最近對話紀錄】"]
-    for h in history:
+    for h in reversed(rows):  # 從舊到新
         prefix = "客戶" if h["role"] == "user" else "客服"
         lines.append(f"{prefix}：{h['text']}")
     return "\n".join(lines)
