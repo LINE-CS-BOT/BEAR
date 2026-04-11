@@ -378,7 +378,8 @@ def _extract_product(text: str) -> str:
     t = t.strip()
 
     # 如果有剝離到東西，就用結果（排除太通用的字）
-    _TOO_GENERIC = {"貨", "東西", "商品", "產品", "物", "品", "款", "這", "那", "它"}
+    _TOO_GENERIC = {"貨", "東西", "商品", "產品", "物", "品", "款", "這", "那", "它",
+                    "照片", "圖片", "圖", "照", "相片"}
     if t and t != text and t not in _TOO_GENERIC:
         return t
 

@@ -232,32 +232,69 @@ _user_flush_locks: dict[str, _threading.Lock] = {}
 _user_flush_locks_lock = _threading.Lock()
 
 
-# ── 已發送圖片 → 產品代碼對應表（客戶 tag 圖片時查詢）──
-_sent_image_map: dict[str, str] = {}  # message_id → product_code
+# ── 已發送圖片 → 產品代碼對應表（客戶 tag 圖片時查詢，持久化到檔案）──
+_SENT_IMAGE_MAP_FILE = Path(__file__).parent / "data" / "sent_image_map.json"
+_sent_image_map: dict[str, dict] = {}  # message_id → {"code": "Z3031", "ts": 1234567890}
 _sent_image_map_lock = _threading.Lock()
+_SENT_IMAGE_MAP_TTL = 7 * 86400  # 保留 7 天
+
+
+def _load_sent_image_map() -> None:
+    """啟動時從檔案載入"""
+    global _sent_image_map
+    try:
+        if _SENT_IMAGE_MAP_FILE.exists():
+            import json as _json_sim
+            data = _json_sim.loads(_SENT_IMAGE_MAP_FILE.read_text(encoding="utf-8"))
+            # 清除超過 7 天的
+            import time as _time_sim
+            now = _time_sim.time()
+            _sent_image_map = {
+                k: v for k, v in data.items()
+                if now - v.get("ts", 0) < _SENT_IMAGE_MAP_TTL
+            }
+            print(f"[sent_image_map] 載入 {len(_sent_image_map)} 筆（已清除過期）", flush=True)
+    except Exception as e:
+        print(f"[sent_image_map] 載入失敗: {e}", flush=True)
+
+_load_sent_image_map()
+
+
+def _save_sent_image_map() -> None:
+    """存到檔案"""
+    try:
+        import json as _json_sim2
+        _SENT_IMAGE_MAP_FILE.write_text(
+            _json_sim2.dumps(_sent_image_map, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[sent_image_map] 儲存失敗: {e}", flush=True)
 
 
 def _store_sent_image_ids(sent_messages, image_codes: list[str]) -> None:
     """記錄 reply 回傳的 message_id → product_code"""
+    import time as _time_store
     with _sent_image_map_lock:
-        # sent_messages[0] = 文字，[1:] = 圖片
+        now = _time_store.time()
         for i, code in enumerate(image_codes):
             idx = i + 1  # 跳過第一則文字
             if idx < len(sent_messages):
                 msg_id = sent_messages[idx].id
-                _sent_image_map[msg_id] = code
+                _sent_image_map[msg_id] = {"code": code, "ts": now}
                 print(f"[send_reply] 記錄圖片 msg_id={msg_id} → {code}", flush=True)
-        # 清理超過 500 筆的舊記錄
-        if len(_sent_image_map) > 500:
-            keys = list(_sent_image_map.keys())
-            for k in keys[:len(keys) - 300]:
-                _sent_image_map.pop(k, None)
+        # 清理超過 7 天的
+        expired = [k for k, v in _sent_image_map.items() if now - v.get("ts", 0) > _SENT_IMAGE_MAP_TTL]
+        for k in expired:
+            _sent_image_map.pop(k, None)
+        _save_sent_image_map()
 
 
 def lookup_sent_image(msg_id: str) -> str | None:
     """查詢已發送圖片的產品代碼"""
     with _sent_image_map_lock:
-        return _sent_image_map.get(msg_id)
+        entry = _sent_image_map.get(msg_id)
+        return entry["code"] if entry else None
 
 
 def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
@@ -1912,7 +1949,8 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     reply_text = _dispatch(user_id, combined, intent, line_api)
 
                 if reply_text:
-                    add_chat_history(user_id, "bot", reply_text)
+                    _chat_text = reply_text[0] if isinstance(reply_text, tuple) else reply_text
+                    add_chat_history(user_id, "bot", _chat_text)
                     _send_reply(reply_token, user_id, reply_text, line_api)
             except Exception as _ce:
                 print(f"[txt-buf] 1:1 客戶處理例外: {_ce}", flush=True)
@@ -5054,6 +5092,13 @@ def _handle_stateful(
             state_manager.clear(user_id)
             return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
         else:
+            # 明顯是新查詢（有沒有、還有、推薦等）→ 清 state，走正常流程
+            _new_query_kw = ["有沒有", "有什麼", "還有", "推薦", "其他", "別的",
+                            "元左右", "塊左右", "元以下", "塊以下", "多元", "多塊"]
+            if any(kw in text for kw in _new_query_kw):
+                state_manager.clear(user_id)
+                print(f"[stateful] awaiting_quantity 但像新查詢，清除狀態: {text[:20]!r}", flush=True)
+                return None
             # 訊息明顯不是回答數量（問句、其他意圖）→ 清 state，走正常流程
             _other_intent = detect_intent(text)
             if _other_intent and _other_intent not in (Intent.UNKNOWN, Intent.CONFIRMATION):
@@ -5064,16 +5109,49 @@ def _handle_stateful(
             prod_name = state.get("prod_name", "這款")
             return tone.ask_quantity(prod_name)
 
-    # ── 多產品清單：客戶問照片 → 發照片，其他 → 清 state 走正常流程 ──────
+    # ── 多產品清單：客戶問照片 → 發照片（翻頁），其他 → 清 state 走正常流程 ──
     elif action == "recent_products":
-        _photo_kw = ["照片", "圖片", "看圖", "有圖", "看一下", "看看", "給我看"]
+        _photo_kw = ["照片", "圖片", "看圖", "有圖", "看一下", "看看", "給我看", "其他"]
         if any(kw in text for kw in _photo_kw):
+            # 優先：客戶指定了貨號 → 發指定的照片 + 設 awaiting_quantity
+            _specified = _PROD_CODE_RE.findall(text)
+            if _specified:
+                _sc = _specified[0].upper()
+                _sc_imgs = _get_product_image_urls([_sc], max_images=1)
+                from services.ecount import ecount_client as _ec_rp
+                _sc_item = _ec_rp.get_product_cache_item(_sc)
+                _sc_name = (_sc_item.get("name") if _sc_item else None) or _sc
+                state_manager.set(user_id, {
+                    "action":    "awaiting_quantity",
+                    "prod_cd":   _sc,
+                    "prod_name": _sc_name,
+                })
+                if _sc_imgs:
+                    return (f"這是「{_sc_name}」的照片唷～\n請問要幾個呢？", _sc_imgs)
+                return f"「{_sc_name}」目前沒有照片{tone.suffix_light()} 請問要幾個呢？"
             _rp_codes = state.get("prod_codes", [])
+            _rp_offset = state.get("photo_offset", 0)
             if _rp_codes:
-                _rp_imgs = _get_product_image_urls(_rp_codes, max_images=4)
-                state_manager.clear(user_id)
+                _page_codes = _rp_codes[_rp_offset:_rp_offset + 4]
+                if not _page_codes:
+                    # 已經看完所有照片，從頭來
+                    _page_codes = _rp_codes[:4]
+                    _rp_offset = 0
+                _rp_imgs = _get_product_image_urls(_page_codes, max_images=4)
+                _next_offset = _rp_offset + 4
+                _has_more = _next_offset < len(_rp_codes)
+                if _has_more:
+                    state_manager.set(user_id, {
+                        "action":       "recent_products",
+                        "prod_codes":   _rp_codes,
+                        "photo_offset": _next_offset,
+                    })
+                    _hint = f"\n還有其他照片，說「還有嗎」繼續看唷～"
+                else:
+                    state_manager.clear(user_id)
+                    _hint = "\n有喜歡的跟我說要哪個、幾個！"
                 if _rp_imgs:
-                    return (f"這些是產品照片唷～\n有喜歡的跟我說要哪個、幾個！", _rp_imgs)
+                    return (f"這些是產品照片唷～{_hint}", _rp_imgs)
             state_manager.clear(user_id)
             return "目前這些產品沒有照片，有喜歡的跟我說要哪個、幾個！"
         # 非照片請求 → 清 state，走正常流程
@@ -5846,13 +5924,14 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api, original_text: st
                 })
                 print(f"[claude-cmd] reply 設 awaiting_quantity: {_rc}", flush=True)
             elif len(_reply_codes) > 1:
-                # 多產品清單 → 記住貨號，客戶問照片時可以發
+                # 多產品清單 → 記住貨號，客戶問照片時可以發（offset=4 因為 reply 已附前 4 張）
                 from storage.state import state_manager as _sm_multi
                 _sm_multi.set(user_id, {
                     "action":       "recent_products",
-                    "prod_codes":   _reply_codes[:8],
+                    "prod_codes":   _reply_codes[:16],
+                    "photo_offset": 4,
                 })
-                print(f"[claude-cmd] reply 多產品，記 recent_products: {_reply_codes[:8]}", flush=True)
+                print(f"[claude-cmd] reply 多產品，記 recent_products: {_reply_codes[:16]}", flush=True)
             if _reply_codes:
                 _reply_imgs = _get_product_image_urls(_reply_codes, max_images=4 if len(_reply_codes) > 1 else 1)
                 if _reply_imgs:
@@ -5879,6 +5958,27 @@ def _dispatch(
     user_id: str, text: str, intent: Intent, line_api: MessagingApi
 ) -> str:
     """根據意圖分發到對應 handler"""
+    # ── 全局攔截：貨號 + 照片關鍵字 → 直接發照片 ──
+    _photo_dispatch_kw = ["照片", "圖片", "看圖", "有圖", "看一下"]
+    if any(kw in text for kw in _photo_dispatch_kw):
+        _pd_codes = _PROD_CODE_RE.findall(text)
+        if _pd_codes:
+            _pd_code = _pd_codes[0].upper()
+            _pd_imgs = _get_product_image_urls([_pd_code], max_images=1)
+            from services.ecount import ecount_client as _ec_pd
+            _pd_item = _ec_pd.get_product_cache_item(_pd_code)
+            _pd_name = (_pd_item.get("name") if _pd_item else None) or _pd_code
+            from storage.state import state_manager as _sm_pd
+            _sm_pd.set(user_id, {
+                "action":    "awaiting_quantity",
+                "prod_cd":   _pd_code,
+                "prod_name": _pd_name,
+            })
+            print(f"[dispatch] 貨號+照片 → 發照片: {_pd_code}", flush=True)
+            if _pd_imgs:
+                return (f"這是「{_pd_name}」的照片唷～\n請問要幾個呢？", _pd_imgs)
+            return f"「{_pd_name}」目前沒有照片{tone.suffix_light()} 請問要幾個呢？"
+
     if intent == Intent.RECOMMENDATION:
         return _handle_recommendation(user_id, text, line_api)
     elif intent == Intent.INVENTORY:
@@ -5977,9 +6077,28 @@ def _dispatch(
         # 購物車有東西 → 判斷客戶意圖
         from storage import cart as _cart_chk
         if not _cart_chk.is_empty(user_id):
-            # 客戶要看購物車裡產品的照片
+            # 客戶要看照片（指定貨號 or 購物車最後一個）
             _photo_cart_kw = ["照片", "圖片", "看圖", "有圖", "看一下照片", "看一下圖"]
             if any(kw in text for kw in _photo_cart_kw):
+                # 優先：客戶指定了貨號 → 發指定的照片
+                _specified_codes = _PROD_CODE_RE.findall(text)
+                if _specified_codes:
+                    _sc = _specified_codes[0].upper()
+                    _sc_imgs = _get_product_image_urls([_sc], max_images=1)
+                    from services.ecount import ecount_client as _ec_photo
+                    _sc_item = _ec_photo.get_product_cache_item(_sc)
+                    _sc_name = (_sc_item.get("name") if _sc_item else None) or _sc
+                    # 設 awaiting_quantity，客戶回數量就能直接下單
+                    from storage.state import state_manager as _sm_photo
+                    _sm_photo.set(user_id, {
+                        "action":    "awaiting_quantity",
+                        "prod_cd":   _sc,
+                        "prod_name": _sc_name,
+                    })
+                    if _sc_imgs:
+                        return (f"這是「{_sc_name}」的照片唷～\n請問要幾個呢？", _sc_imgs)
+                    return f"「{_sc_name}」目前沒有照片{tone.suffix_light()} 請問要幾個呢？"
+                # 沒指定貨號 → 發購物車最後一個
                 _cart_items = _cart_chk.get_cart(user_id)
                 _cart_codes = [it["prod_cd"] for it in _cart_items if it.get("prod_cd")]
                 if _cart_codes:
@@ -6035,11 +6154,12 @@ def _dispatch(
                 from storage.state import state_manager as _sm_multi2
                 _sm_multi2.set(user_id, {
                     "action":       "recent_products",
-                    "prod_codes":   _claude_codes[:8],
+                    "prod_codes":   _claude_codes[:16],
+                    "photo_offset": 4,
                 })
-                print(f"[claude-ai] 回覆含多個產品，記 recent_products: {_claude_codes[:8]}", flush=True)
+                print(f"[claude-ai] 回覆含多個產品，記 recent_products: {_claude_codes[:16]}", flush=True)
             if _claude_codes:
-                _img_urls = _get_product_image_urls(_claude_codes)
+                _img_urls = _get_product_image_urls(_claude_codes, max_images=4)
                 if _img_urls:
                     return (_claude_reply, _img_urls)
 
