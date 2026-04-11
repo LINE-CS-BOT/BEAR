@@ -21,5 +21,11 @@ echo ===================================
 echo   啟動 Caddy HTTPS...
 echo ===================================
 
+:: 啟動 LINE OA Manager Chrome（CDP port 9223，背景保持登入）
+set CHROME="C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+start "" %CHROME% --remote-debugging-port=9223 --user-data-dir="%WORKDIR%\data\line_chrome_session" --no-first-run --disable-default-apps "https://chat.line.biz/"
+echo LINE OA Chrome 已啟動 (port 9223)
+echo.
+
 :: 啟動 Caddy（新視窗）
 start "Caddy HTTPS" cmd /k "cd /d %WORKDIR% && %CADDY% run --config Caddyfile"
