@@ -71,13 +71,12 @@ CREATE_NO_WINDOW = 0x08000000
 def _start_uvicorn():
     _kill_port_8000()   # 啟動前先清掉殘留 process
     _wait_port_free(8000, timeout=10)  # 等 port 真正釋放
-    log_path = os.path.join(BASE_DIR, "server.log")
-    # 用 shell 重導向，讓 uvicorn 程序自己持有 fd，tray 重啟不影響
-    cmd_str = " ".join(f'"{c}"' if " " in c else c for c in UVICORN_CMD)
+    # 不重導 stdout，避免 uvicorn reload 時 file handle 關閉導致 crash
     p = subprocess.Popen(
-        f'{cmd_str} >> "{log_path}" 2>&1',
+        UVICORN_CMD,
         cwd=BASE_DIR,
-        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         creationflags=CREATE_NO_WINDOW,
     )
     _procs["uvicorn"] = p
