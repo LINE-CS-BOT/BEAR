@@ -3851,12 +3851,12 @@ def _parse_new_product_fields(text: str) -> dict | None:
     else:
         # fallback：從貨號後開始，剝除所有已識別欄位
         name_part = flat[m_code.end():]
-        for strip_pat in [
+        _strip_pats = [
             r'條碼\s*[:：]?\s*\S+',
             r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
             r'(?:產品售價|產品價格|售價|賣價|價格|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+\s*元?',
             r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
-            r'(?:產品|包裝)?尺寸\s*[:：]?\s*約?\s*\S+',
+            r'(?:產品|包裝)?尺寸\s*[-:：]?\s*約?\s*\S+',
             r'(?:產品)?重量\s*[:：]?\s*約?\s*\S+',
             r'建議\s*[:：]?\s*\S+',
             rf'單位\s*[:：]?\s*(?:{_UNIT_WORDS_NP})',
@@ -3864,9 +3864,20 @@ def _parse_new_product_fields(text: str) -> dict | None:
             r'(?:產品名稱|品名)\s*[:：]?\s*',
             r'編號\s*[:：]?\s*\S+',
             r'(?:^|\s)[\d.]+\s*元?(?=\s|$)',  # 裸數字+元（售價 fallback）
-        ]:
+        ]
+        for strip_pat in _strip_pats:
             name_part = re.sub(strip_pat, ' ', name_part)
         prod_name = name_part.strip()
+
+        # 貨號後面找不到品名 → 嘗試從貨號前面找（品名寫在編號前的情況）
+        if not prod_name:
+            # 去掉「新增品項」「新建品項」前綴和「編號：XXX」
+            _before = flat[:m_code.start()]
+            _before = re.sub(r'^(?:新增|新建)品項\s*', '', _before)
+            _before = re.sub(r'(?:產品)?(?:編號|貨號)\s*[:：]?\s*$', '', _before)
+            for strip_pat in _strip_pats:
+                _before = re.sub(strip_pat, ' ', _before)
+            prod_name = _before.strip()
 
     if not prod_name:
         return None  # 品名必填
@@ -3875,7 +3886,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
     in_price = _calc_in_price(class_cd, out_price, in_price_raw)
 
     # 抓尺寸和重量（寫入 REMARKS_WIN / CONT1）
-    _sz_m = re.search(r'(?:包裝)?尺寸\s*[:：]?\s*約?\s*(\S+)', flat)
+    _sz_m = re.search(r'(?:包裝)?尺寸\s*[-:：]?\s*約?\s*(\S+)', flat)
     _wt_m = re.search(r'(?:產品)?重量\s*[:：]?\s*約?\s*(\S+)', flat)
 
     return {

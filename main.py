@@ -21,6 +21,17 @@ if _sys.platform == "win32":
     except Exception:
         pass
 
+    # ── 防止 uvicorn reload 後 stdout/stderr 關閉導致 print crash ──
+    import builtins as _builtins
+    _original_print = _builtins.print
+    def _safe_print(*args, **kwargs):
+        try:
+            _original_print(*args, **kwargs)
+        except (ValueError, OSError):
+            # I/O operation on closed file — 靜默忽略
+            pass
+    _builtins.print = _safe_print
+
 import asyncio
 import base64
 import re
