@@ -1647,6 +1647,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         state_manager.clear(user_id)
                         reply_text = tone.cart_item_added(_cart_mq.get_cart(user_id))
                         _send_reply(reply_token, user_id, reply_text, line_api)
+                        return
                     elif _has_unknown_quotes:
                         issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的圖片：{combined[:50]}")
                         from handlers.hours import _is_open_now as _io_q, next_open_reply as _nor_q
