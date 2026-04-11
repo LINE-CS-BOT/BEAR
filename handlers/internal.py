@@ -54,10 +54,10 @@ def _resolve_customer(name: str) -> dict | None:
     return match
 
 # ── 共用產品代碼 pattern ───────────────────────────────────────────────
-_PROD_CODE_PAT = r'[A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?'
+_PROD_CODE_PAT = r'[A-Za-z]{1,3}-?\d{3,6}(?:-[A-Za-z0-9]+)*'
 
 # ── 正則 ──────────────────────────────────────────────────────────────
-# 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-1、-2 等），例：T1202、BB-232、Q0312-1
+# 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-J-23、-1、-A2 等），例：T1202、BB-232、Z3323-J-23
 # 排除常見非貨號（PD=充電協議、USB、LED、MAX等）
 _NOT_PROD_CODE = {"PD", "USB", "LED", "MAX", "MAH", "LCD", "RGB", "GPS", "SOS", "DIY", "ABS", "TPU", "BTS"}
 _PROD_CODE_RE_RAW = re.compile(rf'(?<![A-Za-z])({_PROD_CODE_PAT})(?!\d)')
@@ -796,9 +796,12 @@ def handle_internal_order(
                     qty     = _parse_qty(im.group(2))
                     unit    = im.group(3) if im.lastindex >= 3 else None
                     _cd, _q = _apply_unit(prod_cd, qty, unit)
-                    # 檢查同行備註
+                    # 檢查同行備註：有「備註:」前綴就剝掉，否則尾段整段當備註
                     _rest = l[im.end():].strip()
-                    _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip() if re.search(r'備[註誌记]', _rest) else ""
+                    if re.search(r'備[註誌记]', _rest):
+                        _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip()
+                    else:
+                        _inline_note = _rest
                     items_raw.append((_cd, _q, _inline_note))
                 elif re.match(r'^備[註誌记]\s*[:：]?\s*', l):
                     _pending_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', l).strip()
@@ -822,7 +825,11 @@ def handle_internal_order(
                     items_b2[-1] = (prev[0], prev[1], _pending_note_b2)
                     _pending_note_b2 = ""
                 _rest = l[im.end():].strip()
-                _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip() if re.search(r'備[註誌记]', _rest) else ""
+                # 尾段有「備註:」前綴就剝掉，否則整段當備註
+                if re.search(r'備[註誌记]', _rest):
+                    _inline_note = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _rest).strip()
+                else:
+                    _inline_note = _rest
                 prod_cd = im.group(1).strip()
                 qty     = _parse_qty(im.group(2))
                 unit    = im.group(3) if im.lastindex >= 3 else None

@@ -85,11 +85,11 @@ def parse_specs(text: str) -> dict:
             m = re.match(r"(?:產品|商品|新)?(?:編號|貨號)[：:](.+)", _clean)
             if m:
                 raw_code = m.group(1).strip()
-                m_code_only = re.match(r'([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', raw_code)
+                m_code_only = re.match(r'([A-Za-z]{1,3}-?\d{3,6}(?:-[A-Za-z0-9]+)*)', raw_code)
                 _new_code = m_code_only.group(1) if m_code_only else raw_code
             # 編號 fallback：純貨號行（如 U0380、T1202、Z3300）
             if not _new_code and not code:
-                m = re.match(r'^([A-Za-z]\d{3,5}(?:-\d+)?)$', _clean.strip())
+                m = re.match(r'^([A-Za-z]\d{3,5}(?:-[A-Za-z0-9]+)*)$', _clean.strip())
                 if m:
                     _new_code = m.group(1).strip()
             if _new_code:
