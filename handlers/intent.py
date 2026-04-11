@@ -277,7 +277,14 @@ def detect_intent(text: str) -> Intent:
     _INV_EXCLUDE = ["有沒有空", "有沒有時間", "有沒有人", "有沒有機會", "有沒有辦法", "有沒有問題",
                     "忘記還有", "還有這個", "過去拿", "找時間", "去拿",
                     "昨天有訂", "之前有訂", "上次有訂", "已經訂", "有訂購", "已訂購"]
-    if not any(w in text for w in _INV_EXCLUDE):
+    # 價格區間查詢（如「有沒有100元左右的」）→ 不走 inventory，交給 Claude 推薦
+    import re as _re_inv
+    _is_price_query = (
+        _re_inv.search(r'\d+\s*(?:元|塊|多塊|多元).*(?:左右|以下|以內|上下|之間|的)', text)
+        or _re_inv.search(r'(?:便宜|低價|平價|百元|幾十元|幾百元|千元).*(?:的|有)', text)
+        or _re_inv.search(r'(?:一百|兩百|三百|五百|一千)\s*(?:多|塊|元|以下|左右|上下)', text)
+    )
+    if not any(w in text for w in _INV_EXCLUDE) and not _is_price_query:
         for kw in _INVENTORY_KEYWORDS:
             if kw in text:
                 return Intent.INVENTORY
