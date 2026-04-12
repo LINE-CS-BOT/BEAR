@@ -2880,6 +2880,7 @@ def _resolve_one(kind: str, item_id: int) -> str:
             # 背景去 LINE OA 讀真人回覆，存到 chat_history
             if _issue_uid:
                 import threading as _t_resolve
+                _OA_SKIP = {"已讀", "讀", ""}
                 def _sync_resolve_chat():
                     try:
                         _cust = customer_store.get_by_line_id(_issue_uid)
@@ -2888,9 +2889,13 @@ def _resolve_one(kind: str, item_id: int) -> str:
                             from services.line_oa_chat import read_chat_sync
                             _msgs = read_chat_sync(_cname, max_messages=15)
                             if _msgs:
-                                _staff = [m for m in _msgs if m["role"] == "staff"]
+                                _staff = [m for m in _msgs if m["role"] == "staff"
+                                          and m["text"].replace("已讀", "").strip()
+                                          and m["text"].strip() not in _OA_SKIP]
                                 for m in _staff[-5:]:
-                                    add_chat_history(_issue_uid, "bot", f"（真人回覆）{m['text']}")
+                                    _clean_text = m['text'].replace("已讀", "").strip()
+                                    if _clean_text:
+                                        add_chat_history(_issue_uid, "bot", f"（真人回覆）{_clean_text}")
                                 print(f"[resolve] LINE OA 對話已同步：{_cname} {len(_staff)} 則真人回覆", flush=True)
                     except Exception as e:
                         print(f"[resolve] LINE OA 對話同步失敗: {e}", flush=True)
@@ -4408,15 +4413,20 @@ async def admin_release(user_id: str):
         if cust_name:
             try:
                 import threading as _t_rel
+                _OA_SKIP_TEXT = {"已讀", "讀", ""}
                 def _sync_oa_chat():
                     try:
                         print(f"[takeover] 開始從 LINE OA 讀取對話：{cust_name}", flush=True)
                         from services.line_oa_chat import read_chat_sync
                         msgs = read_chat_sync(cust_name, max_messages=20)
                         if msgs:
-                            staff_msgs = [m for m in msgs if m["role"] == "staff"]
+                            staff_msgs = [m for m in msgs if m["role"] == "staff"
+                                          and m["text"].replace("已讀", "").strip()
+                                          and m["text"].strip() not in _OA_SKIP_TEXT]
                             for m in staff_msgs[-5:]:
-                                add_chat_history(user_id, "bot", f"（真人回覆）{m['text']}")
+                                _clean_text = m['text'].replace("已讀", "").strip()
+                                if _clean_text:
+                                    add_chat_history(user_id, "bot", f"（真人回覆）{_clean_text}")
                             print(f"[takeover] LINE OA 對話已同步：{len(staff_msgs)} 則真人回覆", flush=True)
                         else:
                             print(f"[takeover] LINE OA 沒有讀到對話：{cust_name}", flush=True)
