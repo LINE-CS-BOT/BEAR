@@ -3591,14 +3591,25 @@ def handle_internal_upload_text(user_id: str, combined: str) -> str:
         return None  # 靜默，不通知群組
 
     # ── PO文（含貨號的長文）────────────────────────────────────────────
+    # 排除品名行裡的假貨號（如「品名:野獸國 VPB-011SP」的 VPB-011）
+    # 先找編號行的貨號，品名行裡出現但編號行沒出現的 → 假貨號
+    _code_line_codes = set()
+    _name_line_codes = set()
+    for _line in combined.splitlines():
+        _ls = _line.strip()
+        if re.match(r'^(?:編號|貨號|產品編號|商品編號)[：:]', _ls):
+            _code_line_codes.update(c.upper() for c in _PROD_CODE_RE_RAW.findall(_ls))
+        elif re.match(r'^(?:品名|名稱|商品名|產品名)[：:]', _ls):
+            _name_line_codes.update(c.upper() for c in _PROD_CODE_RE_RAW.findall(_ls))
+    _fake_codes = _name_line_codes - _code_line_codes  # 只在品名出現、不在編號行的
     all_po_matches = list(_PROD_CODE_RE.finditer(combined))
     if all_po_matches:
-        # 取得不重複的貨號（保持順序）
+        # 取得不重複的貨號（保持順序），排除假貨號
         seen = set()
         unique_codes = []
         for m in all_po_matches:
             c = m.group(1).upper()
-            if c not in seen:
+            if c not in seen and c not in _fake_codes:
                 seen.add(c)
                 unique_codes.append(c)
 
