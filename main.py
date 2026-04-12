@@ -515,7 +515,8 @@ def _msg_buf_add(
         elif _is_upload_cmd:
             wait_secs = _MSG_UPLOAD_COALESCE_SECS
         elif has_media and not has_text:
-            wait_secs = _MSG_IMAGE_COALESCE_SECS
+            _is_user_img = existing.get("context") == "user"
+            wait_secs = _MSG_COALESCE_USER_SECS if _is_user_img else _MSG_IMAGE_COALESCE_SECS
         elif _may_have_image:
             wait_secs = _MSG_IMAGE_COALESCE_SECS
         else:
@@ -2874,7 +2875,26 @@ def _resolve_one(kind: str, item_id: int) -> str:
         ok = issue_store.resolve(item_id)
         if ok and _issue:
             from services.claude_ai import add_chat_history
-            add_chat_history(_issue.get("user_id", ""), "bot", "（以上問題已由真人客服處理完成）")
+            _issue_uid = _issue.get("user_id", "")
+            add_chat_history(_issue_uid, "bot", "（以上問題已由真人客服處理完成）")
+            # 背景去 LINE OA 讀真人回覆，存到 chat_history
+            if _issue_uid:
+                import threading as _t_resolve
+                def _sync_resolve_chat():
+                    try:
+                        _cust = customer_store.get_by_line_id(_issue_uid)
+                        _cname = (_cust.get("real_name") or _cust.get("chat_label") or _cust.get("display_name") or "") if _cust else ""
+                        if _cname:
+                            from services.line_oa_chat import read_chat_sync
+                            _msgs = read_chat_sync(_cname, max_messages=15)
+                            if _msgs:
+                                _staff = [m for m in _msgs if m["role"] == "staff"]
+                                for m in _staff[-5:]:
+                                    add_chat_history(_issue_uid, "bot", f"（真人回覆）{m['text']}")
+                                print(f"[resolve] LINE OA 對話已同步：{_cname} {len(_staff)} 則真人回覆", flush=True)
+                    except Exception as e:
+                        print(f"[resolve] LINE OA 對話同步失敗: {e}", flush=True)
+                _t_resolve.Thread(target=_sync_resolve_chat, daemon=True).start()
         return f"✅ #I{item_id} 問題處理完成" if ok else f"⚠️ #I{item_id} 找不到（可能已處理過）"
     elif kind == "Q":
         ok = pending_store.mark_answered(item_id)
@@ -4390,16 +4410,20 @@ async def admin_release(user_id: str):
                 import threading as _t_rel
                 def _sync_oa_chat():
                     try:
+                        print(f"[takeover] 開始從 LINE OA 讀取對話：{cust_name}", flush=True)
                         from services.line_oa_chat import read_chat_sync
                         msgs = read_chat_sync(cust_name, max_messages=20)
                         if msgs:
-                            # 找接管期間真人回覆的訊息，存到 chat_history
                             staff_msgs = [m for m in msgs if m["role"] == "staff"]
-                            for m in staff_msgs[-5:]:  # 最多存最近 5 則真人回覆
+                            for m in staff_msgs[-5:]:
                                 add_chat_history(user_id, "bot", f"（真人回覆）{m['text']}")
-                            print(f"[takeover] LINE OA 對話已同步：{len(staff_msgs)} 則真人回覆")
+                            print(f"[takeover] LINE OA 對話已同步：{len(staff_msgs)} 則真人回覆", flush=True)
+                        else:
+                            print(f"[takeover] LINE OA 沒有讀到對話：{cust_name}", flush=True)
                     except Exception as e:
-                        print(f"[takeover] LINE OA 對話同步失敗: {e}")
+                        import traceback
+                        print(f"[takeover] LINE OA 對話同步失敗: {e}", flush=True)
+                        traceback.print_exc()
                 _t_rel.Thread(target=_sync_oa_chat, daemon=True).start()
             except Exception:
                 pass

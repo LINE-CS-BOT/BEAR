@@ -872,11 +872,26 @@ def handle_internal_order(
         _qty_c     = _parse_qty(m_c.group(3))
         _unit_c    = m_c.group(4) if m_c.lastindex >= 4 else None
         _note_c    = m_c.group(5).strip() if m_c.lastindex >= 5 else ""
+        # 尾段可能包含更多品項（如「U0360*16」），先提取再當備註
+        _extra_items_c = list(_STAFF_ORDER_ITEM_RE.finditer(_note_c))
+        if _extra_items_c:
+            # 尾段有品項 → 提取出來，剩餘才是備註
+            _real_note_c = _note_c
+            for _ei in reversed(_extra_items_c):
+                _real_note_c = _real_note_c[:_ei.start()] + _real_note_c[_ei.end():]
+            _note_c = _real_note_c.strip()
         # 備註處理：group(5) 可能含「備註:XXX」
         if re.search(r'備[註誌记]', _note_c):
             _note_c = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _note_c).strip()
         _cd_c, _q_c = _apply_unit(_prod_cd_c, _qty_c, _unit_c)
         _items_c = [(_cd_c, _q_c, _note_c)]
+        # 尾段提取到的額外品項加入
+        for _ei in _extra_items_c:
+            _ei_cd = _ei.group(1).strip()
+            _ei_q  = _parse_qty(_ei.group(2))
+            _ei_u  = _ei.group(3) if _ei.lastindex >= 3 else None
+            _ei_cd2, _ei_q2 = _apply_unit(_ei_cd, _ei_q, _ei_u)
+            _items_c.append((_ei_cd2, _ei_q2, ""))
         # 後續行
         _pending_note_c = ""
         for _lc in lines[1:]:
@@ -3083,16 +3098,67 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
 # ---------------------------------------------------------------------------
 
 _SHOWCASE_TRIGGER = "看貨群"
+_SHOWCASE_GROUP_NAME = "小蠻牛新北-新品看貨群"
 
 
 def handle_internal_showcase_push(text: str, line_api) -> str | None:
     """
-    偵測「看貨群」→ 列出最近 7 天新增的品項（依建立時間排序）。
-    新品定義：new_products.json 中 first_seen 在最近 7 天內的品項。
+    偵測「看貨群」指令：
+    - 「看貨群」（無產品）→ 列出最近 14 天新品
+    - 「看貨群 T1122 Z3456」→ 透過 LINE OA Chrome 推送 PO文+圖片到看貨群
     """
     if _SHOWCASE_TRIGGER not in text:
         return None
 
+    # 提取產品代碼
+    _sc_text = text.replace(_SHOWCASE_TRIGGER, "").strip()
+    _sc_codes = _PROD_CODE_RE.findall(_sc_text)
+
+    # ── 有產品代碼 → 推送到看貨群 ──
+    if _sc_codes:
+        import threading as _t_sc
+        _sc_codes_upper = list(dict.fromkeys(c.upper() for c in _sc_codes))
+
+        def _do_showcase_push():
+            from services.line_oa_chat import send_to_chat_sync
+            import time as _time_sc
+
+            sent = []
+            failed = []
+            for code in _sc_codes_upper:
+                po_text = _format_po(code)
+                if not po_text:
+                    failed.append(f"{code}（無 PO 文）")
+                    continue
+
+                # 找產品圖片
+                media_dir = _get_media_dir()
+                img_paths = []
+                if media_dir:
+                    files = _match_product_media_files(code, media_dir)
+                    img_paths = [str(media_dir / f) for f in files[:4]]  # 最多 4 張
+
+                ok = send_to_chat_sync(
+                    _SHOWCASE_GROUP_NAME,
+                    text=po_text,
+                    image_paths=img_paths if img_paths else None,
+                )
+                if ok:
+                    sent.append(code)
+                    print(f"[showcase] ✅ {code} 已推送到看貨群", flush=True)
+                else:
+                    failed.append(f"{code}（發送失敗）")
+                    print(f"[showcase] ❌ {code} 推送失敗", flush=True)
+
+                if len(_sc_codes_upper) > 1:
+                    _time_sc.sleep(3)  # 多產品間隔
+
+        # 背景執行推送
+        _t_sc.Thread(target=_do_showcase_push, daemon=True).start()
+        codes_str = "、".join(_sc_codes_upper)
+        return f"📣 正在推送到看貨群：{codes_str}\n（透過 LINE OA，不消耗 API 額度）"
+
+    # ── 無產品代碼 → 列出新品 ──
     import json as _json_sc
     from datetime import datetime, timedelta
     from pathlib import Path as _Path_sc
@@ -3120,7 +3186,6 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
     if not recent:
         return "📋 最近 14 天沒有新增品項"
 
-    # 依建立時間排序（最新在前）
     recent.sort(key=lambda x: x[3], reverse=True)
 
     lines = [f"📋 最近 14 天新品（共 {len(recent)} 筆）："]

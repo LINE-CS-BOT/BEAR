@@ -71,15 +71,18 @@ CREATE_NO_WINDOW = 0x08000000
 def _start_uvicorn():
     _kill_port_8000()   # 啟動前先清掉殘留 process
     _wait_port_free(8000, timeout=10)  # 等 port 真正釋放
-    # 不重導 stdout，避免 uvicorn reload 時 file handle 關閉導致 crash
+    # log 寫到 data/server.log（append 模式）
+    _log_path = os.path.join(BASE_DIR, "data", "server.log")
+    _log_file = open(_log_path, "a", encoding="utf-8", errors="replace")
     p = subprocess.Popen(
         UVICORN_CMD,
         cwd=BASE_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_log_file,
+        stderr=_log_file,
         creationflags=CREATE_NO_WINDOW,
     )
     _procs["uvicorn"] = p
+    _procs["_log_file"] = _log_file  # 保持 handle 不被 GC
 
 def _start_caddy():
     """啟動 Caddy 反向代理（自動 HTTPS，取代 ngrok）"""
