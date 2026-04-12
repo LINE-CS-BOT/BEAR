@@ -92,6 +92,11 @@ def parse_specs(text: str) -> dict:
                 m = re.match(r'^([A-Za-z]\d{3,5}(?:-[A-Za-z0-9]+)*)$', _clean.strip())
                 if m:
                     _new_code = m.group(1).strip()
+            # 編號 fallback2：行首貨號+中文（如 Z3521-野獸國 ...）
+            if not _new_code and not code:
+                m = re.match(r'^([A-Za-z]\d{3,5})(?:-[^\dA-Za-z]|\s)', _clean.strip())
+                if m:
+                    _new_code = m.group(1).strip()
             if _new_code:
                 # block 內尚無貨號但有累積 specs → 屬於前一個 block 的貨號
                 if not code and _last_code and _last_code in specs and (size or weight or price):

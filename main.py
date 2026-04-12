@@ -4153,13 +4153,32 @@ def _build_inventory_check() -> list[dict]:
     # 3. 取產品照片目錄
     media_dir = _get_media_dir()
 
+    # 3b. 載入原始 PO文.txt 的所有貨號（補充 specs.json 沒有的）
+    from handlers.internal import _PO_TXT_PATH
+    _po_codes = set()
+    try:
+        _po_path = Path(_PO_TXT_PATH)
+        if _po_path.exists():
+            _po_content = None
+            for _enc in ("cp950", "big5", "utf-8"):
+                try:
+                    _po_content = _po_path.read_text(encoding=_enc)
+                    break
+                except Exception:
+                    continue
+            if _po_content:
+                import re as _re_po
+                _po_codes = set(c.upper() for c in _re_po.findall(r'[A-Za-z]{1,3}-?\d{3,6}', _po_content))
+    except Exception:
+        pass
+
     # 4. 只保留「缺規格 or 缺照片」的品項
     rows = []
     for item in stock_items:
         code = item["code"].upper()
         if code.startswith("HH"):          # 排除 HH 開頭
             continue
-        has_spec  = code in specs
+        has_spec  = code in specs or code in _po_codes
         has_photo = bool(media_dir and _match_product_media_files(code, media_dir))
         if has_spec and has_photo:         # 都有 → 跳過
             continue
