@@ -2254,19 +2254,27 @@ def _check_and_notify_pickup():
         return
 
     # 2. 未備貨 + 已備貨未取（Excel 下載）
+    _unfulfilled_path = Path(__file__).parent / "data" / "unfulfilled_orders.json"
     _unfulfilled_ok = False
     try:
         _proc_pn = _sp_pn.run([_python_pn, "-m", "scripts.sync_unfulfilled"],
                    cwd=_root_pn, timeout=120, creationflags=_flags_pn,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
         _stdout_pn = _proc_pn.stdout or ""
         if "✓" in _stdout_pn and "已存" in _stdout_pn:
             _unfulfilled_ok = True
             print("[pickup-notify] 未備貨+未取已更新", flush=True)
+        elif _unfulfilled_path.exists() and _t.time() - _unfulfilled_path.stat().st_mtime < 10 * 60:
+            _unfulfilled_ok = True
+            print("[pickup-notify] 未備貨使用既有資料（1 小時內）", flush=True)
         else:
             print(f"[pickup-notify] 未備貨同步可能失敗: {_stdout_pn[-200:]}", flush=True)
     except Exception as _e_sync:
         print(f"[pickup-notify] 未備貨同步失敗: {_e_sync}", flush=True)
+        if _unfulfilled_path.exists() and _t.time() - _unfulfilled_path.stat().st_mtime < 10 * 60:
+            _unfulfilled_ok = True
+            print("[pickup-notify] 未備貨使用既有資料（1 小時內）", flush=True)
 
     if not _unfulfilled_ok:
         _notify_admin_sync_fail("未備貨 Excel 同步失敗")
@@ -2379,7 +2387,7 @@ def _check_and_notify_pickup():
                 f"老闆～您等的貨都到了！\n{item_list}\n\n歡迎隨時來取貨{po_note}{_auto_note}",
             ])
 
-            if uid and not uid.startswith("_"):
+            if uid and not uid.startswith("_") and not uid.startswith("ecount:"):
                 # 再查一次確認還是 pending（防止重複通知）
                 _still_pending = [p for p in non_preorder_items
                                   if notify_store.get_status(p["id"]) == "pending"]
@@ -2406,8 +2414,21 @@ def _check_and_notify_pickup():
                 for p in non_preorder_items:
                     notify_store.mark_notified(p["id"])
 
-        # 沒有 LINE ID 的 → 存到 _pickup_notify_results 讓 admin 看
-        # （不再推內部群，節省 push 額度）
+        # 沒有 LINE ID 的（含 ecount 客戶）→ 整理成一份 push 給管理員
+        if no_line_id:
+            _lines = ["📦 以下客戶貨到齊了，請手動通知："]
+            for _nl_name, _nl_items in no_line_id:
+                _item_str = "、".join(f"{p['prod_name'][:15]}×{p.get('qty_wanted',1)}" for p in _nl_items)
+                _lines.append(f"  👤 {_nl_name}：{_item_str}")
+            try:
+                _HELPER_UID = "U8664e671a26d2eca1237fe94ad634205"  # 小蠻牛-新北小幫手
+                line_api.push_message(PushMessageRequest(
+                    to=_HELPER_UID,
+                    messages=[TextMessage(text="\n".join(_lines))],
+                ))
+                print(f"[pickup-notify] 已推送 {len(no_line_id)} 位需手動通知給管理員", flush=True)
+            except Exception as _e_adm:
+                print(f"[pickup-notify] 推送管理員失敗: {_e_adm}", flush=True)
 
     # 儲存結果供 admin 查看（保留近 2 天）
     global _pickup_notify_results
@@ -3850,6 +3871,22 @@ async def admin_visit_resolve(visit_id: int):
 async def admin_pickup_notify():
     """取得最近一次到貨通知結果（14:00 排程）"""
     return _pickup_notify_results or {"timestamp": None, "notified_history": [], "no_line_id": []}
+
+
+@app.post("/admin/pickup-notify/run")
+async def admin_pickup_notify_run():
+    """手動觸發到貨通知（在 server 內部執行）"""
+    import asyncio
+    asyncio.get_event_loop().run_in_executor(None, _check_and_notify_pickup)
+    return {"ok": True, "message": "到貨通知已觸發，結果稍後可查"}
+
+
+@app.post("/api/pickup-notify/run")
+async def api_pickup_notify_run():
+    """手動觸發到貨通知（不需登入）"""
+    import asyncio
+    asyncio.get_event_loop().run_in_executor(None, _check_and_notify_pickup)
+    return {"ok": True, "message": "到貨通知已觸發"}
 
 
 @app.post("/admin/pickup-notify/{name}/done")
