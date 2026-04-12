@@ -337,6 +337,17 @@ def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
             # 記錄送出的圖片 message_id → product_code
             if image_codes and hasattr(resp, 'sent_messages') and resp.sent_messages:
                 _store_sent_image_ids(resp.sent_messages, image_codes)
+            # 記錄文字訊息中的貨號（客戶 tag 文字也能追蹤）
+            elif not image_codes and hasattr(resp, 'sent_messages') and resp.sent_messages:
+                import re as _re_txt_code
+                _txt_codes = _PROD_CODE_RE.findall(text)
+                if _txt_codes:
+                    _first_code = _txt_codes[0].upper()
+                    _txt_msg_id = resp.sent_messages[0].id
+                    with _sent_image_map_lock:
+                        _sent_image_map[_txt_msg_id] = {"code": _first_code, "ts": __import__('time').time()}
+                        _save_sent_image_map()
+                    print(f"[send_reply] 記錄文字 msg_id={_txt_msg_id} → {_first_code}", flush=True)
             return
         except Exception as _re:
             print(f"[send_reply] reply_message 失敗: {_re}", flush=True)
@@ -5179,9 +5190,16 @@ def _handle_stateful(
             # 有數字但是問句 → 清 state，走正常 dispatch（交給 Claude 回答）
             state_manager.clear(user_id)
             return None
-        elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用"]):
+        elif any(kw in text for kw in ["不要", "算了", "取消", "不訂", "不用",
+                                        "好吧", "謝謝", "感謝", "沒關係", "不用了",
+                                        "好的謝謝", "好吧謝謝", "下次再說", "先不要"]):
             state_manager.clear(user_id)
-            return f"好的{tone.suffix_light()} 已取消，{tone.boss()}有需要再找我哦"
+            b = tone.boss()
+            return random.choice([
+                f"好的{tone.suffix_light()} {b}有需要再找我哦",
+                f"沒問題～{b}有需要隨時說哦",
+                f"好的，{b}有需要再告訴我{tone.suffix_light()}",
+            ])
         else:
             # 明顯是新查詢（有沒有、還有、推薦等）→ 清 state，走正常流程
             _new_query_kw = ["有沒有", "有什麼", "還有", "推薦", "其他", "別的",
@@ -5197,9 +5215,18 @@ def _handle_stateful(
                 state_manager.clear(user_id)
                 print(f"[stateful] awaiting_quantity 但意圖={_other_intent.value}，清除狀態", flush=True)
                 return None  # 回 None 讓訊息走正常 dispatch
-            # 純粹數量不明（如「嗯」「？」），保留狀態再問一次
-            prod_name = state.get("prod_name", "這款")
-            return tone.ask_quantity(prod_name)
+            # 非數字回覆 → 走 dispatch 正常回覆，但盡量保留 state
+            # （客戶想下單時會 tag 訊息+數量，sent_image_map 能追蹤到貨號）
+            _saved_state = dict(state)
+            print(f"[stateful] awaiting_quantity 但非數字回覆，走 dispatch: {text[:20]!r}", flush=True)
+            state_manager.clear(user_id)
+            _fallback_intent = detect_intent(text)
+            _fallback_reply = _dispatch(user_id, text, _fallback_intent, line_api)
+            # 只有 dispatch 沒設新 state 時才還原（避免蓋掉新流程）
+            if not state_manager.get(user_id):
+                state_manager.set(user_id, _saved_state)
+                print(f"[stateful] 還原 awaiting_quantity state", flush=True)
+            return _fallback_reply if _fallback_reply else ""
 
     # ── 多產品清單：客戶問照片 → 發照片（翻頁），其他 → 清 state 走正常流程 ──
     elif action == "recent_products":
