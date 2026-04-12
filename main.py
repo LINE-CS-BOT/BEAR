@@ -5185,7 +5185,8 @@ def _handle_stateful(
         else:
             # 明顯是新查詢（有沒有、還有、推薦等）→ 清 state，走正常流程
             _new_query_kw = ["有沒有", "有什麼", "還有", "推薦", "其他", "別的",
-                            "元左右", "塊左右", "元以下", "塊以下", "多元", "多塊"]
+                            "元左右", "塊左右", "元以下", "塊以下", "多元", "多塊",
+                            "貨運", "寄貨", "寄送", "要寄", "送貨", "宅配", "配送"]
             if any(kw in text for kw in _new_query_kw):
                 state_manager.clear(user_id)
                 print(f"[stateful] awaiting_quantity 但像新查詢，清除狀態: {text[:20]!r}", flush=True)

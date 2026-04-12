@@ -23,9 +23,9 @@ def handle_delivery(user_id: str, text: str) -> str:
         # 已有未處理的詢問，避免重複記錄
         b = tone.boss()
         return random.choice([
-            f"{b}，送貨時間還在跟司機確認中，確認好馬上通知您哦",
+            f"{b}，還在跟倉庫確認中，確認好馬上通知您哦",
             f"還在確認中{tone.suffix_light()} 確認好再通知{b}哦",
-            f"稍等一下{tone.suffix_light()} 還在跟司機確認，有消息馬上告訴{b}",
+            f"稍等一下{tone.suffix_light()} 還在跟倉庫確認，有消息馬上告訴{b}",
         ])
 
     # 新增記錄
@@ -33,8 +33,8 @@ def handle_delivery(user_id: str, text: str) -> str:
 
     b = tone.boss()
     return random.choice([
-        f"跟司機確認時間後再回覆您{tone.suffix_light()}",
-        f"幫{b}跟司機確認一下，確認好馬上通知您哦",
-        f"送貨時間讓我跟司機確認一下{tone.suffix_light()} 確認好再通知{b}哦",
-        f"等等幫{b}確認司機的時間，有消息馬上回覆您",
+        f"跟倉庫人員確認後回覆您唷{tone.suffix_light()}",
+        f"幫{b}跟倉庫確認一下，確認好馬上通知您哦",
+        f"讓我跟倉庫確認一下{tone.suffix_light()} 確認好再通知{b}哦",
+        f"等等幫{b}確認，有消息馬上回覆您",
     ])
