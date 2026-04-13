@@ -1670,6 +1670,33 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         _send_reply(reply_token, user_id, _q_reply, line_api)
                         return
 
+                # ── tag 清單 + 確認/送出/好了 → 直接結帳（略過圖片/貨號追溯）──
+                if quoted_msg_id and not img_e:
+                    from storage import cart as _cart_qck
+                    _CHECKOUT_QUICK_KW = {"確認", "確定", "沒問題", "沒有問題", "送出",
+                                          "幫我送出", "結帳", "下單", "確認訂單", "送出訂單",
+                                          "就這樣", "就這些", "好了", "ok", "OK", "可以", "對"}
+                    _txt_strip = combined.strip()
+                    _is_checkout_word = (_txt_strip in _CHECKOUT_QUICK_KW or
+                                         any(kw in _txt_strip for kw in
+                                             ["確認訂單", "送出訂單", "幫我送出", "幫忙送出",
+                                              "就這樣送出", "就這些送出", "這樣就好"]))
+                    if _is_checkout_word and not _cart_qck.is_empty(user_id):
+                        # 已經在地址選擇/聯絡資訊等結帳中間狀態 → 不再重複觸發 checkout
+                        _qck_state = state_manager.get(user_id) or {}
+                        _qck_action = _qck_state.get("action", "")
+                        if _qck_action in ("awaiting_address_selection_checkout",
+                                           "awaiting_group_address_confirm",
+                                           "awaiting_contact_info_checkout",
+                                           "awaiting_address_selection"):
+                            print(f"[quote] tag 清單 + 結帳詞，但已在 {_qck_action}，忽略", flush=True)
+                            return
+                        print(f"[quote] tag 清單 + 結帳關鍵字 → 直接結帳: {_txt_strip!r}", flush=True)
+                        from handlers.ordering import handle_checkout
+                        _qck_reply = handle_checkout(user_id, line_api)
+                        _send_reply(reply_token, user_id, _qck_reply, line_api)
+                        return
+
                 # 1:1 圖片識別：優先從文字提取貨號，沒有才辨識圖片
                 # 若客戶引用了某張圖片，把引用的圖片當作 img_e 來辨識
                 if quoted_msg_id and not img_e:
@@ -5564,6 +5591,19 @@ def _handle_stateful(
         from storage import cart as cart_store
         cart = cart_store.get_cart(user_id)
         codes = customer_store.get_ecount_codes_by_line_id(user_id)
+        # 結帳/確認詞（客戶重複 tag 清單說「好了/確認/送出」）→ 靜默不再重問
+        _CONF_NOISE = {"確認", "確定", "好", "好了", "好的", "送出", "幫我送出",
+                       "結帳", "下單", "確認訂單", "送出訂單", "ok", "OK",
+                       "是", "對", "可以", "沒問題"}
+        _txt_strip_addr = text.strip()
+        if _txt_strip_addr in _CONF_NOISE or any(k in _txt_strip_addr for k in
+                                                 ["確認訂單", "送出訂單", "幫我送出", "幫忙送出"]):
+            print(f"[addr_select] 已在選地址狀態，忽略結帳詞: {_txt_strip_addr!r}", flush=True)
+            return None
+        # 取消 → 清 state
+        if any(k in _txt_strip_addr for k in ["取消", "不要了", "算了"]):
+            state_manager.clear(user_id)
+            return f"好的{tone.suffix_light()} 已取消"
         m = re.search(r"^\s*(\d+)\s*$", text)
         if m:
             idx = int(m.group(1)) - 1
@@ -6120,6 +6160,81 @@ def _dispatch(
             if _pd_imgs:
                 return (f"這是「{_pd_name}」的照片唷～\n請問要幾個呢？", _pd_imgs)
             return f"「{_pd_name}」目前沒有照片{tone.suffix_light()} 請問要幾個呢？"
+
+    # ── 改數量：「貨號改N」→ 直接更新購物車該品項 ──
+    try:
+        from handlers.internal import _PROD_CODE_PAT as _CHG_CODE_PAT
+        _CHG_RE = re.compile(rf'({_CHG_CODE_PAT})\s*改\s*(\d+)')
+        _chg_matches = list(_CHG_RE.finditer(text))
+        if _chg_matches:
+            from storage import cart as _cart_chg2
+            from services.ecount import ecount_client as _ec_chg2
+            _chg_cart = _cart_chg2.get_cart(user_id)
+            if _chg_cart:
+                _chg_any = False
+                for _cm in _chg_matches:
+                    _ccode = _cm.group(1).strip().upper()
+                    _cqty  = int(_cm.group(2))
+                    _exist = next((it for it in _chg_cart if (it.get("prod_cd","").upper() == _ccode)), None)
+                    if _exist:
+                        _cart_chg2.set_item(user_id, _ccode, _exist["prod_name"], _cqty,
+                                            note=_exist.get("note","") or "")
+                        _chg_any = True
+                    else:
+                        _citem = _ec_chg2.get_product_cache_item(_ccode)
+                        _cname = (_citem.get("name") if _citem else "") or _ccode
+                        _cart_chg2.add_item(user_id, _ccode, _cname, _cqty)
+                        _chg_any = True
+                if _chg_any:
+                    from storage.state import state_manager as _sm_chg2
+                    _sm_chg2.clear(user_id)
+                    print(f"[dispatch] 改數量: {[(m.group(1), m.group(2)) for m in _chg_matches]}", flush=True)
+                    return tone.cart_item_added(_cart_chg2.get_cart(user_id))
+    except Exception as _chg_e:
+        print(f"[dispatch] 改數量解析失敗: {_chg_e}", flush=True)
+
+    # ── 批次下單解析：多行 / 單行含多個「貨號*數量」→ 直接加購物車 ──
+    # 支援：
+    #   Z3590*2
+    #   S0632*2
+    #   Z3592*6 (3色各2)   ← 括號或尾段當備註
+    try:
+        from handlers.internal import _STAFF_ORDER_ITEM_RE as _BATCH_RE, _parse_qty as _batch_parse_qty
+        from handlers.ordering import resolve_unit as _batch_resolve_unit
+        _batch_items = []
+        for _bl in text.splitlines():
+            _bm = _BATCH_RE.search(_bl)
+            if not _bm:
+                continue
+            _bcode = _bm.group(1).strip().upper()
+            _bqty  = _batch_parse_qty(_bm.group(2))
+            _bunit = _bm.group(3) if _bm.lastindex and _bm.lastindex >= 3 else None
+            _brest = _bl[_bm.end():].strip()
+            # 剝括號（全形半形都處理）
+            _brest = re.sub(r'^[\(（]\s*|\s*[\)）]\s*$', '', _brest).strip()
+            _brest = re.sub(r'^備[註誌记]\s*[:：]?\s*', '', _brest).strip()
+            _bactual_cd, _bactual_qty, _bwarn = _batch_resolve_unit(_bcode, _bqty, _bunit)
+            _batch_items.append((_bactual_cd, _bactual_qty, _brest, _bwarn))
+
+        if _batch_items:
+            from storage import cart as _cart_batch
+            from services.ecount import ecount_client as _ec_batch
+            _warnings = []
+            for _bcd, _bq, _bnote, _bw in _batch_items:
+                _bitem = _ec_batch.get_product_cache_item(_bcd)
+                _bname = (_bitem.get("name") if _bitem else "") or _bcd
+                _cart_batch.add_item(user_id, _bcd, _bname, _bq, note=_bnote)
+                if _bw:
+                    _warnings.append(_bw)
+            print(f"[dispatch] 批次下單: {[(c,q,n) for c,q,n,_ in _batch_items]}", flush=True)
+            from storage.state import state_manager as _sm_batch
+            _sm_batch.clear(user_id)
+            _reply_batch = tone.cart_item_added(_cart_batch.get_cart(user_id))
+            if _warnings:
+                _reply_batch += "\n" + "\n".join(_warnings)
+            return _reply_batch
+    except Exception as _batch_e:
+        print(f"[dispatch] 批次下單解析失敗: {_batch_e}", flush=True)
 
     if intent == Intent.RECOMMENDATION:
         return _handle_recommendation(user_id, text, line_api)

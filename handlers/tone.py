@@ -428,7 +428,9 @@ def cart_item_added(cart: list[dict]) -> str:
     lines = ["好的！目前清單："]
     for item in cart:
         code = item.get('prod_cd', '')
-        lines.append(f"  • {item['prod_name']}（{code}）× {item['qty']}")
+        note = (item.get('note') or '').strip()
+        _note_suffix = f"（備註：{note}）" if note else ""
+        lines.append(f"  • {item['prod_name']}（{code}）× {item['qty']}{_note_suffix}")
     lines.append("")
     lines.append("還有其他要訂的嗎？如果好了就跟我說幫你送出唷✉️")
     return "\n".join(lines)
@@ -525,13 +527,23 @@ def price_reply(name: str, price: float, unit: str) -> str:
 
 
 # ── 地址選擇（多地址客戶下單） ────────────────────
+def _clean_addr(addr: str) -> str:
+    """去除 Ecount 地址欄位被塞的營業時間/電話等雜訊。"""
+    if not addr:
+        return ""
+    import re as _re
+    a = addr.replace("\r", " ").replace("\n", " ")
+    # 遇到「營業時間/每週/週一/電話/TEL/:/-/時段描述」就截斷
+    a = _re.split(r'(?:營業時間|營業|每週|週[一二三四五六日]|電話|TEL|\d{1,2}:\d{2})', a, maxsplit=1)[0]
+    return a.strip(" 　,，;；")
+
 def ask_address_selection(codes: list[dict]) -> str:
     """客戶有多個送貨地址時，詢問這次要送到哪裡"""
     b = boss()
     lines = [f"請問{b}這次要送到哪個地址呢？"]
     for i, c in enumerate(codes, 1):
         name = (c.get("cust_name") or "").strip()
-        addr = (c.get("address_label") or "").strip()
+        addr = _clean_addr((c.get("address_label") or "").strip())
         if name and addr:
             label = f"{name}　{addr}"
         elif name:
