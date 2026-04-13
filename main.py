@@ -83,6 +83,7 @@ from handlers.internal import (
     handle_internal_unclaimed,
     handle_internal_customer_orders,
     handle_internal_showcase_push,
+    handle_internal_contact_group_push,
     handle_internal_product_photo,
     handle_internal_product_po_photo,
     handle_internal_label_queue,
@@ -1120,6 +1121,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or _handle_spec_rebuild_command(combined)
         or _handle_bot_notify_command(combined)
         or handle_internal_showcase_push(combined, line_api)
+        or handle_internal_contact_group_push(combined, line_api)
         or handle_internal_label_queue(combined)
         or handle_internal_tag_push(combined, line_api)
         or handle_internal_add_customer(combined)

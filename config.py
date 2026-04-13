@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     # 產品媒體路徑（圖片 + 影片）
     PRODUCT_MEDIA_PATH: str = r"H:\其他電腦\我的電腦\小蠻牛\產品照片"
 
+    # 聯絡群組清單（逗號分隔，「聯絡群組 Z3456」指令推送目標）
+    CONTACT_GROUP_CHATS: str = (
+        "VIP丞&Wei的聯絡群組,"
+        "VIP程品勝的聯絡群組,"
+        "VIP翁敬恩的聯絡群組,"
+        "林子翔的樹林聯絡群組"
+    )
+
+    def contact_group_chats_list(self) -> list[str]:
+        return [s.strip() for s in self.CONTACT_GROUP_CHATS.split(",") if s.strip()]
+
     def business_days_list(self) -> list[int]:
         return [int(d.strip()) for d in self.BUSINESS_DAYS.split(",")]
 

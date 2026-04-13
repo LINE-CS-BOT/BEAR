@@ -3099,6 +3099,68 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
 
 _SHOWCASE_TRIGGER = "看貨群"
 _SHOWCASE_GROUP_NAME = "小蠻牛新北-新品看貨群"
+_CONTACT_GROUP_TRIGGER = "聯絡群組"
+
+
+def handle_internal_contact_group_push(text: str, line_api) -> str | None:
+    """
+    「聯絡群組 Z3456 T1122」→ 把 PO 文+圖片推送到所有名稱含「聯絡群組」的聊天室。
+    """
+    if _CONTACT_GROUP_TRIGGER not in text:
+        return None
+    _cg_text = text.replace(_CONTACT_GROUP_TRIGGER, "", 1).strip()
+    _cg_codes = _PROD_CODE_RE.findall(_cg_text)
+    if not _cg_codes:
+        return None
+
+    import threading as _t_cg
+    _cg_codes_upper = list(dict.fromkeys(c.upper() for c in _cg_codes))
+
+    def _do_contact_push():
+        from services.line_oa_chat import send_to_chat_sync
+        from config import settings as _cfg_cg
+        import time as _time_cg
+        chat_names = _cfg_cg.contact_group_chats_list()
+        if not chat_names:
+            print(f"[contact-group] 未設定 CONTACT_GROUP_CHATS", flush=True)
+            return
+        print(f"[contact-group] 推送到 {len(chat_names)} 個聯絡群組：{chat_names}", flush=True)
+
+        # 預先準備每個貨號的 PO 文 + 圖片（只讀一次）
+        media_dir = _get_media_dir()
+        payloads = []
+        for code in _cg_codes_upper:
+            po_text = _format_po(code)
+            if not po_text:
+                print(f"[contact-group] ❌ {code} 無 PO 文，跳過", flush=True)
+                continue
+            img_paths = []
+            if media_dir:
+                files = _match_product_media_files(code, media_dir)
+                img_paths = [str(media_dir / f) for f in files[:4]]
+            payloads.append((code, po_text, img_paths))
+
+        if not payloads:
+            print(f"[contact-group] 無可推送貨號", flush=True)
+            return
+
+        # 群組優先：每個群組連續發完所有貨號
+        for cname in chat_names:
+            for code, po_text, img_paths in payloads:
+                ok = send_to_chat_sync(
+                    cname,
+                    text=po_text,
+                    image_paths=img_paths if img_paths else None,
+                )
+                if ok:
+                    print(f"[contact-group] ✅ {cname} ← {code}", flush=True)
+                else:
+                    print(f"[contact-group] ❌ {cname} ← {code} 失敗", flush=True)
+                _time_cg.sleep(3)
+
+    _t_cg.Thread(target=_do_contact_push, daemon=True).start()
+    codes_str = "、".join(_cg_codes_upper)
+    return f"📣 正在推送到所有聯絡群組：{codes_str}\n（透過 LINE OA，不消耗 API 額度）"
 
 
 def handle_internal_showcase_push(text: str, line_api) -> str | None:
@@ -3180,7 +3242,7 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
     except Exception:
         return "❌ 讀取新品資料失敗"
 
-    cutoff = datetime.now() - timedelta(days=14)
+    cutoff = datetime.now() - timedelta(days=30)
     recent = []
     for code, info in all_products.items():
         first_seen = info.get("first_seen", "")
@@ -3192,14 +3254,19 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
             recent.append((code, info.get("name", ""), info.get("price", 0), dt))
 
     if not recent:
-        return "📋 最近 14 天沒有新增品項"
+        return "📋 最近 30 天沒有新增品項"
 
     recent.sort(key=lambda x: x[3], reverse=True)
 
-    lines = [f"📋 最近 14 天新品（共 {len(recent)} 筆）："]
+    lines = [f"📋 最近 30 天新品（共 {len(recent)} 筆）："]
     for code, name, price, dt in recent:
         price_str = f"　${int(price)}" if price else ""
-        lines.append(f"  {code}　{name}{price_str}\n  　建立：{dt.strftime('%m/%d %H:%M')}")
+        _stk = ecount_client.lookup(code)
+        if _stk and _stk.get("qty") is not None:
+            _qty_str = f"　可售 {int(_stk['qty'])}"
+        else:
+            _qty_str = ""
+        lines.append(f"  {code}　{name}{price_str}{_qty_str}\n  　建立：{dt.strftime('%m/%d %H:%M')}")
 
     return "\n".join(lines)
 
@@ -3896,8 +3963,8 @@ def _parse_new_product_fields(text: str) -> dict | None:
     # 優先：「單盒N元」「單個N元」格式（最明確）
     out_price_m = re.search(r'(?:單盒|单盒|單個|单个|每盒|每個|每个)\s*([\d.]+)\s*元', flat)
     if not out_price_m:
-        # 次優先：「售價：」「產品售價：」「產品價格：」「價格：」等標籤
-        out_price_m = re.search(r'(?:產品售價|產品價格|售價|賣價|價格|出庫單價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元?', flat)
+        # 次優先：「售價：」「產品售價：」「產品價格：」「價格：」「限時特價:」等標籤
+        out_price_m = re.search(r'(?:產品售價|產品價格|限時特價|售價|賣價|價格|出庫單價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*\(?\$?\)?\s*([\d.]+)\s*(?:元|/\S*)?', flat)
     if not out_price_m:
         # 「特價N元」（確保後面不是「盒起批」等批量描述）
         out_price_m = re.search(r'特價\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元(?!\S*起批)', flat)
@@ -3928,24 +3995,33 @@ def _parse_new_product_fields(text: str) -> dict | None:
         unit_bare_m = re.search(rf'(?:^|\s)({_UNIT_WORDS_NP})(?:\s|$)', flat)
         unit = unit_bare_m.group(1) if unit_bare_m else "個"
 
-    # 品名：優先從「品名：」「產品名稱：」標籤取值
-    name_label_m = re.search(r'(?:產品名稱|品名)\s*[:：]\s*(.+?)(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|建議|包裝)|$)', flat)
+    # 品名：優先從「品名：」「產品名稱：」「名稱：」標籤取值
+    # 逐行掃描：若某行以標籤開頭，只取該行內容（避免吃到下一行描述）
+    prod_name = ""
+    for _ln in text.strip().splitlines():
+        _ln_m = re.match(r'\s*(?:產品名稱|品名|名稱)\s*[:：]\s*(.+)', _ln)
+        if _ln_m:
+            prod_name = _ln_m.group(1).strip()
+            break
+    name_label_m = re.search(r'(?:產品名稱|品名|名稱)\s*[:：]\s*(.+?)(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|限時特價|特價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|單品|建議|包裝)|$)', flat) if not prod_name else None
     if name_label_m:
         prod_name = name_label_m.group(1).strip()
+    if prod_name:
+        pass  # 已透過 label 取得
     else:
         # fallback：從貨號後開始，剝除所有已識別欄位
         name_part = flat[m_code.end():]
         _strip_pats = [
             r'條碼\s*[:：]?\s*\S+',
             r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
-            r'(?:產品售價|產品價格|售價|賣價|價格|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*[\d.]+\s*元?',
+            r'(?:產品售價|產品價格|限時特價|售價|賣價|價格|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*\(?\$?\)?\s*[\d.]+\s*(?:元|/\S*)?',
             r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
             r'(?:產品|包裝)?尺寸\s*[-:：]?\s*約?\s*\S+',
-            r'(?:產品)?重量\s*[:：]?\s*約?\s*\S+',
+            r'(?:單品|產品)?重量\s*[:：]?\s*約?\s*\S+',
             r'建議\s*[:：]?\s*\S+',
             rf'單位\s*[:：]?\s*(?:{_UNIT_WORDS_NP})',
             rf'(?:^|\s)(?:{_UNIT_WORDS_NP})(?:\s|$)',
-            r'(?:產品名稱|品名)\s*[:：]?\s*',
+            r'(?:產品名稱|品名|名稱)\s*[:：]?\s*',
             r'編號\s*[:：]?\s*\S+',
             r'(?:^|\s)[\d.]+\s*元?(?=\s|$)',  # 裸數字+元（售價 fallback）
         ]
@@ -3971,7 +4047,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
 
     # 抓尺寸和重量（寫入 REMARKS_WIN / CONT1）
     _sz_m = re.search(r'(?:包裝)?尺寸\s*[-:：]?\s*約?\s*(\S+)', flat)
-    _wt_m = re.search(r'(?:產品)?重量\s*[:：]?\s*約?\s*(\S+)', flat)
+    _wt_m = re.search(r'(?:單品|產品)?重量\s*[:：]?\s*約?\s*(\S+)', flat)
 
     return {
         "prod_cd":      prod_cd,
