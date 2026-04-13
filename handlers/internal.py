@@ -3103,16 +3103,24 @@ _SHOWCASE_GROUP_NAME = "小蠻牛新北-新品看貨群"
 
 def handle_internal_showcase_push(text: str, line_api) -> str | None:
     """
-    偵測「看貨群」指令：
-    - 「看貨群」（無產品）→ 列出最近 14 天新品
+    偵測指令：
+    - 「最近新品」 → 列出最近 14 天新品
     - 「看貨群 T1122 Z3456」→ 透過 LINE OA Chrome 推送 PO文+圖片到看貨群
     """
-    if _SHOWCASE_TRIGGER not in text:
-        return None
-
-    # 提取產品代碼
-    _sc_text = text.replace(_SHOWCASE_TRIGGER, "").strip()
-    _sc_codes = _PROD_CODE_RE.findall(_sc_text)
+    _t_strip = text.strip()
+    # 「最近新品」→ 列新品
+    if _t_strip == "最近新品":
+        _sc_codes = []
+        _sc_text = ""
+    else:
+        if _SHOWCASE_TRIGGER not in text:
+            return None
+        # 提取產品代碼
+        _sc_text = text.replace(_SHOWCASE_TRIGGER, "").strip()
+        _sc_codes = _PROD_CODE_RE.findall(_sc_text)
+        # 「看貨群」無貨號 → 不處理
+        if not _sc_codes:
+            return None
 
     # ── 有產品代碼 → 推送到看貨群 ──
     if _sc_codes:
