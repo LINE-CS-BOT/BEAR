@@ -5171,6 +5171,29 @@ def _handle_stateful(
                 if _ph_imgs:
                     return (f"這就是「{prod_name}」的照片唷～\n請問{tone.boss()}要幾個呢？", _ph_imgs)
             return f"這款目前沒有照片{tone.suffix_light()} 請問{tone.boss()}需要幾個「{prod_name}」呢？"
+        # 問裝箱數：「一箱幾個」「一箱多少」「幾個一箱」「幾入」→ 從 Ecount 規格回
+        _pack_kw = ["一箱幾", "一件幾", "一箱多少", "一件多少", "幾個一箱", "幾入一箱",
+                    "幾個裝", "幾入裝", "裝箱數", "一箱是幾", "一箱有幾", "一箱有多少",
+                    "一箱幾入", "一箱幾個", "箱裝幾"]
+        if any(kw in text for kw in _pack_kw):
+            prod_cd = state.get("prod_cd", "")
+            prod_name = state.get("prod_name", "這款")
+            if prod_cd:
+                from handlers.ordering import detect_per_box as _dpb
+                from services.ecount import ecount_client as _ec_pk
+                _per_box = _dpb(prod_cd)
+                _item_pk = _ec_pk.get_product_cache_item(prod_cd)
+                _size_des = (_item_pk.get("size_des") if _item_pk else "") or ""
+                if _per_box > 0:
+                    _ub = "入" if ("入" in _size_des) else "個"
+                    import re as _re_pk
+                    _m_unit = _re_pk.search(r'\d+\s*(盒|個|入|包|罐|條|瓶)', _size_des)
+                    if _m_unit:
+                        _ub = _m_unit.group(1)
+                    return f"「{prod_name}」1箱 = {_per_box}{_ub} 唷{tone.suffix_light()}"
+                if _size_des:
+                    return f"「{prod_name}」規格：{_size_des}{tone.suffix_light()}"
+            return f"裝箱數我確認一下再回覆{tone.boss()}哦"
         # 問庫存數量攔截：「有多少個」「大概幾個」「還剩多少」→ 不透露數量
         _ask_qty_kw = ["多少個", "幾個", "多少", "剩多少", "剩幾", "有幾個", "有多少"]
         if any(kw in text for kw in _ask_qty_kw):
