@@ -3976,8 +3976,8 @@ def _parse_new_product_fields(text: str) -> dict | None:
         out_price_m = re.search(r'(?:^|\s)([\d.]+)(?=\s|$)', flat)
     out_price = out_price_m.group(1) if out_price_m else ""
 
-    # 加盟商價格 / 入庫單價（按長到短排，避免短詞先匹配）
-    in_price_m   = re.search(r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*([\d.]+)', flat)
+    # 加盟商價格 / 入庫單價 / 批發價（按長到短排，避免短詞先匹配）
+    in_price_m   = re.search(r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|批發價|進價)\s*[:：]?\s*[$＄]?\s*([\d.]+)', flat)
     in_price_raw = in_price_m.group(1) if in_price_m else ""
 
     # 規格（取到行末或下一個關鍵字前）
@@ -4013,7 +4013,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
         name_part = flat[m_code.end():]
         _strip_pats = [
             r'條碼\s*[:：]?\s*\S+',
-            r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+',
+            r'(?:加盟商價格|加盟商商價|加盟商價|加盟商|入庫單價|批發價|進價)\s*[:：]?\s*[$＄]?\s*[\d.]+\s*元?',
             r'(?:產品售價|產品價格|限時特價|售價|賣價|價格|出庫單價|特價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*\(?\$?\)?\s*[\d.]+\s*(?:元|/\S*)?',
             r'規格\s*[:：]?\s*\S+(?:\s+\S+)*?(?=\s+(?:條碼|售價|賣價|出庫|入庫|加盟)|\s*$)',
             r'(?:產品|包裝)?尺寸\s*[-:：]?\s*約?\s*\S+',
