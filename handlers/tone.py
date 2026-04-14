@@ -551,7 +551,7 @@ def ask_address_selection(codes: list[dict]) -> str:
         elif addr:
             label = addr
         else:
-            label = c["ecount_cust_cd"]
+            label = "未決定"
         lines.append(f"{i}. {label}")
     lines.append("（請回覆數字選擇哦~~）")
     return "\n".join(lines)
