@@ -476,7 +476,7 @@ def _do_order(
                     "units": units or {},
                     "note": note,
                 })
-                items_desc = "、".join(f"{pc}×{q}" for pc, q in items_raw)
+                items_desc = "、".join(f"{t[0]}×{t[1]}" for t in items_raw)
                 print(f"[internal] 找不到客戶「{cust_name_clean}」，等待確認", flush=True)
                 return (
                     f"⚠️ 找不到客戶「{cust_name_clean}」\n"
