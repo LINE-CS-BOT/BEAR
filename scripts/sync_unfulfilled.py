@@ -195,6 +195,7 @@ def _parse_unclaimed_excel(xlsx_path: Path) -> list[dict]:
         "customer": ["客戶名稱", "客戶", "Cust"],
         "product":  ["品項名稱", "品名", "品項"],
         "qty":      ["數量", "餘量", "Qty"],
+        "slip":     ["銷貨單", "銷貨"],
     }
     for key, aliases in _ALIASES.items():
         for i, h in enumerate(hdrs):
@@ -219,6 +220,10 @@ def _parse_unclaimed_excel(xlsx_path: Path) -> list[dict]:
 
         customer = _get("customer")
         if not customer:
+            continue
+        # 只保留尚未開銷貨單者（銷貨單欄位為「輸入」），其餘代表已出貨
+        slip = _get("slip")
+        if slip and slip != "輸入":
             continue
         results.append({
             "date_no":  _get("date_no"),
