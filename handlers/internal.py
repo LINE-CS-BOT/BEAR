@@ -4745,3 +4745,100 @@ def handle_internal_customer_orders(text: str, state_key: str | None = None) -> 
             lines.append(f"  {product} *{qty:g}")
 
     return "\n".join(lines)
+
+
+# ── 廣告圖查詢 ──────────────────────────────────────────────────────────
+_AD_QUERY_KW = ["廣告圖查詢", "廣告圖 查詢", "查廣告圖"]
+_AD_FILENAME_CODE_RE = re.compile(
+    r'([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE
+)
+
+
+def _scan_ad_image_codes() -> set[str]:
+    """掃 AD_OUTPUT_DIR 取得已有廣告圖的貨號集合（大寫）"""
+    from handlers.ad_maker import AD_OUTPUT_DIR
+    codes: set[str] = set()
+    try:
+        if not AD_OUTPUT_DIR.exists():
+            return codes
+        for p in AD_OUTPUT_DIR.iterdir():
+            if not p.is_file():
+                continue
+            m = _AD_FILENAME_CODE_RE.search(p.stem)
+            if m:
+                codes.add(m.group(1).upper())
+    except Exception as e:
+        print(f"[ad_query] 掃描廣告圖資料夾失敗: {e}")
+    return codes
+
+
+def handle_internal_ad_query(text: str, state_key: str | None = None) -> str | None:
+    """
+    廣告圖查詢：列出有可售庫存的貨號，依庫存分級並標記是否已有廣告圖。
+    分級：>=200 / 100-199 / 50-99 / 1-49
+    """
+    t = text.strip()
+    if not any(kw in t for kw in _AD_QUERY_KW):
+        return None
+
+    try:
+        avail = _json.loads(
+            (Path(__file__).parent.parent / "data" / "available.json")
+            .read_text(encoding="utf-8")
+        )
+    except Exception as e:
+        return f"❌ 讀取庫存資料失敗：{e}"
+
+    ad_codes = _scan_ad_image_codes()
+
+    buckets: dict[str, list[tuple[str, int, bool]]] = {
+        "≥200":    [],
+        "100-199": [],
+        "50-99":   [],
+        "1-49":    [],
+    }
+
+    for code, entry in avail.items():
+        if not code or code.upper().startswith("HH"):
+            continue
+        qty = entry.get("available", 0) if isinstance(entry, dict) else int(entry or 0)
+        try:
+            qty = int(qty)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+
+        has_ad = code.upper() in ad_codes
+        row = (code, qty, has_ad)
+        if qty >= 200:
+            buckets["≥200"].append(row)
+        elif qty >= 100:
+            buckets["100-199"].append(row)
+        elif qty >= 50:
+            buckets["50-99"].append(row)
+        else:
+            buckets["1-49"].append(row)
+
+    for k in buckets:
+        buckets[k].sort(key=lambda r: -r[1])
+
+    total = sum(len(v) for v in buckets.values())
+    with_ad = sum(1 for v in buckets.values() for r in v if r[2])
+    lines = [
+        f"📸 廣告圖查詢（可售 {total} 品項，已有廣告圖 {with_ad}）"
+    ]
+    for label, rows in buckets.items():
+        if not rows:
+            continue
+        miss = sum(1 for r in rows if not r[2])
+        lines.append(f"\n▶ {label}（{len(rows)}，缺 {miss}）")
+        for code, qty, has_ad in rows:
+            mark = "✓" if has_ad else "✗"
+            lines.append(f"  {mark} {code}  可售{qty}")
+
+    out = "\n".join(lines)
+    # LINE 文字訊息上限約 5000 字，超過就截斷
+    if len(out) > 4900:
+        out = out[:4850] + "\n\n⚠️ 內容過長已截斷，請改用 Admin 介面或縮小範圍"
+    return out

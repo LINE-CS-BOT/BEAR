@@ -81,6 +81,7 @@ from handlers.internal import (
     handle_internal_rebate,
     handle_internal_unfulfilled,
     handle_internal_unclaimed,
+    handle_internal_ad_query,
     handle_internal_customer_orders,
     handle_internal_showcase_push,
     handle_internal_contact_group_push,
@@ -1135,6 +1136,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
         or handle_internal_unclaimed(combined, group_id)
+        or handle_internal_ad_query(combined, group_id)
         or handle_internal_customer_orders(combined, group_id)
         or handle_internal_consumable(combined, group_id)
         or handle_internal_product_po_photo(combined, line_api)
@@ -4952,6 +4954,7 @@ def on_message(event: MessageEvent):
                     or handle_internal_rebate(text)
                     or handle_internal_unfulfilled(text)
                     or handle_internal_unclaimed(text)
+                    or handle_internal_ad_query(text)
                     or _spec_q(text)
                     or _inv_q(text)
                     or handle_internal_order(text, line_api, group_id=event.source.group_id)
