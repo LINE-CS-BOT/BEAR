@@ -405,6 +405,45 @@ def send_to_chat_sync(chat_name: str, text: str = "", image_paths: list[str] = N
     return asyncio.run(send_to_chat(chat_name, text, image_paths))
 
 
+async def send_many_to_chat(chat_name: str, items: list[dict], delay_sec: float = 2.0) -> list[bool]:
+    """
+    一次開啟聊天室，連續發送多則（text + images）。
+    items: [{"text": str, "image_paths": list[str]}, ...]
+    回傳每筆是否成功。
+    """
+    browser, page = await _get_line_oa_page()
+    if not page:
+        return [False] * len(items)
+
+    results: list[bool] = []
+    try:
+        if not await _open_chat(page, chat_name):
+            return [False] * len(items)
+
+        for idx, it in enumerate(items):
+            text = it.get("text", "")
+            image_paths = it.get("image_paths") or []
+            ok = True
+            if image_paths:
+                if not await _send_images(page, image_paths):
+                    ok = False
+            if text:
+                if not await _send_text(page, text):
+                    ok = False
+            results.append(ok)
+            if idx < len(items) - 1 and delay_sec > 0:
+                await page.wait_for_timeout(int(delay_sec * 1000))
+        return results
+    except Exception as e:
+        print(f"[line-oa] send_many_to_chat 失敗: {e}")
+        results.extend([False] * (len(items) - len(results)))
+        return results
+
+
+def send_many_to_chat_sync(chat_name: str, items: list[dict], delay_sec: float = 2.0) -> list[bool]:
+    return asyncio.run(send_many_to_chat(chat_name, items, delay_sec))
+
+
 async def list_chats_matching(keyword: str) -> list[str]:
     """搜尋聊天室名稱包含 keyword 的全部聊天室（回傳名稱清單）。"""
     browser, page = await _get_line_oa_page()

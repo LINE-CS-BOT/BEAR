@@ -3190,38 +3190,36 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
         _sc_codes_upper = list(dict.fromkeys(c.upper() for c in _sc_codes))
 
         def _do_showcase_push():
-            from services.line_oa_chat import send_to_chat_sync
-            import time as _time_sc
+            from services.line_oa_chat import send_many_to_chat_sync
 
-            sent = []
+            # 準備所有 (text, images) — 無 PO 文的跳過
+            items = []
+            code_for_item: list[str] = []
             failed = []
+            media_dir = _get_media_dir()
             for code in _sc_codes_upper:
                 po_text = _format_po(code)
                 if not po_text:
                     failed.append(f"{code}（無 PO 文）")
                     continue
-
-                # 找產品圖片
-                media_dir = _get_media_dir()
                 img_paths = []
                 if media_dir:
                     files = _match_product_media_files(code, media_dir)
-                    img_paths = [str(media_dir / f) for f in files[:4]]  # 最多 4 張
+                    img_paths = [str(media_dir / f) for f in files[:4]]
+                items.append({"text": po_text, "image_paths": img_paths})
+                code_for_item.append(code)
 
-                ok = send_to_chat_sync(
-                    _SHOWCASE_GROUP_NAME,
-                    text=po_text,
-                    image_paths=img_paths if img_paths else None,
-                )
+            if not items:
+                print(f"[showcase] ⚠️ 無可推送項目（全部缺 PO 文）", flush=True)
+                return
+
+            # 一次開啟聊天室、連續發送
+            results = send_many_to_chat_sync(_SHOWCASE_GROUP_NAME, items, delay_sec=2.0)
+            for code, ok in zip(code_for_item, results):
                 if ok:
-                    sent.append(code)
                     print(f"[showcase] ✅ {code} 已推送到看貨群", flush=True)
                 else:
-                    failed.append(f"{code}（發送失敗）")
                     print(f"[showcase] ❌ {code} 推送失敗", flush=True)
-
-                if len(_sc_codes_upper) > 1:
-                    _time_sc.sleep(3)  # 多產品間隔
 
         # 背景執行推送
         _t_sc.Thread(target=_do_showcase_push, daemon=True).start()
