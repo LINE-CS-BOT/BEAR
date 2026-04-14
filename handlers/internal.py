@@ -3256,17 +3256,25 @@ def handle_internal_showcase_push(text: str, line_api) -> str | None:
     if not recent:
         return "📋 最近 30 天沒有新增品項"
 
-    recent.sort(key=lambda x: x[3], reverse=True)
-
-    lines = [f"📋 最近 30 天新品（共 {len(recent)} 筆）："]
+    # 補上可售庫存、圖片、PO 文狀態
+    media_dir = _get_media_dir()
+    enriched = []
     for code, name, price, dt in recent:
-        price_str = f"　${int(price)}" if price else ""
         _stk = ecount_client.lookup(code)
-        if _stk and _stk.get("qty") is not None:
-            _qty_str = f"　可售 {int(_stk['qty'])}"
-        else:
-            _qty_str = ""
-        lines.append(f"  {code}　{name}{price_str}{_qty_str}\n  　建立：{dt.strftime('%m/%d %H:%M')}")
+        qty = int(_stk["qty"]) if (_stk and _stk.get("qty") is not None) else -1
+        has_img = bool(_match_product_media_files(code, media_dir)) if media_dir else False
+        has_po  = _get_raw_po_block(code) is not None
+        enriched.append((code, name, price, dt, qty, has_img, has_po))
+
+    # 依可售庫存由高到低（無庫存資訊排最後）
+    enriched.sort(key=lambda x: (x[4] if x[4] >= 0 else -1), reverse=True)
+
+    lines = [f"📋 最近 30 天新品（共 {len(enriched)} 筆，依可售庫存排序）："]
+    for code, name, price, dt, qty, has_img, has_po in enriched:
+        price_str = f"　${int(price)}" if price else ""
+        qty_str = f"　可售{qty}" if qty >= 0 else "　可售-"
+        mark = f"[{'圖' if has_img else '✗圖'}/{'文' if has_po else '✗文'}]"
+        lines.append(f"  {mark} {code}　{name}{price_str}{qty_str}")
 
     return "\n".join(lines)
 
