@@ -3298,9 +3298,18 @@ async def shop_profile(uid: str = "", name: str = ""):
         matches = customer_store.search_by_name(name, real_name_only=False)
         if matches:
             cust = matches[0]
+    _ec_cd = (cust.get("ecount_cust_cd") or "") if cust else ""
+    # 主表空 → fallback 查子表（多地址客戶可能只有子表有代碼）
+    if cust and not _ec_cd:
+        try:
+            _codes = customer_store.get_ecount_codes_by_db_id(cust.get("id"))
+            if _codes:
+                _ec_cd = (_codes[0].get("ecount_cust_cd") or "").strip()
+        except Exception:
+            pass
     return {
         "real_name": (cust.get("real_name") or cust.get("display_name") or "") if cust else "",
-        "ecount_cust_cd": (cust.get("ecount_cust_cd") or "") if cust else "",
+        "ecount_cust_cd": _ec_cd,
     }
 
 
