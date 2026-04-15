@@ -71,6 +71,36 @@ async def _ensure_logged_in(page) -> bool:
     return False
 
 
+def _spawn_line_oa_chrome() -> bool:
+    """Chrome 沒開就自動啟動（用 start.bat 同一組參數）。回傳是否成功 ready。"""
+    import subprocess, time, urllib.request
+    chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    if not Path(chrome_exe).exists():
+        chrome_exe = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+    user_data = str(Path(__file__).parent.parent / "data" / "line_chrome_session")
+    try:
+        subprocess.Popen(
+            [chrome_exe, "--remote-debugging-port=9223",
+             f"--user-data-dir={user_data}",
+             "--no-first-run", "--disable-default-apps",
+             "https://chat.line.biz/"],
+            creationflags=0x00000008,  # DETACHED_PROCESS
+        )
+    except Exception as e:
+        print(f"[line-oa] 啟動 Chrome 失敗：{e}")
+        return False
+    # poll 最多 20 秒等 CDP ready
+    for _ in range(40):
+        try:
+            urllib.request.urlopen("http://127.0.0.1:9223/json/version", timeout=1)
+            print("[line-oa] ✓ Chrome 已啟動，CDP ready")
+            return True
+        except Exception:
+            time.sleep(0.5)
+    print("[line-oa] ✗ Chrome 啟動後 CDP 仍未 ready")
+    return False
+
+
 async def _get_line_oa_page():
     """連接 LINE OA Manager Chrome，回傳 (browser, page) 或 (None, None)"""
     from playwright.async_api import async_playwright
@@ -78,29 +108,115 @@ async def _get_line_oa_page():
     try:
         browser = await p.chromium.connect_over_cdp(_LINE_OA_CDP)
     except Exception as e:
-        print(f"[line-oa] 無法連接 Chrome (port 9223): {e}")
-        await p.stop()
-        return None, None
+        print(f"[line-oa] 無法連接 Chrome (port 9223): {e}，嘗試自動啟動…")
+        if not await asyncio.to_thread(_spawn_line_oa_chrome):
+            await p.stop()
+            return None, None
+        try:
+            browser = await p.chromium.connect_over_cdp(_LINE_OA_CDP)
+        except Exception as e2:
+            print(f"[line-oa] 自動啟動後仍連不上：{e2}")
+            await p.stop()
+            return None, None
 
-    # 找 LINE OA tab
+    # 找 LINE OA tab（剛 spawn 時可能還在載入，retry 最多 15 秒）
     page = None
-    for ctx in browser.contexts:
-        for pg in ctx.pages:
-            if "line.biz" in pg.url or "line.me" in pg.url:
-                page = pg
+    for _retry in range(30):
+        for ctx in browser.contexts:
+            for pg in ctx.pages:
+                if "line.biz" in pg.url or "line.me" in pg.url:
+                    page = pg
+                    break
+                if "chrome://" not in pg.url and pg.url not in ("about:blank", ""):
+                    page = pg
+            if page:
                 break
-            if "chrome://" not in pg.url:
-                page = pg  # fallback: 用任何非 chrome:// 的 tab
+        if page and "line.biz" in page.url:
+            break
+        await asyncio.sleep(0.5)
 
     if not page:
         print("[line-oa] 找不到可用的 tab")
         return None, None
 
+    # 全自動點掉啟動時的 modal（背景 Chrome，使用者看不到）
+    await _auto_accept_modals(page, rounds=6)
+
     # 確認已登入
     if not await _ensure_logged_in(page):
         return None, None
 
+    # 登入後再清一次（登入後可能有公告 modal）
+    await _auto_accept_modals(page, rounds=3)
+
     return browser, page
+
+
+async def _auto_accept_modals(page, rounds: int = 3):
+    """
+    背景 Chrome 不讓使用者手動點，這裡自動按掉所有「確定/OK/好/繼續/知道了」類 button。
+    每輪間隔 500ms，最多 rounds 輪。會 log 實際點到的按鈕文字以便除錯。
+    同時處理 Playwright native dialog（beforeunload/alert/confirm）。
+    """
+    # Playwright native dialog
+    async def _on_dialog(d):
+        try:
+            print(f"[line-oa] 自動 accept native dialog: {d.type} / {d.message[:60]}")
+            await d.accept()
+        except Exception:
+            pass
+    try:
+        page.on("dialog", lambda d: asyncio.create_task(_on_dialog(d)))
+    except Exception:
+        pass
+
+    total_clicked = 0
+    for i in range(rounds):
+        try:
+            clicked_texts = await page.evaluate("""() => {
+                const texts = ['確定','OK','好','好的','關閉','知道了','繼續','我知道了','下次再說','稍後','Got it','Continue','Close','略過'];
+                const clicked = [];
+                const sel = 'button, [role="button"], a.btn, .btn, [role="dialog"] *, .modal *';
+                const nodes = Array.from(document.querySelectorAll(sel));
+                for (const b of nodes) {
+                    const rect = b.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) continue;
+                    const style = window.getComputedStyle(b);
+                    if (style.visibility === 'hidden' || style.display === 'none') continue;
+                    const t = (b.innerText || b.textContent || '').trim();
+                    if (!t || t.length > 20) continue;
+                    if (texts.some(x => t === x || t.includes(x))) {
+                        try { b.click(); clicked.push(t); } catch(e) {}
+                    }
+                }
+                return clicked;
+            }""")
+            if clicked_texts:
+                total_clicked += len(clicked_texts)
+                print(f"[line-oa] 自動點 modal button (round {i+1}): {clicked_texts}")
+        except Exception as e:
+            print(f"[line-oa] _auto_accept_modals round {i+1} 失敗: {e}")
+        await page.wait_for_timeout(500)
+
+    # 殘餘遮罩清掉
+    try:
+        await page.evaluate("""() => {
+            document.querySelectorAll('.modal, .modal-backdrop, [role="dialog"]').forEach(el => {
+                const style = window.getComputedStyle(el);
+                if (style.position === 'fixed' || style.position === 'absolute') {
+                    el.style.display = 'none';
+                    el.style.pointerEvents = 'none';
+                }
+            });
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = 'auto';
+            document.body.style.paddingRight = '0';
+        }""")
+    except Exception:
+        pass
+
+    if total_clicked == 0:
+        print("[line-oa] 無 modal 需要處理")
 
 
 async def read_customer_chat(customer_name: str, max_messages: int = 30) -> list[dict]:
