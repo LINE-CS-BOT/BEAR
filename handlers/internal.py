@@ -3993,14 +3993,18 @@ def _parse_new_product_fields(text: str) -> dict | None:
     # 優先：「單盒N元」「單個N元」格式（最明確）
     out_price_m = re.search(r'(?:單盒|单盒|單個|单个|每盒|每個|每个)\s*([\d.]+)\s*元', flat)
     if not out_price_m:
-        # 次優先：「售價：」「產品售價：」「產品價格：」「價格：」「限時特價:」等標籤
-        out_price_m = re.search(r'(?:產品售價|產品價格|限時特價|售價|賣價|價格|出庫單價|批價|零售價|售)\s*[:：]?\s*[$＄]?\s*\(?\$?\)?\s*([\d.]+)\s*(?:元|/\S*)?', flat)
+        # 特價關鍵字：容忍 emoji/中文介於關鍵字與數字之間（例：「現在特價‼️299元」）
+        # 取該關鍵字後第一個「數字+元」
+        out_price_m = re.search(r'(?:現在特價|限時特價|特價)[^\d\n]{0,10}?([\d.]+)\s*元(?!\S*起批)', flat)
     if not out_price_m:
-        # 「特價N元」（確保後面不是「盒起批」等批量描述）
-        out_price_m = re.search(r'特價\s*[:：]?\s*[$＄]?\s*([\d.]+)\s*元(?!\S*起批)', flat)
+        # 標籤格式：容忍中文描述介於標籤與數字之間（例：「價格：公司原價1500元」→ 不採這個，因為有更明確的「特價」在前）
+        out_price_m = re.search(r'(?:產品售價|產品價格|售價|賣價|出庫單價|批價|零售價)\s*[:：]?\s*[$＄]?\s*\(?\$?\)?\s*([\d.]+)\s*(?:元|/\S*)?', flat)
     if not out_price_m:
-        # fallback：數字+元（如「299元」）
-        out_price_m = re.search(r'(?:^|\s)([\d.]+)\s*元(?:\s|$)', flat)
+        # 「價格：」後方容忍中文（常有「原價/公司原價/廠商建議售價」等前綴）
+        out_price_m = re.search(r'(?:價格|售)\s*[:：][^\d\n]{0,15}?([\d.]+)\s*元', flat)
+    if not out_price_m:
+        # fallback：任意位置「N元」（取第一個）
+        out_price_m = re.search(r'([\d]+(?:\.\d+)?)\s*元', flat)
     if not out_price_m:
         # fallback：一行只有純數字，視為售價
         out_price_m = re.search(r'(?:^|\s)([\d.]+)(?=\s|$)', flat)
