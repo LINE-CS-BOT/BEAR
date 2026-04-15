@@ -83,6 +83,7 @@ def _spawn_line_oa_chrome() -> bool:
             [chrome_exe, "--remote-debugging-port=9223",
              f"--user-data-dir={user_data}",
              "--no-first-run", "--disable-default-apps",
+             "--window-position=-32000,-32000", "--window-size=1400,900",
              "https://chat.line.biz/"],
             creationflags=0x00000008,  # DETACHED_PROCESS
         )
@@ -496,6 +497,21 @@ async def send_to_chat(chat_name: str, text: str = "", image_paths: list[str] = 
             if not await _send_images(page, image_paths):
                 print(f"[line-oa] 圖片發送失敗")
                 ok = False
+            # 含影片 → 等上傳完再發文
+            _VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
+            has_video = any(Path(p).suffix.lower() in _VIDEO_EXT for p in image_paths)
+            if has_video and ok:
+                extra_ms = 8000
+                for p in image_paths:
+                    if Path(p).suffix.lower() in _VIDEO_EXT:
+                        try:
+                            size_mb = Path(p).stat().st_size / (1024 * 1024)
+                            extra_ms += int(size_mb * 300)
+                        except Exception:
+                            extra_ms += 5000
+                extra_ms = min(extra_ms, 45000)
+                print(f"[line-oa] 含影片，等待 {extra_ms/1000:.1f}s")
+                await page.wait_for_timeout(extra_ms)
 
         # 再發文字
         if text:
@@ -536,19 +552,37 @@ async def send_many_to_chat(chat_name: str, items: list[dict], delay_sec: float 
         if not await _open_chat(page, chat_name):
             return [False] * len(items)
 
+        _VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
         for idx, it in enumerate(items):
             text = it.get("text", "")
             image_paths = it.get("image_paths") or []
+            has_video = any(Path(p).suffix.lower() in _VIDEO_EXT for p in image_paths)
             ok = True
             if image_paths:
                 if not await _send_images(page, image_paths):
                     ok = False
+                # 有影片 → 多等幾秒讓 LINE OA 上傳/轉檔完成，PO 文才不會跑到影片前面
+                if has_video and ok:
+                    # 依影片檔大小估：每 10MB + 3 秒，base 8 秒
+                    extra_ms = 8000
+                    for p in image_paths:
+                        if Path(p).suffix.lower() in _VIDEO_EXT:
+                            try:
+                                size_mb = Path(p).stat().st_size / (1024 * 1024)
+                                extra_ms += int(size_mb * 300)  # ~0.3s / MB
+                            except Exception:
+                                extra_ms += 5000
+                    extra_ms = min(extra_ms, 45000)  # 上限 45 秒
+                    print(f"[line-oa] 含影片，等待 {extra_ms/1000:.1f}s 讓上傳完成")
+                    await page.wait_for_timeout(extra_ms)
             if text:
                 if not await _send_text(page, text):
                     ok = False
             results.append(ok)
             if idx < len(items) - 1 and delay_sec > 0:
-                await page.wait_for_timeout(int(delay_sec * 1000))
+                # 這則含影片 → 下一則也多等一些
+                gap_ms = int(delay_sec * 1000) + (5000 if has_video else 0)
+                await page.wait_for_timeout(gap_ms)
         return results
     except Exception as e:
         print(f"[line-oa] send_many_to_chat 失敗: {e}")

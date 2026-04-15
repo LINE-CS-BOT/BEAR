@@ -23,7 +23,7 @@ echo ===================================
 
 :: 啟動 LINE OA Manager Chrome（CDP port 9223，背景保持登入）
 set CHROME="C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-start "" %CHROME% --remote-debugging-port=9223 --user-data-dir="%WORKDIR%\data\line_chrome_session" --no-first-run --disable-default-apps "https://chat.line.biz/"
+start "" %CHROME% --remote-debugging-port=9223 --user-data-dir="%WORKDIR%\data\line_chrome_session" --no-first-run --disable-default-apps --window-position=-32000,-32000 --window-size=1400,900 "https://chat.line.biz/"
 echo LINE OA Chrome 已啟動 (port 9223)
 echo.
 

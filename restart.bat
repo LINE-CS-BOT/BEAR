@@ -17,7 +17,7 @@ timeout /t 3 > nul
 curl -s http://127.0.0.1:9223/json/version >nul 2>&1
 if errorlevel 1 (
     echo === 啟動 LINE OA Chrome ===
-    start "" %CHROME% --remote-debugging-port=9223 --user-data-dir="%WORKDIR%\data\line_chrome_session" --no-first-run --disable-default-apps "https://chat.line.biz/"
+    start "" %CHROME% --remote-debugging-port=9223 --user-data-dir="%WORKDIR%\data\line_chrome_session" --no-first-run --disable-default-apps --window-position=-32000,-32000 --window-size=1400,900 "https://chat.line.biz/"
 ) else (
     echo LINE OA Chrome 已在執行中
 )

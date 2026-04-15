@@ -1746,6 +1746,20 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             img_pcs.append(_pc)
                 img_pc = img_pcs[0] if img_pcs else None
 
+                # ── 多張圖但辨識失敗：跟客戶說清楚，別裝單張 ──────────────
+                _img_count = len(img_e.get("msg_ids", [])) if img_e else 0
+                _each_m_chk = re.search(r'各\s*(\d+)', combined) if combined else None
+                if _img_count >= 2 and len(img_pcs) < _img_count and _each_m_chk and not current_state:
+                    # 有 N 張圖、客戶講「各 X」、但只認出 < N 款 → 登記真人處理
+                    issue_store.add(user_id, "multi_img_partial",
+                                    f"客戶傳 {_img_count} 張圖+「{combined}」，只認出 {len(img_pcs)} 款：{img_pcs}")
+                    print(f"[txt-buf] 多圖辨識不全：{_img_count} 張 / 認出 {len(img_pcs)}，轉真人", flush=True)
+                    reply_text = f"收到～您傳了 {_img_count} 張圖，我這邊還在確認中，稍等一下嘿 小幫手馬上為您處理"
+                    _send_reply(reply_token, user_id, reply_text, line_api)
+                    reply_text = None
+                    img_pc = None
+                    img_pcs = []
+
                 # ── 多張圖片 + 「各X」→ 批次加入購物車 ──────────────
                 _each_m = re.search(r'各\s*(\d+)\s*(?:個|箱|件|盒|套|組)?', combined) if img_pcs else None
                 if len(img_pcs) > 1 and _each_m and not current_state:
@@ -1756,7 +1770,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     for _pc in img_pcs:
                         _info = _ec.lookup(_pc)
                         _pn = (_info.get("name") if _info else None) or _pc
-                        cart_store.add_to_cart(user_id, _pc, _pn, _each_qty)
+                        cart_store.add_item(user_id, _pc, _pn, _each_qty)
                         _added.append(f"• {_pn} × {_each_qty}")
                     state_manager.set(user_id, {"action": "awaiting_multi_img_confirm"})
                     reply_text = (
@@ -2006,7 +2020,7 @@ def _img_identify_from_buf(msg_id: str) -> str | None:
     從緩衝的 msg_id 下載圖片 → pHash → OCR，回傳 prod_code（或 None）。
     供文字 handler 在「圖片+文字合併」時使用。
     """
-    from services.vision import download_image, identify_product, ocr_extract_candidates
+    from services.vision import download_image, identify_product, identify_product_weak, ocr_extract_candidates
     from services.ecount import ecount_client as _ec
 
     img_bytes = download_image(msg_id)
@@ -2014,6 +2028,9 @@ def _img_identify_from_buf(msg_id: str) -> str | None:
         return None
 
     prod_code = identify_product(img_bytes)
+    if not prod_code:
+        # 嚴格 pHash 沒中 → 試弱命中（diff ≤ 10），仍然比 OCR 可靠
+        prod_code = identify_product_weak(img_bytes)
     if not prod_code:
         # 只嘗試「貨號格式」(字母+數字) 或中文詞，跳過純英文短詞（OCR 雜訊）
         _CODE_OR_ZH = re.compile(r'(?:[A-Za-z]\d{2,}|[\u4e00-\u9fff]{2,})')
