@@ -565,6 +565,61 @@ async def main(payload: dict) -> None:
                 await page.wait_for_timeout(2000)
                 print("[gemini] ✅ 已開新對話")
 
+                # 切換模型：快捷 → 思考型（每次新對話都要切，Gemini 不記憶）
+                print("[gemini] → 嘗試切換模型到思考型...", flush=True)
+                try:
+                    switched = await page.evaluate("""() => {
+                        // 找目前顯示模型名稱的按鈕：文字長度短（<12 字）且包含 快捷/思考型/Pro/Fast/Thinking
+                        const KWS = ['快捷', '思考型', 'Pro', 'Fast', 'Thinking'];
+                        const triggers = Array.from(document.querySelectorAll('button, [role="button"], [role="combobox"]'));
+                        const candidates = [];
+                        for (const el of triggers) {
+                            const t = (el.innerText || el.textContent || '').trim();
+                            if (!t || t.length > 15) continue;
+                            if (KWS.some(k => t.includes(k))) candidates.push({t, el});
+                        }
+                        if (candidates.length === 0) {
+                            // debug：回傳前 20 個 button 文字供排查
+                            const sample = triggers.slice(0, 30).map(el => (el.innerText || '').trim()).filter(x => x && x.length < 30);
+                            return {ok: false, why: 'no_trigger', sample};
+                        }
+                        // 取第一個當模型按鈕
+                        const {t: curText, el: modelBtn} = candidates[0];
+                        if (curText.includes('思考型') || curText.includes('Thinking')) {
+                            return {ok: true, already: true, cur: curText};
+                        }
+                        modelBtn.click();
+                        return {ok: true, clicked: true, cur: curText};
+                    }""")
+                    print(f"[gemini]   模型按鈕狀態: {switched}", flush=True)
+                    if switched.get("clicked"):
+                        await page.wait_for_timeout(600)
+                        picked = await page.evaluate("""() => {
+                            const items = Array.from(document.querySelectorAll(
+                                '[role="menuitem"], [role="option"], li, button, a, div'
+                            ));
+                            for (const el of items) {
+                                const t = (el.innerText || el.textContent || '').trim();
+                                if (!t || t.length > 30) continue;
+                                if (t.startsWith('思考型') || t.startsWith('Thinking')) {
+                                    el.click();
+                                    return t;
+                                }
+                            }
+                            return null;
+                        }""")
+                        if picked:
+                            print(f"[gemini] ✅ 已切換到思考型模型（點到：{picked[:20]}）", flush=True)
+                            await page.wait_for_timeout(600)
+                        else:
+                            print("[gemini] ⚠️ 開了選單但沒找到「思考型」選項", flush=True)
+                    elif switched.get("already"):
+                        print("[gemini] ✓ 已經是思考型模型", flush=True)
+                    else:
+                        print(f"[gemini] ⚠️ 找不到模型按鈕，附近按鈕樣本：{switched.get('sample', [])[:10]}", flush=True)
+                except Exception as _me:
+                    print(f"[gemini] ⚠️ 切換模型失敗：{_me}", flush=True)
+
                 # 兩步驟：① 點「工具」按鈕 → ② 選「生成圖片」
                 _img_btn_clicked = False
                 try:
