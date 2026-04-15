@@ -2073,25 +2073,47 @@ def _fmt_inv_block(item: dict, prod_code: str) -> str:
     except Exception:
         pass
 
+    # 取單位/裝箱量；箱裝變體（unit=箱 且 box_qty=1）改讀兄弟代碼的 box_qty
+    _cache = ecount_client.get_product_cache_item(prod_code) or {}
+    _unit  = _cache.get("unit") or "個"
+    _bq    = _cache.get("box_qty") or 0
+    _is_box_variant = (_unit == "箱")
+    if _is_box_variant and _bq <= 1:
+        _base_code = prod_code.rsplit("-", 1)[0] if "-" in prod_code else prod_code
+        _bq = (ecount_client.get_product_cache_item(_base_code) or {}).get("box_qty") or 0
+
+    def _fmt_qty(n: int | float) -> str:
+        """依品項單位格式化數量；箱裝變體會同時顯示箱 + 餘數"""
+        try:
+            n = int(n)
+        except Exception:
+            return f"{n} {_unit}"
+        if _is_box_variant and _bq > 1:
+            boxes, rem = divmod(n, _bq)
+            if rem == 0:
+                return f"{boxes} 箱"
+            return f"{boxes} 箱 {rem} 個"
+        return f"{n} {_unit}"
+
     lines = [f"📦 {name}（{prod_code}）"]
     mid_lines = []
 
     if unit_price and unit_price > 0:
         mid_lines.append(f"出庫單價：${unit_price:,.0f}")
     if balance is not None:
-        mid_lines.append(f"倉庫庫存：{balance} 個")
+        mid_lines.append(f"倉庫庫存：{_fmt_qty(balance)}")
     if unfilled is not None:
-        mid_lines.append(f"ERP未出：{unfilled} 個")
+        mid_lines.append(f"ERP未出：{_fmt_qty(unfilled)}")
     if incoming is not None:
-        mid_lines.append(f"總公司未到：{incoming} 個")
+        mid_lines.append(f"總公司未到：{_fmt_qty(incoming)}")
     if qty is None:
         mid_lines.append("可售庫存：查詢失敗")
     elif qty <= 0:
-        mid_lines.append("可售庫存：0 個（缺貨）")
+        mid_lines.append(f"可售庫存：0 {_unit}（缺貨）")
     else:
-        mid_lines.append(f"可售庫存：{qty} 個")
+        mid_lines.append(f"可售庫存：{_fmt_qty(qty)}")
     if preorder and preorder > 0:
-        mid_lines.append(f"可預購：{preorder} 個")
+        mid_lines.append(f"可預購：{_fmt_qty(preorder)}")
 
     for i, ln in enumerate(mid_lines):
         prefix = "  └ " if i == len(mid_lines) - 1 else "  ├ "
