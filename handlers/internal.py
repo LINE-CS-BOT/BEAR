@@ -1276,6 +1276,7 @@ def handle_new_customer_confirm(group_id: str, text: str) -> str | None:
         print(f"[internal] 確認「是」→ 同步客戶資料後重新建單: {cust_name}", flush=True)
         try:
             import subprocess as _sp, sys as _sys_local
+            from pathlib import Path as _Path
             _python = _sys_local.executable
             _root   = str(_Path(__file__).parent.parent)
             _flags  = _sp.CREATE_NO_WINDOW if _sys_local.platform == "win32" else 0
@@ -1308,6 +1309,7 @@ def handle_new_customer_confirm(group_id: str, text: str) -> str | None:
         print(f"[internal] 確認「不是」→ 新建 Ecount 客戶: {cust_name}", flush=True)
         from datetime import datetime as _dt
         import sqlite3 as _sqlite3
+        from pathlib import Path as _Path
         _today   = _dt.now().strftime("%y%m%d")
         _prefix  = f"M{_today}"
         _db_path = str(_Path(__file__).parent.parent / "data" / "customers.db")
@@ -3062,7 +3064,7 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
                 _push_messages_chunked(line_api, uid, text_msg, media_msgs)
             sent += 1
             codes_str = "、".join(c for c, *_ in prod_data)
-            print(f"[internal-tag-push] {tag}／{codes_str} → {cust_name or uid}")
+            print(f"[internal-tag-push] {tag}／{codes_str} → {cust.get('name') or uid}")
         except Exception as e:
             failed += 1
             print(f"[internal-tag-push] 推送失敗 {uid}: {e}")

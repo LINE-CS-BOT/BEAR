@@ -513,7 +513,7 @@ def _msg_buf_add(
             existing = _msg_buffer[user_id]
 
         _type = "text" if text else f"media({media_type})"
-        print(f"[msg-buf-add] user={user_id[:10]}... +{_type} lines={len(existing['lines'])} media={len(existing['media'])} wait={wait_secs if 'wait_secs' in dir() else '?'}s", flush=True)
+        print(f"[msg-buf-add] user={user_id[:10]}... +{_type} lines={len(existing['lines'])} media={len(existing['media'])}", flush=True)
 
         # ── 決定 timer 秒數 ──
         all_text = "\n".join(existing["lines"])
@@ -5275,8 +5275,9 @@ def _handle_stateful(
                                         "好吧", "謝謝", "感謝", "沒關係", "不用了",
                                         "好的謝謝", "好吧謝謝", "下次再說", "先不要"]):
             state_manager.clear(user_id)
+            import random as _random
             b = tone.boss()
-            return random.choice([
+            return _random.choice([
                 f"好的{tone.suffix_light()} {b}有需要再找我哦",
                 f"沒問題～{b}有需要隨時說哦",
                 f"好的，{b}有需要再告訴我{tone.suffix_light()}",

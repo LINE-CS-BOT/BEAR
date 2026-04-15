@@ -1,6 +1,56 @@
 # 小蠻牛 LINE 客服機器人 — 架構明細
 
-> 最後更新：2026-03-18
+> 最後更新：2026-04-15
+> ⚠️ **此檔是運維單一真相**。改任何「啟動方式 / log 路徑 / 對外連線 / 排程 / 守門」要同步更新這裡，否則 Claude 下次無從得知。
+
+---
+
+## 運維（Operations）
+
+### 啟動 / 重啟
+
+| 場景 | 指令 | 行為 |
+|------|------|------|
+| 平日重啟 server | `restart.bat` | 跑 compileall + ruff F821 健檢 → 過了才殺 python.exe → 重啟 main.py → 若 9223 沒開順便開 LINE OA Chrome |
+| 跳過健檢強制重啟 | `restart.bat --skip-check` | 健檢炸了想先回服才用 |
+| 開機 / 完整啟動 | `start_tray.bat` → `pythonw tray.py` | tray 圖示 + watchdog 5 秒自動拉起 uvicorn + Caddy |
+| 只開 server 不要 tray | `start_server_only.bat` | 用於除錯 |
+
+**禁止**：用 `> server.log` 重導 stdout（reload 會關 handle 導致 crash，見 memory feedback_no_redirect_stdout）
+
+### Log 路徑
+
+| 路徑 | 內容 | 寫入者 |
+|------|------|--------|
+| `data/server.log` | **主 log**（webhook、claude-cmd、vision、line-oa、showcase 等所有 print）| uvicorn 子行程 stdout |
+| `data/server_err.log` | server stderr | 同上 |
+| `data/sync_customers.log` | 客戶同步腳本 log | scripts/sync_cust_*.py |
+| `data/ad_gemini.log` | 廣告圖生成 log | scripts/generate_ad_gemini.py |
+| `server.log`（根目錄）| **已停用**（4/12 後不再寫入）| — |
+
+### 對外服務 / Port
+
+| Port | 用途 | 啟動方式 |
+|------|------|---------|
+| 8000 | uvicorn main:app（FastAPI webhook + admin）| `restart.bat` / tray |
+| 80, 443 | Caddy 反向代理 → 8000 | tray.py |
+| 9222 | Chrome CDP（Ecount 爬蟲用，Playwright 連）| `open_chrome_debug.bat` |
+| 9223 | Chrome CDP（LINE OA Manager 推送/讀對話）| `restart.bat` / `start.bat` 自動偵測缺則開；推送指令也會 auto-spawn |
+
+LINE OA Chrome 視窗用 `--window-position=-32000,-32000` 開在螢幕外，啟動時 modal 由 `services/line_oa_chat.py:_auto_accept_modals` 自動點掉。
+
+### 程式碼健檢（restart.bat 守門）
+
+| 工具 | 抓什麼 | 失敗動作 |
+|------|--------|---------|
+| `python -m compileall .` | 語法錯、縮排錯 | 印錯誤 + pause + 不重啟 |
+| `python -m ruff check --select F821 .` | 未定義名稱（如打錯 method 名）| 同上 |
+
+裝法：`pip install ruff`（已裝 0.15.10）
+
+### 排程 / 背景任務
+
+詳見 memory `reference_schedules.md`。主要：14:00 到貨通知、followup（24h提醒/48h清除）、Ecount 庫存定時同步。
 
 ---
 
