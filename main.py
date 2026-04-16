@@ -1854,21 +1854,36 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             _send_reply(reply_token, user_id, reply_text, line_api)
                         reply_text = None
                     elif (_qty_m or _ext_qty_val) and (_uqty and _uqty > 0):
-                        # 直接說要幾個 + 有貨 → 加購物車
+                        # 直接說要幾個 + 有貨
+                        # 同貨號 → 預設「改成 N 個」(set)；除非客戶明說「再/再加/多/多加/加買」才累加 (add)
                         _direct_qty = _ext_qty_val or int(_qty_m.group(1))
-                        print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty}", flush=True)
+                        _add_more = bool(re.search(r'(?:再|多|加買)\s*\d|再加|多加|還要', combined))
                         from storage import cart as _cart_direct
-                        _cart_direct.add_item(user_id, img_pc, _un, _direct_qty)
+                        _existing = next((it for it in _cart_direct.get_cart(user_id)
+                                          if it["prod_cd"].upper() == img_pc.upper()), None)
+                        if _existing and not _add_more:
+                            _cart_direct.set_item(user_id, img_pc, _un, _direct_qty)
+                            print(f"[txt-buf] 圖片+文字 → 改數量 {img_pc} {_existing['qty']}→{_direct_qty}", flush=True)
+                        else:
+                            _cart_direct.add_item(user_id, img_pc, _un, _direct_qty)
+                            print(f"[txt-buf] 圖片+文字 → 直接下單 {img_pc} x{_direct_qty} ({'累加' if _existing else '新增'})", flush=True)
                         reply_text = tone.cart_item_added(_cart_direct.get_cart(user_id))
                         _send_reply(reply_token, user_id, reply_text, line_api)
                         return
                     elif (_qty_m or _ext_qty_val) and not (_uqty and _uqty > 0):
-                        # 缺貨/預購 + 有數量 → 統一加購物車
+                        # 缺貨/預購 + 有數量
                         _direct_qty = _ext_qty_val or int(_qty_m.group(1))
                         _is_po = _check_preorder(img_pc)
-                        print(f"[txt-buf] 圖片+文字 → 直接下單({'預購' if _is_po else '缺貨'}) {img_pc} x{_direct_qty}", flush=True)
+                        _add_more = bool(re.search(r'(?:再|多|加買)\s*\d|再加|多加|還要', combined))
                         from storage import cart as _cart_oos
-                        _cart_oos.add_item(user_id, img_pc, _un, _direct_qty)
+                        _existing = next((it for it in _cart_oos.get_cart(user_id)
+                                          if it["prod_cd"].upper() == img_pc.upper()), None)
+                        if _existing and not _add_more:
+                            _cart_oos.set_item(user_id, img_pc, _un, _direct_qty)
+                            print(f"[txt-buf] 圖片+文字 → 改數量({'預購' if _is_po else '缺貨'}) {img_pc} {_existing['qty']}→{_direct_qty}", flush=True)
+                        else:
+                            _cart_oos.add_item(user_id, img_pc, _un, _direct_qty)
+                            print(f"[txt-buf] 圖片+文字 → 直接下單({'預購' if _is_po else '缺貨'}) {img_pc} x{_direct_qty} ({'累加' if _existing else '新增'})", flush=True)
                         reply_text = tone.cart_item_added(_cart_oos.get_cart(user_id))
                         _send_reply(reply_token, user_id, reply_text, line_api)
                         return
