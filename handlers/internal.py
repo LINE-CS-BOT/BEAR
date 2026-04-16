@@ -3319,10 +3319,16 @@ _PO_FILE = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品PO文.txt")
 _IMG_DIR = Path(r"H:\其他電腦\我的電腦\小蠻牛\產品照片")
 
 # 存圖指令正則：「存圖 Z3432」（替換舊圖）
-_SAVE_IMG_RE = re.compile(r'存圖\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE)
+_SAVE_IMG_RE = re.compile(
+    r'(?:存圖\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)|([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s*存圖)',
+    re.IGNORECASE,
+)
 
 # 加圖指令正則：「加圖 Z3432」（保留舊圖，追加新圖）
-_ADD_IMG_RE  = re.compile(r'(?:加圖|補圖)\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)', re.IGNORECASE)
+_ADD_IMG_RE  = re.compile(
+    r'(?:(?:加圖|補圖)\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)|([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s*(?:加圖|補圖))',
+    re.IGNORECASE,
+)
 
 # Session 觸發詞與結束詞（「存圖」單獨傳也進 session；含貨號時走單品路徑）
 _UPLOAD_TRIGGERS  = {"上架", "存檔", "存圖"}
@@ -3980,6 +3986,20 @@ def _parse_new_product_fields(text: str) -> dict | None:
     # 多行合成一行方便搜尋
     flat = " ".join(text.strip().splitlines())
 
+    # LINE emoji 數字殘留：(three)(nine) → 39；($) → $ 等
+    _EN_DIGIT_MAP = {
+        "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+        "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    }
+    def _emoji_num_sub(m):
+        w = m.group(1).lower()
+        return _EN_DIGIT_MAP.get(w, m.group(0))
+    flat = re.sub(r'\(([A-Za-z]+)\)', _emoji_num_sub, flat)
+    # ($) → $
+    flat = flat.replace("($)", "$")
+    # 全形數字 → 半形
+    flat = flat.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
     # 貨號（必填）
     m_code = _NEW_PROD_CODE_RE.search(flat)
     if not m_code:
@@ -3994,18 +4014,29 @@ def _parse_new_product_fields(text: str) -> dict | None:
     # 優先：「單盒N元」「單個N元」格式（最明確）
     out_price_m = re.search(r'(?:單盒|单盒|單個|单个|每盒|每個|每个)\s*([\d.]+)\s*元', flat)
     if not out_price_m:
-        # 特價關鍵字：容忍 emoji/中文介於關鍵字與數字之間（例：「現在特價‼️299元」）
-        # 取該關鍵字後第一個「數字+元」
-        out_price_m = re.search(r'(?:現在特價|限時特價|特價)[^\d\n]{0,10}?([\d.]+)\s*元(?!\S*起批)', flat)
-    if not out_price_m:
-        # 標籤格式：容忍中文描述介於標籤與數字之間（例：「價格：公司原價1500元」→ 不採這個，因為有更明確的「特價」在前）
-        out_price_m = re.search(r'(?:產品售價|產品價格|售價|賣價|出庫單價|批價|零售價)\s*[:：]?\s*[$＄]?\s*\(?\$?\)?\s*([\d.]+)\s*(?:元|/\S*)?', flat)
+        # 特價/售價類關鍵字：容忍 emoji/中文/$，結尾可為「元」或直接數字（例：「超特價$129」「現在特價‼️299元」）
+        # 必須是明確的特價/售價類，不能只是「價」（會誤配「價格：公司原價」）
+        out_price_m = re.search(
+            r'(?:'
+            r'(?:超|大|限時|限定|現在|出清|下殺|促銷|活動|爆殺|破盤|超級|特大)?(?:特價|優惠價|優惠|特惠)'
+            r'|售價|賣價|產品售價|出庫單價|批價|零售價'
+            r')'
+            r'[^\d\n]{0,10}?([\d]+(?:\.\d+)?)\s*(?:元)?(?!\S*起批)',
+            flat,
+        )
     if not out_price_m:
         # 「價格：」後方容忍中文（常有「原價/公司原價/廠商建議售價」等前綴）
-        out_price_m = re.search(r'(?:價格|售)\s*[:：][^\d\n]{0,15}?([\d.]+)\s*元', flat)
+        out_price_m = re.search(r'(?:價格|售)\s*[:：][^\d\n]{0,15}?([\d.]+)\s*元?', flat)
     if not out_price_m:
-        # fallback：任意位置「N元」（取第一個）
-        out_price_m = re.search(r'([\d]+(?:\.\d+)?)\s*元', flat)
+        # fallback：任意位置「$N」或「N元」（取第一個）
+        out_price_m = re.search(r'[$＄]\s*([\d]+(?:\.\d+)?)|([\d]+(?:\.\d+)?)\s*元', flat)
+        if out_price_m:
+            # 兩個 group 取其一
+            class _M:
+                def __init__(self, v): self._v = v
+                def group(self, n): return self._v
+            _v = out_price_m.group(1) or out_price_m.group(2)
+            out_price_m = _M(_v)
     if not out_price_m:
         # fallback：一行只有純數字，視為售價
         out_price_m = re.search(r'(?:^|\s)([\d.]+)(?=\s|$)', flat)

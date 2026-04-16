@@ -1504,16 +1504,16 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     _upload_timer_reset(group_id, group_id, reply_token)
                 return
 
-            # ── 存圖 Z3432（替換舊圖 + 圖片/影片）──────────────────────
+            # ── 存圖 Z3432 或 Z3432存圖（替換舊圖 + 圖片/影片）──────────
             _save_img_m = _INTERNAL_SAVE_IMG_RE.search(combined)
             if _save_img_m and media_e:
-                ack = handle_internal_save_images(
-                    _save_img_m.group(1).upper(), media_e["media"])
+                _code = (_save_img_m.group(1) or _save_img_m.group(2) or "").upper()
+                ack = handle_internal_save_images(_code, media_e["media"])
                 if ack:
                     _send_group_ack(ack)
                 return
             elif _save_img_m and not media_e:
-                _save_code = _save_img_m.group(1).upper()
+                _save_code = (_save_img_m.group(1) or _save_img_m.group(2) or "").upper()
                 # 用 group_id 存 state（內部群任何人傳圖都能觸發）
                 state_manager.set(group_id, {
                     "action": "pending_save_img",
@@ -1522,17 +1522,17 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 })
                 return
 
-            # ── 加圖 Z3432（保留舊圖，追加新圖片/影片）──────────────────
+            # ── 加圖 Z3432 或 Z3432加圖（保留舊圖，追加新圖片/影片）──────
             _add_img_m = _INTERNAL_ADD_IMG_RE.search(combined)
             if _add_img_m and media_e:
-                ack = handle_internal_add_images(
-                    _add_img_m.group(1).upper(), media_e["media"])
+                _code = (_add_img_m.group(1) or _add_img_m.group(2) or "").upper()
+                ack = handle_internal_add_images(_code, media_e["media"])
                 if ack:
                     _send_group_ack(ack)
                 return
             elif _add_img_m and not media_e:
                 # 文字先到，圖片還沒到 → 用 group_id 存 state
-                _add_code = _add_img_m.group(1).upper()
+                _add_code = (_add_img_m.group(1) or _add_img_m.group(2) or "").upper()
                 state_manager.set(group_id, {
                     "action": "pending_add_img",
                     "prod_code": _add_code,
