@@ -6136,8 +6136,29 @@ def _execute_claude_command(user_id: str, cmd: dict, line_api, original_text: st
     elif action == "reply":
         reply_text = cmd.get("text", "")
         if reply_text:
+            # 從回覆中提取貨號，若客戶問「現貨」且 Claude 把缺貨品也列進來 → 從回覆中移除並重新組回覆
+            _raw_codes = _PROD_CODE_RE.findall(reply_text)
+            _raw_codes = list(dict.fromkeys(c.upper() for c in _raw_codes))
+            _xianhuo_kw = any(k in (original_text or "") for k in ["現貨", "有貨", "有什麼", "什麼款", "哪些", "哪款"])
+            if _xianhuo_kw and _raw_codes:
+                from services.ecount import ecount_client as _ec_chk
+                _oos = []
+                for _c in _raw_codes:
+                    _it = _ec_chk.lookup(_c)
+                    _q = (_it or {}).get("qty")
+                    if _q is None or _q <= 0:
+                        _oos.append(_c)
+                if _oos:
+                    # 逐行過濾：若該行含缺貨貨號就整行刪掉
+                    _kept_lines = []
+                    for _ln in reply_text.split("\n"):
+                        if any(_c in _ln.upper() for _c in _oos):
+                            continue
+                        _kept_lines.append(_ln)
+                    reply_text = "\n".join(_kept_lines)
+                    print(f"[claude-cmd] reply 過濾缺貨 {_oos}，保留 {[c for c in _raw_codes if c not in _oos]}", flush=True)
             print(f"[claude-cmd] reply: {reply_text[:30]!r}", flush=True)
-            # 從回覆中提取貨號 → 附 1 張產品圖 + 設 awaiting_quantity
+            # 從（過濾後的）回覆中提取貨號 → 附產品圖 + 設 awaiting_quantity
             _reply_codes = _PROD_CODE_RE.findall(reply_text)
             _reply_codes = list(dict.fromkeys(c.upper() for c in _reply_codes))
             if len(_reply_codes) == 1:
