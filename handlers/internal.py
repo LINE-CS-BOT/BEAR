@@ -1868,11 +1868,12 @@ def _get_raw_po_block(prod_code: str) -> str | None:
         return None
 
     code_upper = prod_code.upper()
+    # 精準匹配：後面不能接「-數字」（避免查 Z1814 抓到 Z1814-1）也不能接數字（避免 Z181 抓 Z1814）
+    _code_re = re.compile(r'(?<![A-Z0-9])' + re.escape(code_upper) + r'(?![0-9A-Z\-])')
     # 以空白行切成段落
     blocks = [b.strip() for b in content.split("\n\n") if b.strip()]
     for block in blocks:
-        # 段落中任意一行含有該產品編號就算匹配
-        if any(code_upper in line.upper() for line in block.splitlines()):
+        if _code_re.search(block.upper()):
             return block
     return None
 
