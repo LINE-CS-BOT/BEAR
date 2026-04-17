@@ -4425,6 +4425,113 @@ async def admin_export_specs():
     )
 
 
+@app.get("/admin/export-catalog")
+async def admin_export_catalog():
+    """導出商品目錄 Excel（含圖片，僅列 available > 10）"""
+    import json as _json
+    import io as _io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.drawing.image import Image as XLImage
+    from PIL import Image as PILImage
+    from handlers.internal import _get_media_dir, _match_product_media_files, _IMG_EXTS
+
+    specs_path = _BASE_DIR / "data" / "specs.json"
+    avail_path = _BASE_DIR / "data" / "available.json"
+    if not specs_path.exists():
+        raise HTTPException(status_code=404, detail="specs.json 不存在")
+    if not avail_path.exists():
+        raise HTTPException(status_code=404, detail="available.json 不存在")
+
+    specs = _json.loads(specs_path.read_text(encoding="utf-8"))
+    avail = _json.loads(avail_path.read_text(encoding="utf-8"))
+    media_dir = _get_media_dir()
+
+    rows = []
+    for code, s in specs.items():
+        a = avail.get(code.upper()) or avail.get(code) or {}
+        stock = int(a.get("available", 0) or 0)
+        if stock <= 10:
+            continue
+        rows.append((code, s, stock))
+    rows.sort(key=lambda r: r[0])
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "商品目錄"
+
+    headers = ["圖片", "產品編號", "品名", "尺寸", "重量", "售價", "庫存"]
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_font = Font(name="微軟正黑體", bold=True, color="FFFFFF", size=11)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin_border
+
+    row_font = Font(name="微軟正黑體", size=10)
+    THUMB = 80
+    for row_idx, (code, s, stock) in enumerate(rows, 2):
+        values = [
+            "",
+            s.get("code", code),
+            s.get("name", ""),
+            s.get("size", ""),
+            s.get("weight", ""),
+            s.get("price", ""),
+            stock,
+        ]
+        for col, val in enumerate(values, 1):
+            c = ws.cell(row=row_idx, column=col, value=val)
+            c.font = row_font
+            c.border = thin_border
+            c.alignment = Alignment(vertical="center")
+        ws.row_dimensions[row_idx].height = 65
+
+        if media_dir:
+            try:
+                files = _match_product_media_files(code, media_dir)
+                img_files = sorted(
+                    [f for f in files if f.suffix.lower() in _IMG_EXTS]
+                )
+                if img_files:
+                    bio = _io.BytesIO()
+                    with PILImage.open(img_files[0]) as im:
+                        im = im.convert("RGB")
+                        im.thumbnail((THUMB, THUMB))
+                        w, h = im.size
+                        im.save(bio, format="PNG")
+                    bio.seek(0)
+                    xl_img = XLImage(bio)
+                    xl_img.width = w
+                    xl_img.height = h
+                    ws.add_image(xl_img, f"A{row_idx}")
+            except Exception as e:
+                print(f"[export-catalog] {code} 圖片嵌入失敗: {e}")
+
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 12
+    ws.column_dimensions["C"].width = 30
+    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["E"].width = 12
+    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["G"].width = 10
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=product_catalog.xlsx"},
+    )
+
+
 @app.get("/admin/inventory-check")
 async def admin_inventory_check(refresh: bool = False):
     """

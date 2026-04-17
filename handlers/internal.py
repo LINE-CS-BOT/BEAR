@@ -3142,9 +3142,8 @@ def handle_internal_contact_group_push(text: str, line_api) -> str | None:
     _cg_codes_upper = list(dict.fromkeys(c.upper() for c in _cg_codes))
 
     def _do_contact_push():
-        from services.line_oa_chat import send_to_chat_sync
+        from services.line_oa_chat import send_many_to_chat_sync
         from config import settings as _cfg_cg
-        import time as _time_cg
         chat_names = _cfg_cg.contact_group_chats_list()
         if not chat_names:
             print(f"[contact-group] 未設定 CONTACT_GROUP_CHATS", flush=True)
@@ -3169,19 +3168,16 @@ def handle_internal_contact_group_push(text: str, line_api) -> str | None:
             print(f"[contact-group] 無可推送貨號", flush=True)
             return
 
-        # 群組優先：每個群組連續發完所有貨號
+        # 群組優先：每個群組開一次聊天室，連發所有貨號
+        items = [
+            {"text": po_text, "image_paths": img_paths}
+            for _, po_text, img_paths in payloads
+        ]
         for cname in chat_names:
-            for code, po_text, img_paths in payloads:
-                ok = send_to_chat_sync(
-                    cname,
-                    text=po_text,
-                    image_paths=img_paths if img_paths else None,
-                )
-                if ok:
-                    print(f"[contact-group] ✅ {cname} ← {code}", flush=True)
-                else:
-                    print(f"[contact-group] ❌ {cname} ← {code} 失敗", flush=True)
-                _time_cg.sleep(3)
+            results = send_many_to_chat_sync(cname, items, delay_sec=2.0)
+            for (code, _po, _imgs), ok in zip(payloads, results):
+                mark = "✅" if ok else "❌"
+                print(f"[contact-group] {mark} {cname} ← {code}", flush=True)
 
     _t_cg.Thread(target=_do_contact_push, daemon=True).start()
     codes_str = "、".join(_cg_codes_upper)
