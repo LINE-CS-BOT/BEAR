@@ -2420,6 +2420,8 @@ def _check_and_notify_pickup():
             # 收集所有可能的客戶名稱（real_name、display_name、Ecount 客戶名）
             cust = customer_store.get_by_line_id(uid)
             _name_candidates = set()
+            if uid.startswith("ecount:"):
+                _name_candidates.add(uid.split(":", 1)[1])
             if cust:
                 for _nk in ("real_name", "display_name", "chat_label"):
                     _nv = (cust.get(_nk) or "").strip()
@@ -2958,7 +2960,7 @@ def _resolve_one(kind: str, item_id: int) -> str:
                 def _sync_resolve_chat():
                     try:
                         _cust = customer_store.get_by_line_id(_issue_uid)
-                        _cname = (_cust.get("real_name") or _cust.get("chat_label") or _cust.get("display_name") or "") if _cust else ""
+                        _cname = (_cust.get("chat_label") or _cust.get("real_name") or _cust.get("display_name") or "") if _cust else ""
                         if _cname:
                             from services.line_oa_chat import read_chat_sync
                             _msgs = read_chat_sync(_cname, max_messages=15)
@@ -4599,7 +4601,7 @@ async def admin_release(user_id: str):
 
         # 嘗試從 LINE OA Manager 讀取接管期間的對話
         cust = customer_store.get_by_line_id(user_id)
-        cust_name = (cust.get("real_name") or cust.get("chat_label") or cust.get("display_name") or "") if cust else ""
+        cust_name = (cust.get("chat_label") or cust.get("real_name") or cust.get("display_name") or "") if cust else ""
         if cust_name:
             try:
                 import threading as _t_rel
@@ -4836,7 +4838,14 @@ async def webhook(request: Request):
         _payload = _json.loads(body)
         for _ev in _payload.get("events", []):
             _ev_type = _ev.get("type", "")
-            # 記錄所有事件，方便除錯
+            # 入口層級 log：每個 webhook event 都印一行（追未處理訊息用）
+            _src_in = _ev.get("source") or {}
+            _uid_in = _src_in.get("userId", "") or _src_in.get("groupId", "") or _src_in.get("roomId", "")
+            _msg_in = _ev.get("message", {})
+            _mtype_in = _msg_in.get("type", "")
+            _snippet_in = (_msg_in.get("text", "") or _msg_in.get("id", ""))[:60]
+            print(f"[webhook-inbound] uid={_uid_in[:10]}... ev={_ev_type} msg={_mtype_in} text={_snippet_in!r}", flush=True)
+            # 詳細記錄非常規事件
             if _ev_type != "message":
                 print(f"[webhook] 非message事件: type={_ev_type} ev={_json.dumps(_ev, ensure_ascii=False)[:300]}", flush=True)
             else:
@@ -6610,7 +6619,7 @@ def _dispatch(
                 _oa_retry_ok = False
                 try:
                     _cust_oa = customer_store.get_by_line_id(user_id)
-                    _cust_name_oa = (_cust_oa.get("real_name") or _cust_oa.get("chat_label") or _cust_oa.get("display_name") or "") if _cust_oa else ""
+                    _cust_name_oa = (_cust_oa.get("chat_label") or _cust_oa.get("real_name") or _cust_oa.get("display_name") or "") if _cust_oa else ""
                     if _cust_name_oa:
                         from services.line_oa_chat import read_chat_sync
                         _oa_msgs = read_chat_sync(_cust_name_oa, max_messages=15)

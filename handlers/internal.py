@@ -593,6 +593,7 @@ def _do_order(
 # 「加購 賴柏舟 S0633*24」→ 不用 session 也能加購
 # 「代結帳 賴柏舟」→ 不用 session 也能結帳
 _CART_VIEW_RE = re.compile(r"^購物車\s*(\S+)$")
+_CART_VIEW_RE_REVERSE = re.compile(r"^(\S+?)\s*購物車$")
 _CART_ADD_RE = re.compile(r"^加購\s*(\S+)\s+([A-Za-z]{1,3}-?\d{3,6})\s*[*×xX]\s*(\d+)$")
 _CART_CHECKOUT_RE = re.compile(r"^代結帳\s*(\S+)$")
 # session 中的快速指令
@@ -665,7 +666,7 @@ def handle_internal_cart(text: str, line_api=None, staff_id: str = "") -> str | 
     t = text.strip()
 
     # ── 查看購物車（進入 session）──
-    m = _CART_VIEW_RE.match(t)
+    m = _CART_VIEW_RE.match(t) or _CART_VIEW_RE_REVERSE.match(t)
     if m:
         name = m.group(1)
         line_id, label = _resolve_customer_line_id(name)
