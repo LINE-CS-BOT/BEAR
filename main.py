@@ -6171,6 +6171,8 @@ def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
     if not reply:
         return "讓我看看有什麼好東西，稍等一下唷～"
 
+    reply = _strip_oos_lines_from_recommendation(reply)
+
     add_chat_history(user_id, "bot", reply)
 
     # 從 Claude 回覆中提取貨號 → 附帶產品圖
@@ -6181,6 +6183,55 @@ def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
     if image_urls:
         return (reply, image_urls)
     return reply
+
+
+def _strip_oos_lines_from_recommendation(reply: str) -> str:
+    """硬阻擋：把 Claude 回覆裡缺貨的推薦行刪掉（預購品保留）。
+    Why: Claude 偶爾無視 system prompt「只推薦有現貨」的規則，
+    需要在輸出端兜底，避免推到客戶手上的清單含缺貨品。"""
+    import json as _json
+    from handlers.inventory import _load_preorder_cache
+    from handlers.internal import _PROD_CODE_RE as _PCR
+
+    avail_path = Path(__file__).parent / "data" / "available.json"
+    if not avail_path.exists():
+        return reply
+    try:
+        avail = _json.loads(avail_path.read_text(encoding="utf-8"))
+    except Exception:
+        return reply
+    po_cache = _load_preorder_cache()
+
+    def _qty(code: str) -> int:
+        d = avail.get(code)
+        if d is None:
+            return 0
+        return d.get("available", 0) if isinstance(d, dict) else d
+
+    kept_lines = []
+    dropped = []
+    for line in reply.split("\n"):
+        codes = [c.upper() for c in _PCR.findall(line)]
+        if not codes:
+            kept_lines.append(line)
+            continue
+        if "預購" in line:
+            kept_lines.append(line)
+            continue
+        in_stock_or_preorder = any(_qty(c) > 0 or c in po_cache for c in codes)
+        if in_stock_or_preorder:
+            kept_lines.append(line)
+        else:
+            dropped.append(line.strip())
+
+    if dropped:
+        print(f"[recommend] 過濾掉缺貨推薦 {len(dropped)} 行：{dropped}", flush=True)
+
+    cleaned = "\n".join(kept_lines)
+    # 若刪到只剩抬頭/結語，補一句友善提示
+    if dropped and not _PCR.findall(cleaned):
+        cleaned += "\n\n（剛才挑的幾款庫存不太夠，幫您再確認看看～）"
+    return cleaned
 
 
 def _execute_claude_command(user_id: str, cmd: dict, line_api, original_text: str = "") -> str | None:

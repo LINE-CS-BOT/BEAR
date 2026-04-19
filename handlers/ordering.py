@@ -278,6 +278,16 @@ def resolve_unit(prod_cd: str, qty: int, unit: str | None) -> tuple[str, int, st
     # 1. 客戶說「箱/件」
     if unit and unit in BULK_UNITS:
         case_cd = _resolve_case_code(prod_cd)
+        if not case_cd:
+            # 找不到箱裝兄弟 → 可能是新品剛上架快取還沒抓到，強制刷新一次再試
+            try:
+                ecount_client._cache_expires = 0
+                ecount_client._ensure_product_cache()
+                case_cd = _resolve_case_code(prod_cd)
+                if case_cd:
+                    print(f"[ordering] 刷新後找到箱裝兄弟: {prod_cd} → {case_cd}", flush=True)
+            except Exception as e:
+                print(f"[ordering] 強制刷新快取失敗: {e}", flush=True)
         if case_cd:
             # 有箱裝版本 → 用箱裝編號，數量不換算
             return case_cd, qty, ""
