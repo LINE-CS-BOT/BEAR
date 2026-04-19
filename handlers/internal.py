@@ -3185,6 +3185,63 @@ def handle_internal_contact_group_push(text: str, line_api) -> str | None:
     return f"📣 正在推送到所有聯絡群組：{codes_str}\n（透過 LINE OA，不消耗 API 額度）"
 
 
+_RECOMMEND_TRIGGER = "推薦"
+
+
+def handle_internal_recommend_push(text: str, line_api) -> str | None:
+    """
+    「推薦 武林 R0135 Z3353」→ 在 LINE OA 用「武林」搜尋聊天室，連發 PO 文+圖片（多則）。
+    與「聯絡群組」指令差別：目標是單一自訂聊天室（搜尋詞模糊比對），不是設定檔裡的清單。
+    """
+    _strip = text.strip()
+    if not _strip.startswith(_RECOMMEND_TRIGGER):
+        return None
+    _body = _strip[len(_RECOMMEND_TRIGGER):].strip()
+    _first = _PROD_CODE_RE.search(_body)
+    if not _first:
+        return None
+    _search_term = _body[:_first.start()].strip()
+    if not _search_term:
+        return None
+    _codes_upper = list(dict.fromkeys(c.upper() for c in _PROD_CODE_RE.findall(_body)))
+    if not _codes_upper:
+        return None
+
+    import threading as _t_rec
+
+    def _do_recommend_push():
+        from services.line_oa_chat import send_many_to_chat_sync
+        media_dir = _get_media_dir()
+        payloads = []
+        for code in _codes_upper:
+            po_text = _format_po(code)
+            if not po_text:
+                print(f"[recommend-push] ❌ {code} 無 PO 文，跳過", flush=True)
+                continue
+            img_paths = []
+            if media_dir:
+                files = _match_product_media_files(code, media_dir)
+                img_paths = [str(media_dir / f) for f in files[:4]]
+            payloads.append((code, po_text, img_paths))
+
+        if not payloads:
+            print(f"[recommend-push] 無可推送貨號", flush=True)
+            return
+
+        items = [
+            {"text": po_text, "image_paths": img_paths}
+            for _, po_text, img_paths in payloads
+        ]
+        results = send_many_to_chat_sync(_search_term, items, delay_sec=2.0)
+        for (code, _po, _imgs), ok in zip(payloads, results):
+            mark = "✅" if ok else "❌"
+            print(f"[recommend-push] {mark} {_search_term} ← {code}", flush=True)
+
+    _t_rec.Thread(target=_do_recommend_push, daemon=True).start()
+    codes_str = "、".join(_codes_upper)
+    return f"📣 正在推送到「{_search_term}」：{codes_str}\n（透過 LINE OA，不消耗 API 額度）"
+
+
 def handle_internal_showcase_push(text: str, line_api) -> str | None:
     """
     偵測指令：

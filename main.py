@@ -85,6 +85,7 @@ from handlers.internal import (
     handle_internal_customer_orders,
     handle_internal_showcase_push,
     handle_internal_contact_group_push,
+    handle_internal_recommend_push,
     handle_internal_product_photo,
     handle_internal_product_po_photo,
     handle_internal_label_queue,
@@ -297,6 +298,32 @@ def lookup_sent_image(msg_id: str) -> str | None:
     with _sent_image_map_lock:
         entry = _sent_image_map.get(msg_id)
         return entry["code"] if entry else None
+
+
+# ── 客戶傳入文字 msg_id → text（客戶引用自己的文字時倒查用）──
+_incoming_text_map: dict[str, dict] = {}  # msg_id → {"text": str, "ts": float}
+_incoming_text_lock = _threading.Lock()
+_INCOMING_TEXT_TTL = 86400  # 24h，in-memory 不持久化（引用超過一天很少見）
+
+
+def _store_incoming_text(msg_id: str, text: str) -> None:
+    import time as _t_it
+    if not msg_id or not text:
+        return
+    with _incoming_text_lock:
+        now = _t_it.time()
+        _incoming_text_map[msg_id] = {"text": text, "ts": now}
+        if len(_incoming_text_map) > 2000:
+            cutoff = now - _INCOMING_TEXT_TTL
+            expired = [k for k, v in _incoming_text_map.items() if v["ts"] < cutoff]
+            for k in expired:
+                _incoming_text_map.pop(k, None)
+
+
+def lookup_incoming_text(msg_id: str) -> str | None:
+    with _incoming_text_lock:
+        entry = _incoming_text_map.get(msg_id)
+        return entry["text"] if entry else None
 
 
 def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
@@ -1123,6 +1150,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or _handle_bot_notify_command(combined)
         or handle_internal_showcase_push(combined, line_api)
         or handle_internal_contact_group_push(combined, line_api)
+        or handle_internal_recommend_push(combined, line_api)
         or handle_internal_label_queue(combined)
         or handle_internal_tag_push(combined, line_api)
         or handle_internal_add_customer(combined)
@@ -1715,16 +1743,28 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             print(f"[quote] 引用 bot 發的圖片: {quoted_msg_id} → {_sent_pc}", flush=True)
                             img_e = {"msg_id": quoted_msg_id, "bot_sent_code": _sent_pc}
                         else:
-                            print(f"[quote] 引用圖片辨識失敗: {quoted_msg_id}", flush=True)
-                            # 查不到對應產品 → 回覆稍等 + 記待處理
-                            issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的圖片：{combined[:50]}")
-                            from handlers.hours import _is_open_now as _io_q, next_open_reply as _nor_q
-                            from datetime import datetime as _dt_q
-                            import pytz as _pz_q
-                            _now_q = _dt_q.now(_pz_q.timezone(settings.BUSINESS_TZ))
-                            _q_reply = "稍等一下唷～等等處理嘿" if _io_q(_now_q) else _nor_q()
-                            _send_reply(reply_token, user_id, _q_reply, line_api)
-                            return
+                            # 不是圖片 → 查客戶自己之前傳的文字（引用文字場景）
+                            _quoted_text = lookup_incoming_text(quoted_msg_id)
+                            _quoted_codes = []
+                            if _quoted_text:
+                                _quoted_codes = list(dict.fromkeys(
+                                    c.upper() for c in _PROD_CODE_RE.findall(_quoted_text)
+                                ))
+                            if _quoted_codes:
+                                print(f"[quote] 引用客戶文字 {quoted_msg_id} → 抓到貨號 {_quoted_codes}", flush=True)
+                                # 把第一個貨號當「已辨識產品」走後續正常流程（同 bot_sent_code 路徑）
+                                img_e = {"msg_id": quoted_msg_id, "bot_sent_code": _quoted_codes[0]}
+                            else:
+                                print(f"[quote] 引用辨識失敗（非圖片、文字也查不到貨號）: {quoted_msg_id}", flush=True)
+                                # 查不到對應產品 → 回覆稍等 + 記待處理
+                                issue_store.add(user_id, "quote_unknown", f"客戶引用了無法辨識的訊息：{combined[:50]}")
+                                from handlers.hours import _is_open_now as _io_q, next_open_reply as _nor_q
+                                from datetime import datetime as _dt_q
+                                import pytz as _pz_q
+                                _now_q = _dt_q.now(_pz_q.timezone(settings.BUSINESS_TZ))
+                                _q_reply = "稍等一下唷～等等處理嘿" if _io_q(_now_q) else _nor_q()
+                                _send_reply(reply_token, user_id, _q_reply, line_api)
+                                return
 
                 img_pcs = []
                 _text_codes = _PROD_CODE_RE.findall(combined) if img_e else []
@@ -4920,6 +4960,7 @@ def on_message(event: MessageEvent):
     user_id = event.source.user_id
     text = event.message.text.strip()
     quoted_msg_id = getattr(event.message, 'quoted_message_id', None)
+    _store_incoming_text(msg_id, text)
 
     with ApiClient(_configuration) as api_client:
         line_api = MessagingApi(api_client)
