@@ -48,3 +48,10 @@ data/chrome_ecount_session/
 data/txt_buffer_pending.json
 data/ad_prompts/
 data/ad_gemini.log
+
+# Claude Code personal config (local hooks + runtime)
+.claude/settings.local.json
+.claude/hooks/
+.claude/session_start.txt
+.claude/handover_nudged_*
+.claude/scheduled_tasks.lock
