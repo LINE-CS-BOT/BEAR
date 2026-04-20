@@ -4074,6 +4074,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
             r'(?:'
             r'(?:超|大|限時|限定|現在|出清|下殺|促銷|活動|爆殺|破盤|超級|特大)?(?:特價|優惠價|優惠|特惠)'
             r'|售價|賣價|產品售價|出庫單價|批價|零售價'
+            r'|現在只要|只要|最低價|只需'
             r')'
             r'[^\d\n]{0,10}?([\d]+(?:\.\d+)?)\s*(?:元)?(?!\S*起批)',
             flat,
@@ -4082,15 +4083,20 @@ def _parse_new_product_fields(text: str) -> dict | None:
         # 「價格：」後方容忍中文（常有「原價/公司原價/廠商建議售價」等前綴）
         out_price_m = re.search(r'(?:價格|售)\s*[:：][^\d\n]{0,15}?([\d.]+)\s*元?', flat)
     if not out_price_m:
-        # fallback：任意位置「$N」或「N元」（取第一個）
-        out_price_m = re.search(r'[$＄]\s*([\d]+(?:\.\d+)?)|([\d]+(?:\.\d+)?)\s*元', flat)
-        if out_price_m:
-            # 兩個 group 取其一
+        # fallback：任意位置「$N」或「N元」（取第一個），但跳過「原價/建議售價/市價/定價/折前」前綴
+        _ORIG_PRICE_RE = re.compile(r'(?:原價|建議售價|公司.{0,4}售價|市價|定價|折前)\s*[$＄]?\s*$')
+        _fallback_m = None
+        for _cm in re.finditer(r'[$＄]\s*([\d]+(?:\.\d+)?)|([\d]+(?:\.\d+)?)\s*元', flat):
+            _before_ctx = flat[max(0, _cm.start()-10):_cm.start()]
+            if _ORIG_PRICE_RE.search(_before_ctx):
+                continue
+            _fallback_m = _cm
+            break
+        if _fallback_m is not None:
             class _M:
                 def __init__(self, v): self._v = v
                 def group(self, n): return self._v
-            _v = out_price_m.group(1) or out_price_m.group(2)
-            out_price_m = _M(_v)
+            out_price_m = _M(_fallback_m.group(1) or _fallback_m.group(2))
     if not out_price_m:
         # fallback：一行只有純數字，視為售價
         out_price_m = re.search(r'(?:^|\s)([\d.]+)(?=\s|$)', flat)
