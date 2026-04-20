@@ -326,11 +326,14 @@ def lookup_incoming_text(msg_id: str) -> str | None:
         return entry["text"] if entry else None
 
 
-def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
+def _send_reply(reply_token: str | None, to: str, text, line_api) -> bool:
     """
     優先用 reply_message（免費，不佔月額度），
     token 不存在或已過期才 fallback 到 push_message。
     支援 tuple: (text, image_urls) → 文字 + 圖片一起 reply
+    回傳 True = 成功送出（reply 或 push 任一成功），False = 都失敗/額度用完。
+    成功送出且 to 為客戶（U 開頭）時，自動寫 chat_history("bot", text)，
+    避免「DB 有紀錄但 LINE 沒收到」的假紀錄。
     """
     from linebot.v3.messaging import ImageMessage
 
@@ -355,6 +358,14 @@ def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
         messages.append(ImageMessage(
             original_content_url=url, preview_image_url=url))
 
+    def _log_bot_chat():
+        if to and to.startswith("U") and text:
+            try:
+                from services.claude_ai import add_chat_history
+                add_chat_history(to, "bot", text)
+            except Exception as _ae:
+                print(f"[send_reply] add_chat_history 失敗: {_ae}", flush=True)
+
     if reply_token:
         try:
             with ApiClient(_configuration) as _fresh_client:
@@ -377,22 +388,26 @@ def _send_reply(reply_token: str | None, to: str, text, line_api) -> None:
                         _sent_image_map[_txt_msg_id] = {"code": _first_code, "ts": __import__('time').time()}
                         _save_sent_image_map()
                     print(f"[send_reply] 記錄文字 msg_id={_txt_msg_id} → {_first_code}", flush=True)
-            return
+            _log_bot_chat()
+            return True
         except Exception as _re:
             print(f"[send_reply] reply_message 失敗: {_re}", flush=True)
     else:
         print(f"[send_reply] 無 reply_token，直接 push to={to[:10]}...", flush=True)
     if _push_quota_exhausted:
         print(f"[send_reply] 月額度已用完，跳過 push", flush=True)
-        return
+        return False
     try:
         line_api.push_message(PushMessageRequest(
             to=to, messages=messages))
+        _log_bot_chat()
+        return True
     except Exception as _pe:
         if _is_quota_429(_pe):
             _mark_push_exhausted()
         else:
             print(f"[send_reply] push_message 也失敗: {_pe}", flush=True)
+        return False
 
 
 # (img_buffer / media_buf removed — merged into _msg_buffer above)
@@ -2007,17 +2022,23 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             print(f"[claude-ai] 圖片辨識後設 awaiting_quantity: {_ci_cd}", flush=True)
                             _send_reply(reply_token, user_id, _claude_img_reply, line_api)
                         else:
-                            # Claude 也辨識不出貨號 → 靜默，記待處理
+                            # Claude 也辨識不出貨號 → 記待處理 + 根據營業時間送回覆
                             issue_store.add(user_id, "image_query", f"（圖片+文字，Claude 無法辨識）{combined[:30]}")
-                            print(f"[claude-ai] 圖片無貨號，靜默記待處理", flush=True)
+                            from handlers.hours import _is_open_now as _io_img, next_open_reply as _nor_img
+                            from datetime import datetime as _dt_img
+                            import pytz as _pz_img
+                            _now_img = _dt_img.now(_pz_img.timezone(settings.BUSINESS_TZ))
+                            if not _io_img(_now_img):
+                                _claude_img_reply = _nor_img()
+                            _send_reply(reply_token, user_id, _claude_img_reply, line_api)
+                            print(f"[claude-ai] 圖片無貨號 → 送回覆（上班={_io_img(_now_img)}）+ 記待處理", flush=True)
                         # Claude 回覆含「確認」「稍後」→ 登記待處理 + 清掉 awaiting_quantity
                         _unsure_img_kw = ["確認一下", "稍後回覆", "幫您確認", "幫你確認", "稍後", "查一下"]
                         if _claude_img_reply and any(k in _claude_img_reply for k in _unsure_img_kw):
                             state_manager.clear(user_id)  # 不該同時等數量又說幫確認
                             issue_store.add(user_id, "claude_unsure", f"圖片+文字需確認：{combined[:50]}")
                             print(f"[claude-ai] 圖片回覆含確認語，清 state + 記待處理", flush=True)
-                        from services.claude_ai import add_chat_history
-                        add_chat_history(user_id, "bot", _claude_img_reply)
+                        # chat_history 由 _send_reply 在送出成功後自動記（避免假紀錄）
                         return
                     issue_store.add(user_id, "image_query", "（圖片+文字，圖片無法辨識）")
 
@@ -2060,8 +2081,6 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     reply_text = _dispatch(user_id, combined, intent, line_api)
 
                 if reply_text:
-                    _chat_text = reply_text[0] if isinstance(reply_text, tuple) else reply_text
-                    add_chat_history(user_id, "bot", _chat_text)
                     _send_reply(reply_token, user_id, reply_text, line_api)
             except Exception as _ce:
                 print(f"[txt-buf] 1:1 客戶處理例外: {_ce}", flush=True)
@@ -6195,7 +6214,7 @@ def _get_recommend_hint() -> str:
 
 def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
     """推薦/新貨查詢 → 交給 Claude 回答，附帶產品圖"""
-    from services.claude_ai import ask_claude_text, add_chat_history
+    from services.claude_ai import ask_claude_text
 
     # 額外附上推薦品項提示，讓 Claude 推薦
     hint = _get_recommend_hint()
@@ -6210,7 +6229,7 @@ def _handle_recommendation(user_id: str, text: str, line_api) -> str | tuple:
 
     reply = _strip_oos_lines_from_recommendation(reply)
 
-    add_chat_history(user_id, "bot", reply)
+    # chat_history 由 _send_reply 在送出成功後自動記（caller 會做）
 
     # 從 Claude 回覆中提取貨號 → 附帶產品圖
     codes_raw = _PROD_CODE_RE.findall(reply)

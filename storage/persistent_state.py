@@ -23,6 +23,8 @@ PERSISTENT_ACTIONS = {
     "awaiting_order_id",
     "awaiting_product_clarify",
     "human_takeover",
+    "pending_add_img",
+    "pending_save_img",
 }
 
 REMIND_AFTER_HOURS  = 24   # 超過 N 小時沒回 → 提醒

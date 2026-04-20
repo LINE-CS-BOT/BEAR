@@ -257,8 +257,7 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
                     "prod_name": _svc_name,
                 })
                 print(f"[claude-ai] 純圖片辨識後設 awaiting_quantity: {_svc_cd}", flush=True)
-                from services.claude_ai import add_chat_history
-                add_chat_history(user_id, "bot", _claude_reply)
+                # chat_history 由 caller 的 _send_reply 在送出成功後自動記
                 return _claude_reply
             # Claude 回覆沒貨號 → 靜默，記待處理
             print(f"[claude-ai] 純圖片 Claude 回覆無貨號，靜默", flush=True)
