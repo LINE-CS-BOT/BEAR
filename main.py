@@ -53,7 +53,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageCo
 from linebot.v3.exceptions import InvalidSignatureError
 
 from config import settings
-from handlers.intent import detect_intent, Intent
+from handlers.intent import detect_intent, Intent, CHECKOUT_KEYWORDS, AFFIRMATIVE_KEYWORDS
 from handlers.inventory import handle_inventory
 from handlers.orders import handle_order_tracking
 from handlers.delivery import handle_delivery
@@ -1705,9 +1705,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 # ── tag 清單 + 確認/送出/好了 → 直接結帳（略過圖片/貨號追溯）──
                 if quoted_msg_id and not img_e:
                     from storage import cart as _cart_qck
-                    _CHECKOUT_QUICK_KW = {"確認", "確定", "沒問題", "沒有問題", "送出",
-                                          "幫我送出", "結帳", "下單", "確認訂單", "送出訂單",
-                                          "就這樣", "就這些", "好了", "ok", "OK", "可以", "對"}
+                    _CHECKOUT_QUICK_KW = set(CHECKOUT_KEYWORDS) | set(AFFIRMATIVE_KEYWORDS)
                     _txt_strip = combined.strip()
                     _is_checkout_word = (_txt_strip in _CHECKOUT_QUICK_KW or
                                          any(kw in _txt_strip for kw in
@@ -2258,7 +2256,7 @@ async def _sync_ecount_customers_loop():
             if proc.returncode == 0:
                 print("[cust-sync] 同步完成", flush=True)
             else:
-                stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
+                stderr = proc.stderr.decode("utf-8", errors="replace")[-500:] if proc.stderr else ""
                 print(f"[cust-sync] 同步失敗: {stderr}", flush=True)
                 _notify_sync_failure("Ecount 客戶名單同步", stderr)
         except Exception as e:
@@ -2594,7 +2592,7 @@ async def _sync_cust_ecount_loop():
                 if stdout.strip():
                     print(stdout.strip(), flush=True)
             else:
-                stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
+                stderr = proc.stderr.decode("utf-8", errors="replace")[-500:] if proc.stderr else ""
                 print(f"[cust-ecount] 同步失敗: {stderr}", flush=True)
                 _notify_sync_failure("Ecount ↔ DB 客戶同步", stderr)
         except Exception as e:
@@ -2965,7 +2963,7 @@ def _auto_save_contact_info(user_id: str, text: str) -> None:
     if addr:
         customer_store.update_address(user_id, addr.group(0).strip())
 
-_YES_KW = {"好", "好了", "是", "對", "ok", "OK", "yes", "YES", "好的", "是的", "對的", "確認", "沒問題", "沒有問題", "可以", "沒錯", "正確", "確定", "下單"}
+_YES_KW = set(AFFIRMATIVE_KEYWORDS) | {"好了", "下單"}  # FSM 答 yes 情境：含 CHECKOUT 的「好了/下單」
 _NO_KW = {"不", "否", "no", "NO", "不要", "不用", "取消", "算了", "不訂", "不對", "錯了", "不是", "不行", "等不了", "太久", "換一個", "其他"}
 
 _configuration = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
@@ -5796,9 +5794,7 @@ def _handle_stateful(
         cart = cart_store.get_cart(user_id)
         codes = customer_store.get_ecount_codes_by_line_id(user_id)
         # 結帳/確認詞（客戶重複 tag 清單說「好了/確認/送出」）→ 靜默不再重問
-        _CONF_NOISE = {"確認", "確定", "好", "好了", "好的", "送出", "幫我送出",
-                       "結帳", "下單", "確認訂單", "送出訂單", "ok", "OK",
-                       "是", "對", "可以", "沒問題"}
+        _CONF_NOISE = set(CHECKOUT_KEYWORDS) | set(AFFIRMATIVE_KEYWORDS)
         _txt_strip_addr = text.strip()
         if _txt_strip_addr in _CONF_NOISE or any(k in _txt_strip_addr for k in
                                                  ["確認訂單", "送出訂單", "幫我送出", "幫忙送出"]):
@@ -6547,6 +6543,11 @@ def _dispatch(
     elif intent == Intent.BANK_ACCOUNT:
         return f"匯款資訊如下：\n{tone._get_bank_info()}"
     elif intent == Intent.CONFIRMATION:
+        # 純短確認詞 + cart 非空 → 視為送出（bot 剛問「好了就送出」客戶回「好」的情境）
+        from storage import cart as _cart_conf
+        if text.strip() in set(AFFIRMATIVE_KEYWORDS) and not _cart_conf.is_empty(user_id):
+            print(f"[confirmation] 純確認詞+cart非空 → 視為送出: {text.strip()!r}", flush=True)
+            return handle_checkout(user_id, line_api)
         # 只有真正的感謝語才回覆，純確認詞（好的/了解/收到）靜默不回
         _THANKS_KW = ["謝謝", "感謝", "感恩", "辛苦了", "謝啦", "謝了", "多謝"]
         if any(kw in text for kw in _THANKS_KW):

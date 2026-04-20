@@ -96,7 +96,8 @@ def _run_script(script_rel: str) -> bool:
             print(f"[refresh] OK {script_rel} 完成")
             return True
         else:
-            print(f"[refresh] FAIL {script_rel} 失敗: {result.stderr[:300]}")
+            stderr_text = result.stderr.decode("utf-8", errors="replace")[-500:] if result.stderr else ""
+            print(f"[refresh] FAIL {script_rel} 失敗: {stderr_text}")
             return False
     except subprocess.TimeoutExpired:
         print(f"[refresh] TIMEOUT {script_rel} 超時（120s）")

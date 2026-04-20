@@ -67,7 +67,7 @@ _ADDRESS_QUERY_KEYWORDS = [
     "導航", "路線",
 ]
 
-_CHECKOUT_KEYWORDS = [
+CHECKOUT_KEYWORDS = [
     "好了", "沒了", "沒有了", "就這樣", "就這些", "以上",
     "結帳", "下單", "確認訂單", "送出訂單", "訂這些", "就訂這些",
     "不用了謝謝", "這樣就好", "這樣就夠了",
@@ -168,12 +168,25 @@ _GREETING_KEYWORDS = [
     "請問有人嗎", "在線嗎", "在線上嗎", "人在嗎",
 ]
 
-_CONFIRMATION_KEYWORDS = [
-    "好", "好的", "好喔", "好哦", "好👌", "好！", "謝謝", "感謝", "感恩",
-    "了解", "收到", "辛苦了", "沒問題", "可以", "要了",
-    "OK", "ok", "Ok", "對", "是的", "是哦", "嗯嗯",
+# 肯定詞 — cart 非空時等同於「送出」（給 main.py 的結帳/送出路徑 import 使用）
+AFFIRMATIVE_KEYWORDS = [
+    "好", "好的", "好喔", "好哦", "好👌", "好！",
+    "是", "是的", "對", "對的",
+    "可以", "沒問題", "沒有問題", "要了",
+    "OK", "ok", "Ok", "yes", "YES",
+    "確認", "確定", "沒錯", "正確",
+]
+
+# 只是收到/感謝（非送出信號）
+ACKNOWLEDGE_KEYWORDS = [
+    "謝謝", "感謝", "感恩", "辛苦了",
+    "了解", "收到",
+    "嗯嗯", "是哦",
     "👌", "哈哈", "哦哦",
 ]
+
+# detect_intent 的 CONFIRMATION 判定 = 肯定 + 收到（兩者都算 Intent.CONFIRMATION）
+_CONFIRMATION_KEYWORDS = AFFIRMATIVE_KEYWORDS + ACKNOWLEDGE_KEYWORDS
 
 
 def detect_intent(text: str) -> Intent:
@@ -315,7 +328,7 @@ def detect_intent(text: str) -> Intent:
     # 問句排除：「好了嗎」「有沒有結帳」之類問法不是結帳指令
     _CHECKOUT_QUESTION_EXCLUDE = ["好了嗎", "好了沒", "好了嗎？", "有沒有結帳"]
     if not any(e in text for e in _CHECKOUT_QUESTION_EXCLUDE):
-        for kw in _CHECKOUT_KEYWORDS:
+        for kw in CHECKOUT_KEYWORDS:
             if kw in text:
                 return Intent.CHECKOUT
 

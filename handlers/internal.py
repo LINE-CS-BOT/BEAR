@@ -1291,7 +1291,7 @@ def handle_new_customer_confirm(group_id: str, text: str) -> str | None:
                 _ec_customers_cache = None
                 _ec_customers_mtime = 0
             else:
-                stderr = proc.stderr.decode("utf-8", errors="replace")[:200] if proc.stderr else ""
+                stderr = proc.stderr.decode("utf-8", errors="replace")[-500:] if proc.stderr else ""
                 print(f"[internal] 客戶資料同步失敗: {stderr}", flush=True)
                 return f"⚠️ 客戶資料同步失敗，請稍後再試"
         except Exception as e:

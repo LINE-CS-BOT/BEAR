@@ -70,7 +70,8 @@ def _get_chat_context(user_id: str) -> str:
                     "SELECT role, text FROM chat_history WHERE user_id=? ORDER BY id DESC LIMIT ?",
                     (user_id, _MAX_HISTORY * 2),
                 ).fetchall()
-        except Exception:
+        except Exception as e:
+            print(f"[claude-ai] chat history 讀取失敗 user={user_id[:10]}...: {e}", flush=True)
             return ""
     if not rows:
         return ""
@@ -97,8 +98,8 @@ def _load_context() -> str:
             # 取最後 50 段（最新的產品）
             recent = blocks[-50:] if len(blocks) > 50 else blocks
             parts.append("【產品PO文（越後面越新）】\n" + "\n\n".join(recent))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[claude-ai] PO 文讀取失敗: {e}", flush=True)
 
     # 載入 specs（產品規格）— 全部載入
     specs_path = _BASE / "data" / "specs.json"
@@ -115,8 +116,8 @@ def _load_context() -> str:
                     machine = "、".join(s.get("machine", []))
                     spec_lines.append(f"{code}: {name} | 價格:{price} | 尺寸:{size} | 重量:{weight} | 台型:{machine}")
                 parts.append("【產品規格】\n" + "\n".join(spec_lines))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[claude-ai] specs.json 讀取失敗: {e}", flush=True)
 
     # 載入庫存 — 可售庫存（先確認資料新鮮度）
     avail_path = _BASE / "data" / "available.json"
@@ -308,7 +309,7 @@ def ask_claude_text(question: str, user_id: str = "") -> str | None:
             print(f"[claude-ai] 文字回答成功: {question[:30]!r} → {answer[:50]!r}", flush=True)
             return answer
         else:
-            stderr = result.stderr.decode("utf-8", errors="replace")[:100]
+            stderr = result.stderr.decode("utf-8", errors="replace")[-500:]
             print(f"[claude-ai] 文字回答失敗: returncode={result.returncode} stderr={stderr}", flush=True)
             return None
     except subprocess.TimeoutExpired:

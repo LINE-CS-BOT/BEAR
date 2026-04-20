@@ -104,6 +104,7 @@ def _resolve_cust_code(user_id: str, do_refresh: bool = True) -> str | None:
 
     cust = customer_store.get_by_line_id(user_id)
     if not cust:
+        print(f"[cust_code] customers.db 查無 line_user_id={user_id[:10]}...")
         return None
 
     name    = (cust.get("real_name") or cust.get("display_name") or "").strip()
@@ -112,11 +113,12 @@ def _resolve_cust_code(user_id: str, do_refresh: bool = True) -> str | None:
     db_id   = cust.get("id")
 
     if not phone and not address and not name:
-        print(f"[cust_code] 無姓名、手機、地址，無法比對")
+        print(f"[cust_code] 無姓名、手機、地址，無法比對 user={user_id[:10]}...")
         return None
 
     # ── JSON 比對（電話+姓名優先，地址次之）─────────────────
     if not _ECOUNT_CUST_JSON.exists():
+        print(f"[cust_code] {_ECOUNT_CUST_JSON} 不存在，跳過 JSON 比對")
         return None
     try:
         ec_list = json.loads(_ECOUNT_CUST_JSON.read_text(encoding="utf-8"))
@@ -169,6 +171,7 @@ def _resolve_cust_code(user_id: str, do_refresh: bool = True) -> str | None:
     except Exception as e:
         print(f"[cust_code] JSON 比對例外: {e}")
 
+    print(f"[cust_code] 無對應的 Ecount 客戶: name={name!r} phone={phone!r}")
     return None
 
 
@@ -179,6 +182,7 @@ def _create_ecount_customer(user_id: str) -> str | None:
     """
     cust = customer_store.get_by_line_id(user_id)
     if not cust:
+        print(f"[cust_code] create_ecount_customer: customers.db 查無 user={user_id[:10]}...")
         return None
 
     name    = (cust.get("real_name") or "").strip()
@@ -205,7 +209,8 @@ def _create_ecount_customer(user_id: str) -> str | None:
         _nums = [int(cd[len(prefix):]) for (cd,) in _rows
                  if cd and cd.startswith(prefix) and cd[len(prefix):].isdigit()]
         serial = max(_nums) + 1 if _nums else 1000
-    except Exception:
+    except Exception as _e:
+        print(f"[cust_code] serial lookup 失敗,用 1000 fallback: {_e}", flush=True)
         serial = 1000
     new_code = f"{prefix}{serial}"
 
@@ -262,8 +267,8 @@ def detect_per_box(prod_cd: str) -> int:
             m = re.search(r'(\d+)\s*(?:盒|個|入|包)起批', po)
         if m:
             return int(m.group(1))
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"[detect_per_box] PO 文解析失敗 {prod_cd}: {_e}", flush=True)
     return 0
 
 
@@ -602,8 +607,8 @@ def handle_checkout(
         for nid in _notify_ids:
             try:
                 notify_store.cancel(nid)
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"[ordering] 回滾到貨通知失敗 nid={nid}: {_e}", flush=True)
         from storage.issues import issue_store
         desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart)
         issue_store.add(user_id, "order_failed", desc)
