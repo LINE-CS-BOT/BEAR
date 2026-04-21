@@ -97,31 +97,70 @@ def _load_saved_prgid() -> str | None:
     return None
 
 
-def _save_prgid(prgid: str):
-    """儲存已確認的客戶清單 prgId 到 ecount_web_config.json"""
+def _load_saved_hash() -> str | None:
+    """載入完整 menu hash（比 prgId 更可靠，Ecount SPA 需要完整 menuType/menuSeq/groupSeq）"""
+    try:
+        if ECOUNT_CFG_JSON.exists():
+            cfg = json.loads(ECOUNT_CFG_JSON.read_text(encoding="utf-8"))
+            return cfg.get("cust_list_hash")
+    except Exception:
+        pass
+    return None
+
+
+def _save_config(updates: dict):
+    """merge 更新進 ecount_web_config.json"""
     try:
         cfg = {}
         if ECOUNT_CFG_JSON.exists():
             cfg = json.loads(ECOUNT_CFG_JSON.read_text(encoding="utf-8"))
-        cfg["cust_list_prgid"] = prgid
+        cfg.update(updates)
         ECOUNT_CFG_JSON.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"  [config] 儲存 prgId={prgid} → {ECOUNT_CFG_JSON.name}")
+        print(f"  [config] 已更新 {list(updates.keys())} → {ECOUNT_CFG_JSON.name}")
     except Exception as e:
         print(f"  [config] 儲存失敗: {e}")
+
+
+def _save_prgid(prgid: str):
+    _save_config({"cust_list_prgid": prgid})
+
+
+def _save_hash(hash_str: str):
+    _save_config({"cust_list_hash": hash_str})
 
 
 async def _navigate_to_cust_list(page, ec_sid: str) -> bool:
     """
     導向客戶清單，策略依序：
+    0. 用已存完整 hash 直接導航（最穩，Ecount SPA 需要完整 menu 參數）
     1. ERP 主頁（about:blank 完全重載）→ 點選 SITE MAP「客戶/供應商列表」連結（真實點擊）
     2. 全失敗 → 提示手動導航
     """
-    # ── 策略 0：用已存的 prgId 直接導航 ──────────────────────────
+    # ── 策略 0：用已存完整 hash 直接導航（優先） ────────────────────
+    saved_hash = _load_saved_hash()
+    if saved_hash:
+        try:
+            direct_url = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}{saved_hash}"
+            print(f"  嘗試用已存 hash 直接導航...")
+            await page.goto("about:blank", timeout=5000)
+            await page.goto(direct_url, timeout=25000)
+            await page.wait_for_load_state("networkidle", timeout=15000)
+            await page.wait_for_timeout(3000)
+            if await page.query_selector("#grid-main"):
+                headers = await _get_headers(page)
+                if _is_customer_list_headers(headers):
+                    print(f"  ✅ 完整 hash 直接導航成功")
+                    return True
+            print(f"  [warn] 完整 hash 導航後找不到客戶表格，改用其他方式")
+        except Exception as e:
+            print(f"  [warn] 完整 hash 導航失敗: {e}")
+
+    # ── 策略 0b：只存 prgId 的 fallback（舊 config 相容） ───────────
     saved_id = _load_saved_prgid()
-    if saved_id:
+    if saved_id and not saved_hash:
         try:
             direct_url = f"{ERP_URL}?w_flag=1&ec_req_sid={ec_sid}#prgId={saved_id}"
-            print(f"  嘗試用已存 prgId={saved_id} 直接導航...")
+            print(f"  嘗試用已存 prgId={saved_id} 直接導航（無完整 hash，可能失敗）...")
             await page.goto("about:blank", timeout=5000)
             await page.goto(direct_url, timeout=25000)
             await page.wait_for_load_state("networkidle", timeout=15000)
@@ -161,9 +200,13 @@ async def _navigate_to_cust_list(page, ec_sid: str) -> bool:
                     if await page.query_selector("#grid-main"):
                         headers = await _get_headers(page)
                         if _is_customer_list_headers(headers):
-                            m = re.search(r"prgId=([^&#]+)", page.url)
-                            if m:
-                                _save_prgid(m.group(1))
+                            # 儲存完整 hash（menuType/menuSeq/groupSeq/prgId/depth），下次可直接導航
+                            hash_m = re.search(r"#(.+)$", page.url)
+                            if hash_m:
+                                _save_hash("#" + hash_m.group(1))
+                            pid_m = re.search(r"prgId=([^&#]+)", page.url)
+                            if pid_m:
+                                _save_prgid(pid_m.group(1))
                             print(f"  ✅ 「{menu_text}」→ 客戶清單載入成功")
                             return True
                     break
