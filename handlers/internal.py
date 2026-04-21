@@ -3384,6 +3384,16 @@ _ADD_IMG_RE  = re.compile(
     re.IGNORECASE,
 )
 
+# 秒殺指令正則：「沒貨 Z3432」標記、「有貨 Z3432」取消
+_SOLD_OUT_RE = re.compile(
+    r'(?:沒貨\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)|([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s*沒貨)',
+    re.IGNORECASE,
+)
+_RESTOCK_RE = re.compile(
+    r'(?:有貨\s*([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)|([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s*有貨)',
+    re.IGNORECASE,
+)
+
 # Session 觸發詞與結束詞（「存圖」單獨傳也進 session；含貨號時走單品路徑）
 _UPLOAD_TRIGGERS  = {"上架", "存檔", "存圖"}
 _UPLOAD_FINISH_RE = re.compile(r'^(完成|好了|結束|done|finish)$', re.IGNORECASE)
@@ -3627,6 +3637,28 @@ def handle_internal_add_images(code: str, media_items: list[dict]) -> str:
     if failed:
         lines.append(f"• 失敗：{', '.join(failed)}")
     return "\n".join(lines)
+
+
+# ══════ 指令 2c：沒貨/有貨 Z3432（秒殺標記/取消）═══════════════════════
+def handle_internal_mark_sold_out(code: str) -> str:
+    """指令「沒貨 Z3432」：標記為秒殺，客戶下單會被擋"""
+    from storage import sold_out
+    code = code.strip().upper()
+    item = ecount_client.get_product_cache_item(code)
+    name = (item.get("name") if item else None) or code
+    sold_out.add(code)
+    return f"✅ {code} {name} → 已標記秒殺，客戶下單會被擋"
+
+
+def handle_internal_unmark_sold_out(code: str) -> str:
+    """指令「有貨 Z3432」：恢復可訂"""
+    from storage import sold_out
+    code = code.strip().upper()
+    item = ecount_client.get_product_cache_item(code)
+    name = (item.get("name") if item else None) or code
+    if sold_out.remove(code):
+        return f"✅ {code} {name} → 已恢復可訂"
+    return f"⚠️ {code} {name} 原本就沒標記秒殺"
 
 
 # ══════ 指令 3：存文 ════════════════════════════════════════════════════

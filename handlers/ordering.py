@@ -392,6 +392,9 @@ def extract_quantity(text: str) -> int | None:
     - 中文數字：「一個」「兩個」「十二個」「二十五」「一」
     """
     t = text.strip()
+    # 先去除貨號（如 Z3596 / K0245 / M-1234），避免把貨號末尾數字當成數量
+    # 真實 bug：combined 含「我想要一件 ... Z3596」時，trailing (\d+)\s*$ 會抓到 3596
+    t = re.sub(r'[A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?', ' ', t)
     # 1. 阿拉伯數字 pattern
     for pat in _QTY_PATTERNS:
         m = re.search(pat, t)

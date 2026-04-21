@@ -838,3 +838,8 @@ def ask_group_address_confirm(addr_label: str) -> str:
 # ── 離峰時段自動回覆 ───────────────────────────────────
 def quiet_hours_ack() -> str:
     return "上班時幫您處理唷"
+
+
+# ── 秒殺/完全沒貨（內部群手動標記）─────────────────────
+def sold_out_secret_kill() -> str:
+    return "這款已經秒殺~完全沒貨!!不能訂了唷"

@@ -68,6 +68,7 @@ from handlers.internal import (
     handle_internal_tag_push,
     handle_internal_product_upload, handle_internal_save_images,
     handle_internal_add_images, handle_internal_save_text,
+    handle_internal_mark_sold_out, handle_internal_unmark_sold_out,
     handle_internal_upload_start, handle_internal_upload_add_media,
     handle_internal_upload_text, handle_internal_upload_finish,
     handle_ambiguous_resolve, handle_name_order_confirm, handle_new_customer_confirm,
@@ -94,6 +95,8 @@ from handlers.internal import (
     _PROD_CODE_RE,
     _SAVE_IMG_RE as _INTERNAL_SAVE_IMG_RE,
     _ADD_IMG_RE  as _INTERNAL_ADD_IMG_RE,
+    _SOLD_OUT_RE as _INTERNAL_SOLD_OUT_RE,
+    _RESTOCK_RE  as _INTERNAL_RESTOCK_RE,
     _UPLOAD_TRIGGERS as _INTERNAL_UPLOAD_TRIGGERS,
     _UPLOAD_FINISH_RE as _INTERNAL_UPLOAD_FINISH_RE,
 )
@@ -1583,6 +1586,22 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 })
                 return
 
+            # ── 沒貨/有貨 Z3432（秒殺標記/取消）─────────────────────────
+            _sold_m = _INTERNAL_SOLD_OUT_RE.search(combined)
+            if _sold_m:
+                _so_code = (_sold_m.group(1) or _sold_m.group(2) or "").upper()
+                ack = handle_internal_mark_sold_out(_so_code)
+                if ack:
+                    _send_group_ack(ack)
+                return
+            _restock_m = _INTERNAL_RESTOCK_RE.search(combined)
+            if _restock_m:
+                _rs_code = (_restock_m.group(1) or _restock_m.group(2) or "").upper()
+                ack = handle_internal_unmark_sold_out(_rs_code)
+                if ack:
+                    _send_group_ack(ack)
+                return
+
             # ── 存文（純文字 → PO文.txt）────────────────────────────────
             if "存文" in combined:
                 ack = handle_internal_save_text(combined)
@@ -1842,6 +1861,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     current_state = None
                     print(f"[txt-buf] 有圖片，清除舊 state: {current_state}", flush=True)
                 if img_pc and not current_state:
+                    # 秒殺擋下 — 內部群已標記「沒貨 XXXX」→ 直接回擋客戶下單
+                    from storage import sold_out as _so
+                    if _so.is_sold_out(img_pc):
+                        print(f"[sold-out] 擋下客戶下單 {img_pc} user={user_id[:10]}...", flush=True)
+                        _send_reply(reply_token, user_id, tone.sold_out_secret_kill(), line_api)
+                        return
                     from services.ecount import ecount_client as _ec
                     from handlers.inventory import _check_preorder
                     _ui   = _ec.lookup(img_pc)
@@ -1856,6 +1881,10 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         "寄了嗎", "送到了嗎", "等很久", "到貨", "催貨",
                     ])
                     _inv_kw  = any(k in combined for k in ["有嗎", "有沒有", "庫存", "缺貨", "還有", "有貨", "剩幾"])
+                    _reserve_kw = any(k in combined for k in [
+                        "幫我留", "幫留", "留一個", "留一隻", "留一支", "留給我",
+                        "要留", "先留", "留著", "留下",
+                    ])
                     _price_kw = any(k in combined for k in ["多少", "幾元", "幾錢", "價格", "價錢", "多少錢", "售價"])
                     _qty_m   = re.search(r'(\d+)\s*(?:個|箱|件|盒|套|組|支|隻)', combined)
                     # 也支援中文數字（八個、十二箱等）
@@ -1899,6 +1928,21 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             _send_reply(reply_token, user_id, _inv_reply, line_api)
                         reply_text = None
                         return  # 已處理完畢，不走後面的 dispatch
+                    elif _reserve_kw:
+                        # 幫我留/要留 → 加購物車（下單意圖，優先於 price_kw，因為 PO 文常含「價格」誤觸）
+                        _rsv_qty = _ext_qty_val or (int(_qty_m.group(1)) if _qty_m else None) or 1
+                        from storage import cart as _cart_rsv
+                        _existing = next((it for it in _cart_rsv.get_cart(user_id)
+                                          if it["prod_cd"].upper() == img_pc.upper()), None)
+                        if _existing:
+                            _cart_rsv.set_item(user_id, img_pc, _un, _rsv_qty)
+                            print(f"[txt-buf] 圖片+文字 → 要留，改數量 {img_pc} {_existing['qty']}→{_rsv_qty}", flush=True)
+                        else:
+                            _cart_rsv.add_item(user_id, img_pc, _un, _rsv_qty)
+                            print(f"[txt-buf] 圖片+文字 → 要留，加購物車 {img_pc} x{_rsv_qty}", flush=True)
+                        reply_text = tone.cart_item_added(_cart_rsv.get_cart(user_id))
+                        _send_reply(reply_token, user_id, reply_text, line_api)
+                        return
                     elif _price_kw:
                         # 問價格 → 走 price handler
                         print(f"[txt-buf] 圖片+文字 → 問價格 {img_pc}", flush=True)
@@ -1991,6 +2035,9 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         _ci_codes_raw = _PROD_CODE_RE.findall(_claude_img_reply)
                         # 去重
                         _ci_codes = list(dict.fromkeys(c.upper() for c in _ci_codes_raw))
+                        # 過濾：只保留 Ecount 實際存在的貨號（避免把品牌型號如 DG556 當貨號）
+                        from services.ecount import ecount_client as _ec_filter
+                        _ci_codes = [c for c in _ci_codes if _ec_filter.get_product_cache_item(c)]
                         from handlers.ordering import extract_quantity as _eq_ci
                         _ci_qty = _eq_ci(combined)
                         if len(_ci_codes) == 1 and _ci_qty:
@@ -2676,10 +2723,11 @@ async def _check_restock_notifications():
                         # 換算箱數顯示
                         item = ecount_client.get_product_cache_item(record["prod_code"])
                         box_qty = (item.get("box_qty") or 0) if item else 0
+                        prod_unit = (item.get("unit") or "") if item else ""
                         if box_qty > 1 and qty_wanted >= box_qty and qty_wanted % box_qty == 0:
                             qty_display = f"{qty_wanted // box_qty}箱"
                         else:
-                            qty_display = f"{qty_wanted}個"
+                            qty_display = f"{qty_wanted}{prod_unit or '個'}"
                         msg = (
                             f"老闆您好，您之前訂的貨已經到了\n"
                             f"{record['prod_name']}（{record['prod_code']}）× {qty_display}"
@@ -4798,8 +4846,9 @@ async def admin_notify_list(q: str = "", status: str = ""):
             r["unit"] = "箱"
             r["box_qty"] = box_qty
         else:
-            r["qty_display"] = f"{qty}個"
-            r["unit"] = "個"
+            _u = prod_unit or "個"
+            r["qty_display"] = f"{qty}{_u}"
+            r["unit"] = _u
             r["box_qty"] = box_qty
         return r
 
@@ -5408,6 +5457,13 @@ def _handle_stateful(
 
     # ── 等待數量：客戶確認要購買幾個 ──────────────
     if action == "awaiting_quantity":
+        # 秒殺擋下 — 內部群已標記「沒貨 XXXX」→ 直接清 state 回擋
+        from storage import sold_out as _so_aq
+        _aq_pc = state.get("prod_cd", "")
+        if _aq_pc and _so_aq.is_sold_out(_aq_pc):
+            state_manager.clear(user_id)
+            print(f"[sold-out] 擋下 awaiting_quantity {_aq_pc} user={user_id[:10]}...", flush=True)
+            return tone.sold_out_secret_kill()
         # 客戶要看照片 → 發產品照片
         _photo_kw = ["照片", "圖片", "看圖", "有圖", "看一下", "長什麼樣", "長怎樣", "看看"]
         if any(kw in text for kw in _photo_kw):
@@ -5902,7 +5958,6 @@ def _handle_stateful(
 
     # ── 等待聯絡資料（購物車結帳版）──────────────────
     elif action == "awaiting_contact_info_checkout":
-        from storage import cart as cart_store
         phone_match = _PHONE_RE.search(text)
         if phone_match:
             phone_str = phone_match.group()
@@ -5917,32 +5972,10 @@ def _handle_stateful(
                 except Exception:
                     pass
             state_manager.clear(user_id)
-            from handlers.ordering import _resolve_cust_code, _create_ecount_customer
-            from services.ecount import ecount_client as _ec
-            cart = cart_store.get_cart(user_id)
-
-            # 第二次 JSON 比對（不重複同步）
-            cust_code = _resolve_cust_code(user_id, do_refresh=False)
-            if not cust_code:
-                # JSON 仍找不到 → Ecount API 建立新客戶
-                cust_code = _create_ecount_customer(user_id)
-
-            if not cust_code:
-                # 全部失敗 → 寫入待處理，客戶端不回應
-                desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart) if cart else "（無購物車資料）"
-                print(f"[ordering] 客戶代碼解析全失敗（購物車）: {user_id}")
-                issue_store.add(user_id, "order_failed", desc)
-                return None
-
-            items   = [{"prod_cd": i["prod_cd"], "qty": i["qty"]} for i in cart]
-            slip_no = _ec.save_order(cust_code=cust_code, items=items, phone=phone_str)
-            if slip_no:
-                cart_store.clear_cart(user_id)
-                return tone.checkout_confirmed(cart)
-            else:
-                desc = "、".join(f"{i['prod_name']}×{i['qty']}" for i in cart)
-                issue_store.add(user_id, "order_failed", desc)
-                return None
+            # 交回 handle_checkout 統一處理：建 Ecount 客戶 + 登記到貨通知 + 送出訂單
+            # （之前直接 _ec.save_order 漏掉 notify_store.add → 到貨通知沒登記）
+            from handlers.ordering import handle_checkout
+            return handle_checkout(user_id, line_api)
         else:
             return tone.ask_contact_info()
 
@@ -6431,6 +6464,14 @@ def _dispatch(
     user_id: str, text: str, intent: Intent, line_api: MessagingApi
 ) -> str:
     """根據意圖分發到對應 handler"""
+    # ── 秒殺擋下：訊息含已標記沒貨的貨號 → 直接擋（一律優先）──
+    from storage import sold_out as _so_d
+    _d_codes = _PROD_CODE_RE.findall(text)
+    _d_blocked = [c.upper() for c in _d_codes if _so_d.is_sold_out(c.upper())]
+    if _d_blocked:
+        print(f"[sold-out] dispatch 擋下 {_d_blocked} user={user_id[:10]}...", flush=True)
+        return tone.sold_out_secret_kill()
+
     # ── 全局攔截：貨號 + 照片關鍵字 → 直接發照片 ──
     _photo_dispatch_kw = ["照片", "圖片", "看圖", "有圖", "看一下"]
     if any(kw in text for kw in _photo_dispatch_kw):
