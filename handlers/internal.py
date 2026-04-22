@@ -4104,7 +4104,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
         # 必須是明確的特價/售價類，不能只是「價」（會誤配「價格：公司原價」）
         out_price_m = re.search(
             r'(?:'
-            r'(?:超|大|限時|限定|現在|出清|下殺|促銷|活動|爆殺|破盤|超級|特大)?(?:特價|優惠價|優惠|特惠)'
+            r'(?:超|大|限時|限定|現在|出清|下殺|促銷|活動|爆殺|破盤|超級|特大)?(?:特價|優惠價|優惠|特惠|預購價|預售價)'
             r'|售價|賣價|產品售價|出庫單價|批價|零售價'
             r'|現在只要|只要|最低價|只需'
             r')'
@@ -4164,8 +4164,18 @@ def _parse_new_product_fields(text: str) -> dict | None:
     name_label_m = re.search(r'(?:產品名稱|品名|名稱)\s*[:：]\s*(.+?)(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|限時特價|特價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|單品|建議|包裝)|$)', flat) if not prod_name else None
     if name_label_m:
         prod_name = name_label_m.group(1).strip()
+    # 裝別前綴優先：flat 出現 (原)/(大)/(定)/(原定) → 直接當品名
+    # 應對「描述1 描述2 (大)真品名 編號:XXX ...」格式（品名寫在貨號前且無 label）
+    if not prod_name:
+        _class_prefix_m = re.search(
+            r'([（(](?:原定|原|大|定)[）)].+?)'
+            rf'(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|限時特價|特價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|單品|建議|包裝|{_UNIT_WORDS_NP})(?:\s|[:：]|$)|$)',
+            flat,
+        )
+        if _class_prefix_m:
+            prod_name = _class_prefix_m.group(1).strip()
     if prod_name:
-        pass  # 已透過 label 取得
+        pass  # 已透過 label / 裝別前綴取得
     else:
         # fallback：從貨號後開始，剝除所有已識別欄位
         name_part = flat[m_code.end():]
