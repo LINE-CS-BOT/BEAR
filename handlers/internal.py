@@ -4083,6 +4083,10 @@ def _parse_new_product_fields(text: str) -> dict | None:
     flat = re.sub(r'\(([A-Za-z]+)\)', _emoji_num_sub, flat)
     # ($) → $
     flat = flat.replace("($)", "$")
+    # 數字 emoji alternate text：(1)(9)(9) → 199（LINE 有些 emoji 替代文字是 (N) 格式）
+    flat = re.sub(r'\((\d)\)', r'\1', flat)
+    # Unicode keycap emoji：1️⃣9️⃣9️⃣ → 199（移除 VS16 U+FE0F 和 combining enclosing keycap U+20E3）
+    flat = re.sub(r'[\ufe0f\u20e3]', '', flat)
     # 全形數字 → 半形
     flat = flat.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
 
