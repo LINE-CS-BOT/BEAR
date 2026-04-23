@@ -15,7 +15,18 @@ _SALES_PATH = _BASE / "data" / "rebate_sales.json"
 _MERGE_GROUPS = {
     "WEI丞": ["WEI", "丞"],
     "舒老闆": ["舒老闆", "寧寧", "冬冬", "夾鬥陣"],
+    "火牛": ["火牛", "江哥", "老秦"],
 }
+
+# 這些組內的 -後綴 視為不同人（例：火牛-批發 vs 火牛-阿昌 是兩個人，不是同一人兩店）
+_PRESERVE_SUFFIX_GROUPS = {"火牛"}
+
+
+def _person_key(name: str, group_name: str | None = None) -> str:
+    """回傳 person 分群 key。對 _PRESERVE_SUFFIX_GROUPS 保留完整名字（含 -後綴）"""
+    if group_name in _PRESERVE_SUFFIX_GROUPS:
+        return name.strip()
+    return _get_base_name(name)
 
 # 回饋金級距
 def _calc_rebate(total: float) -> float:
@@ -134,7 +145,7 @@ def calculate_rebates(sales: list[dict] | None = None) -> dict:
             person_totals: dict[str, float] = {}
             person_stores: dict[str, list[dict]] = {}
             for m in members:
-                base = _get_base_name(m["name"])
+                base = _person_key(m["name"], group_name)
                 person_totals[base] = person_totals.get(base, 0) + m["amount"]
                 person_stores.setdefault(base, []).append(
                     {"name": m["name"], "amount": m["amount"]}

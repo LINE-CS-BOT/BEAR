@@ -4173,7 +4173,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
     if not prod_name:
         _class_prefix_m = re.search(
             r'([（(](?:原定|原|大|定)[）)].+?)'
-            rf'(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|限時特價|特價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|單品|建議|包裝|{_UNIT_WORDS_NP})(?:\s|[:：]|$)|$)',
+            rf'(?=\s+(?:產品編號|編號|貨號|條碼|售價|賣價|限時特價|特價|價格|出庫|入庫|加盟|單位|規格|尺寸|重量|單品|建議|包裝|{_UNIT_WORDS_NP})(?:\s|[:：$＄\d]|$)|$)',
             flat,
         )
         if _class_prefix_m:
