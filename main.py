@@ -80,6 +80,8 @@ from handlers.internal import (
     handle_internal_product_info_by_name,
     handle_internal_consumable,
     handle_internal_rebate,
+    handle_internal_rebate_push,
+    handle_internal_set_rebate_target,
     handle_internal_unfulfilled,
     handle_internal_unclaimed,
     handle_internal_ad_query,
@@ -1179,6 +1181,8 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or handle_new_customer_confirm(group_id, combined)
         or handle_internal_cart(combined, line_api, staff_id=staff_id)
         or handle_internal_order(combined, line_api, group_id=group_id)
+        or handle_internal_set_rebate_target(combined)
+        or handle_internal_rebate_push(combined, line_api)
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
         or handle_internal_unclaimed(combined, group_id)
@@ -2634,6 +2638,56 @@ def _check_and_notify_pickup():
     print(f"[pickup-notify] 完成，通知 {notified_count} 位客戶，{len(no_line_id)} 位需手動通知", flush=True)
 
 
+_REBATE_NOTIFY_LOCK_PATH = Path(__file__).parent / "data" / ".rebate_notify.lock"
+
+
+async def _rebate_notify_loop():
+    """每月 20 號 14:00 自動推送回饋金進度（get_approaching_customers 的名單）+ 管理員總表。
+    每月只跑一次，lock 檔存 year-month 避免重複。"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=14, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+
+        now = datetime.now()
+        if now.day != 20:
+            continue
+
+        month_key = now.strftime("%Y-%m")
+        try:
+            if _REBATE_NOTIFY_LOCK_PATH.exists():
+                stored = _REBATE_NOTIFY_LOCK_PATH.read_text(encoding="utf-8").strip()
+                if stored == month_key:
+                    print(f"[rebate-notify] {month_key} 本月已執行過，跳過", flush=True)
+                    continue
+        except Exception:
+            pass
+
+        print(f"[rebate-notify] 觸發 20 號自動推送 ({month_key})", flush=True)
+        try:
+            from services.rebate_push import run as rebate_push_run
+            from linebot.v3.messaging import (
+                MessagingApi, ApiClient, Configuration as _Cfg,
+            )
+            with ApiClient(_Cfg(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)) as _ac:
+                _api = MessagingApi(_ac)
+                results = await asyncio.to_thread(
+                    rebate_push_run, _api, False, True,
+                )
+            _REBATE_NOTIFY_LOCK_PATH.parent.mkdir(exist_ok=True)
+            _REBATE_NOTIFY_LOCK_PATH.write_text(month_key, encoding="utf-8")
+            print(
+                f"[rebate-notify] 完成：推 {len(results['pushed'])} 位、"
+                f"未備註 {len(results['need_designation'])} 組、"
+                f"找不到 LINE {len(results['no_line'])} 位",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[rebate-notify] 失敗: {e}", flush=True)
+
+
 async def _sync_cust_ecount_loop():
     """每日 13:10 自動同步 Ecount ↔ customers.db（手機比對、自動建 Ecount 客戶）"""
     while True:
@@ -2894,6 +2948,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_sync_failure_notify_loop())
     asyncio.create_task(_cart_cleanup_loop())
     asyncio.create_task(_pickup_notify_loop())
+    asyncio.create_task(_rebate_notify_loop())
     # 離峰佇列已停用
     yield
     # ── shutdown：持久化未處理的文字 buffer ──

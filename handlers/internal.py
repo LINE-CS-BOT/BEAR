@@ -4549,6 +4549,50 @@ def handle_internal_new_product(text: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _REBATE_KW = ["回饋金資料", "回饋金"]
+_REBATE_PUSH_KW = ["推送回饋金", "發送回饋金", "推回饋金", "回饋金推送", "回饋金通知"]
+_REBATE_SET_KW = "設定回饋金推送"
+
+
+def handle_internal_rebate_push(text: str, line_api) -> str | None:
+    """內部群指令「推送回饋金」：手動觸發回饋金通知推播。
+    帶「預覽/dry/測試」→ dry_run（不實際推送，只回報）"""
+    t = text.strip()
+    if not any(kw in t for kw in _REBATE_PUSH_KW):
+        return None
+    from services.rebate_push import run as rebate_push_run, build_admin_report
+
+    dry_run = any(k in t for k in ["預覽", "dry", "測試"])
+    results = rebate_push_run(line_api, dry_run=dry_run, send_admin_report=False)
+    header = "🧪 預覽（未實際推送）\n" if dry_run else "📤 推送完成\n"
+    return header + build_admin_report(results)
+
+
+def handle_internal_set_rebate_target(text: str) -> str | None:
+    """內部群指令「設定回饋金推送 <組名> <客戶名>」：備註合併組推送對象"""
+    t = text.strip()
+    if _REBATE_SET_KW not in t:
+        return None
+    m = re.match(rf'{_REBATE_SET_KW}\s+(\S+)\s+(\S+)', t)
+    if not m:
+        return f"❌ 格式錯誤\n請用：{_REBATE_SET_KW} <組名> <客戶名>\n例：{_REBATE_SET_KW} WEI丞 WEI"
+    group_name = m.group(1)
+    customer_name = m.group(2)
+
+    from storage.customers import customer_store
+    rows = customer_store.search_by_name(customer_name, real_name_only=True)
+    if not rows:
+        return f"❌ 找不到客戶「{customer_name}」\n請確認客戶 real_name 或 chat_label 欄位"
+    if len(rows) > 1:
+        names = [r.get("real_name") or r.get("display_name") or "?" for r in rows[:5]]
+        return f"❌「{customer_name}」match 到 {len(rows)} 筆：{', '.join(names)}\n請用更精確名稱"
+    uid = rows[0].get("line_user_id")
+    if not uid:
+        return f"❌ 客戶「{customer_name}」無 LINE UID（尚未互動過）"
+
+    from storage import rebate_notify
+    rebate_notify.set_target(group_name, uid, customer_name)
+    return f"✅ 已設定：合併組「{group_name}」→ 推送給「{customer_name}」"
+
 
 def handle_internal_rebate(text: str, state_key: str | None = None) -> str | None:
     """
