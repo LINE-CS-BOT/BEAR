@@ -403,8 +403,20 @@ def _send_reply(reply_token: str | None, to: str, text, line_api) -> bool:
         print(f"[send_reply] 月額度已用完，跳過 push", flush=True)
         return False
     try:
-        line_api.push_message(PushMessageRequest(
+        resp = line_api.push_message(PushMessageRequest(
             to=to, messages=messages))
+        # 跟 reply 路徑一致：記錄圖片 msg_id → product_code，文字裡的貨號也記
+        if image_codes and hasattr(resp, 'sent_messages') and resp.sent_messages:
+            _store_sent_image_ids(resp.sent_messages, image_codes)
+        elif not image_codes and hasattr(resp, 'sent_messages') and resp.sent_messages:
+            _txt_codes = _PROD_CODE_RE.findall(text)
+            if _txt_codes:
+                _first_code = _txt_codes[0].upper()
+                _txt_msg_id = resp.sent_messages[0].id
+                with _sent_image_map_lock:
+                    _sent_image_map[_txt_msg_id] = {"code": _first_code, "ts": __import__('time').time()}
+                    _save_sent_image_map()
+                print(f"[send_reply] 記錄文字 msg_id={_txt_msg_id} → {_first_code} (push)", flush=True)
         _log_bot_chat()
         return True
     except Exception as _pe:
@@ -6172,9 +6184,17 @@ def _push_product_images(user_id: str, prod_codes: list[str], line_api) -> None:
         return
     print(f"[recommend] 準備 push {len(images)} 張圖: {prod_codes}", flush=True)
     try:
-        line_api.push_message(PushMessageRequest(
+        resp = line_api.push_message(PushMessageRequest(
             to=user_id, messages=images,
         ))
+        # 記錄圖片 msg_id → product_code（純圖無前置文字，所以從 index 0 開始對應）
+        if hasattr(resp, 'sent_messages') and resp.sent_messages:
+            with _sent_image_map_lock:
+                _ts = __import__('time').time()
+                for i, code in enumerate(prod_codes[:len(resp.sent_messages)]):
+                    _sent_image_map[resp.sent_messages[i].id] = {"code": code, "ts": _ts}
+                _save_sent_image_map()
+            print(f"[recommend] 記錄 {len(images)} 張圖 msg_id → 貨號", flush=True)
         print(f"[recommend] push {len(images)} 張產品圖給 {user_id[:10]}...", flush=True)
     except Exception as e:
         if _is_quota_429(e):
