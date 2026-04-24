@@ -4932,10 +4932,15 @@ def handle_internal_unclaimed(text: str, state_key: str | None = None) -> str | 
 _ORDER_KW = ["訂單"]
 
 
-def handle_internal_customer_orders(text: str, state_key: str | None = None) -> str | None:
+def handle_internal_customer_orders(
+    text: str, state_key: str | None = None,
+    as_customer_reply: bool = False,
+) -> str | None:
     """
     內部群客戶訂單查詢：
       「鄭家展訂單」→ 列出該客戶的未備貨 + 已備貨未取訂單
+    as_customer_reply=True：給客戶看的版本，頭行會直接給結論
+      （全都在已備貨未取 → 「貨都到囉，隨時可以來取」）
     """
     t = text.strip()
     if not any(kw in t for kw in _ORDER_KW):
@@ -4966,9 +4971,21 @@ def handle_internal_customer_orders(text: str, state_key: str | None = None) -> 
     uc_matched = [o for o in unclaimed if query in o.get("customer", "")]
 
     if not uf_matched and not uc_matched:
+        if as_customer_reply:
+            return f"目前沒有查到您的訂單，請跟我們確認一下唷～"
         return f"📋 找不到「{query}」的訂單"
 
-    lines = [f"📋「{query}」訂單"]
+    lines = []
+    # 客戶視角：頭行直接給結論
+    if as_customer_reply:
+        if uc_matched and not uf_matched:
+            lines.append("✅ 貨都到囉，隨時可以來取唷～")
+        elif uf_matched and not uc_matched:
+            lines.append("📋 您的訂單目前還在備貨中：")
+        else:
+            lines.append("📋 您的訂單狀態如下（部分已到可取，部分備貨中）：")
+    else:
+        lines.append(f"📋「{query}」訂單")
 
     if uf_matched:
         total_qty = sum(o.get("qty", 0) for o in uf_matched)

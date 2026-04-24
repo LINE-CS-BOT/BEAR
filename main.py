@@ -6675,7 +6675,9 @@ def _dispatch(
         _cust = customer_store.get_by_line_id(user_id)
         _cust_name = (_cust.get("real_name") or _cust.get("display_name") or "").strip() if _cust else ""
         if _cust_name:
-            _ot_reply = handle_internal_customer_orders(f"{_cust_name}訂單")
+            _ot_reply = handle_internal_customer_orders(
+                f"{_cust_name}訂單", as_customer_reply=True,
+            )
             if _ot_reply:
                 return _ot_reply
         return handle_order_tracking(user_id, text)
