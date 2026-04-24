@@ -71,11 +71,10 @@ def _push_notify(group_id: str, text: str) -> None:
             PushMessageRequest, TextMessage,
         )
         from config import settings
-        _ADMIN_UID = "Uac17599b38b673b836ccb48025204b19"
         cfg = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
         with ApiClient(cfg) as api:
             MessagingApi(api).push_message(PushMessageRequest(
-                to=_ADMIN_UID,
+                to=settings.ADMIN_LINE_UID,
                 messages=[TextMessage(text=text)],
             ))
     except Exception as e:

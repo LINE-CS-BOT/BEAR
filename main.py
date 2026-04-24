@@ -2391,7 +2391,7 @@ def _check_and_notify_pickup():
     print("[pickup-notify] 更新資料中...", flush=True)
     import time as _t
 
-    _ADMIN_UID = "Uac17599b38b673b836ccb48025204b19"  # 管理員 LINE ID
+    _ADMIN_UID = settings.ADMIN_LINE_UID
 
     def _notify_admin_sync_fail(reason: str):
         """同步失敗時通知管理員"""
@@ -2606,9 +2606,8 @@ def _check_and_notify_pickup():
                 _item_str = "、".join(f"{p['prod_name'][:15]}×{p.get('qty_wanted',1)}" for p in _nl_items)
                 _lines.append(f"  👤 {_nl_name}：{_item_str}")
             try:
-                _HELPER_UID = "U8664e671a26d2eca1237fe94ad634205"  # 小蠻牛-新北小幫手
                 line_api.push_message(PushMessageRequest(
-                    to=_HELPER_UID,
+                    to=settings.HELPER_LINE_UID,
                     messages=[TextMessage(text="\n".join(_lines))],
                 ))
                 print(f"[pickup-notify] 已推送 {len(no_line_id)} 位需手動通知給管理員", flush=True)
@@ -2853,10 +2852,9 @@ async def _sync_failure_notify_loop():
             for t, name, err in _sync_failures:
                 lines.append(f"• {t} {name}\n  {err}")
             msg = "\n".join(lines)
-            _ADMIN_UID = "Uac17599b38b673b836ccb48025204b19"  # 小熊批發（管理員）
             if not _push_quota_exhausted:
                 _line_api.push_message(PushMessageRequest(
-                    to=_ADMIN_UID,
+                    to=settings.ADMIN_LINE_UID,
                     messages=[TextMessage(text=msg)],
                 ))
                 print(f"[sync-fail] 已通知管理員，{len(_sync_failures)} 項失敗", flush=True)

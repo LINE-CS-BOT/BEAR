@@ -28,6 +28,9 @@ echo ✅ 程式碼健檢通過
 :skip_check
 
 echo === 關閉舊的 Bot 程序 ===
+:: 建 lock 讓 tray.py 的 watchdog 暫停 respawn（避免兩個 python 打架）
+:: 用 copy /b 更新 mtime，也保證 lock 存在
+echo restart_in_progress > "%WORKDIR%\data\.restart_in_progress.lock"
 taskkill /F /IM python.exe /T > nul 2>&1
 timeout /t 2 > nul
 
@@ -35,6 +38,8 @@ echo === 啟動 Bot Server ===
 start "LINE Bot Server" cmd /k "cd /d %WORKDIR% && %PYTHON% main.py"
 
 timeout /t 3 > nul
+:: 新 server 應該已經起來，釋放 lock 讓 watchdog 恢復監看
+del "%WORKDIR%\data\.restart_in_progress.lock" > nul 2>&1
 
 :: 確認 LINE OA Chrome 是否在跑（port 9223）
 curl -s http://127.0.0.1:9223/json/version >nul 2>&1

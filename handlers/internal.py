@@ -4366,9 +4366,12 @@ def _build_one_product(fields: dict) -> str:
 
     # 先檢查品項是否已存在
     _existing = ecount_client.get_product_cache_item(prod_cd)
+    already_existed = False
+    existing_name = ""
     if _existing:
-        # 品項已存在 → 跳過新增，直接視為成功
-        print(f"[內部] 品項已存在，跳過新增: {prod_cd} ({_existing.get('name', '')})")
+        existing_name = _existing.get("name", "") or ""
+        print(f"[內部] 品項已存在，跳過新增: {prod_cd} ({existing_name})")
+        already_existed = True
         ok = True
         error_msg = ""
         result = {"ok": True, "slip": prod_cd}
@@ -4379,7 +4382,9 @@ def _build_one_product(fields: dict) -> str:
         ok = isinstance(result, dict) and result.get("ok")
         error_msg = result.get("error", "") if isinstance(result, dict) else ""
 
-    if ok:
+    # 已存在時不要再 add to new_products_store / label queue（避免打錯貨號污染清單）
+    label_result = {}
+    if ok and not already_existed:
         # 標記品項快取過期，下次查詢時自動刷新（避免連續新增時重複呼叫 API）
         ecount_client._cache_expires = 0
         from storage.new_products import new_products_store
@@ -4389,13 +4394,22 @@ def _build_one_product(fields: dict) -> str:
             in_price=in_price, size_des=size_des,   cust="10003",
         )
         # 自動嘗試加入架上標籤佇列（品項建立後補印）
-        label_result = {}
         try:
             label_result = _generate_labels_sync([prod_cd])
             if label_result["pdfs"]:
                 print(f"[label] 新增品項後自動生成標籤：{[p.name for p in label_result['pdfs']]}")
         except Exception as _le:
             print(f"[label] 新增品項後標籤處理失敗：{_le}")
+
+    # 已存在時：比對既有品名跟使用者輸入，不一致就警告（典型 typo 撞到別的貨號）
+    if already_existed:
+        if existing_name and existing_name.strip() != prod_name.strip():
+            return (
+                f"⚠️ {prod_cd} 已存在為「{existing_name}」\n"
+                f"   你輸入的是「{prod_name}」— 若打錯貨號請改用正確的貨號重送"
+            )
+        # 同名重送視為冪等，不動作也不刷 label
+        return f"ℹ️ {prod_cd} {existing_name or prod_name}　已存在，未重新建立"
 
     icon = "✅" if ok else "❌"
     details = []

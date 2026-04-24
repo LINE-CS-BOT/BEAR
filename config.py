@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     LINE_GROUP_ID: str = ""           # 內部人員群組 ID（bot 無法回答時通知真人）
     LINE_GROUP_ID_HQ: str = ""        # 總公司群組 ID（庫存不足時詢問調貨）
     LINE_GROUP_ID_SHOWCASE: str = ""  # 看貨群 ID（只回營業時間，其餘靜默）
+    ADMIN_LINE_UID: str = "Uac17599b38b673b836ccb48025204b19"   # 小熊本人（系統異常/狀態報告）
+    HELPER_LINE_UID: str = "U8664e671a26d2eca1237fe94ad634205"  # 小蠻牛-新北小幫手（人工客服動作）
 
     # Ecount ERP API
     ECOUNT_COMPANY_NO: str = ""

@@ -24,6 +24,8 @@ PYTHON      = os.path.join(os.path.dirname(sys.executable), "python.exe")
 if not os.path.exists(PYTHON):          # fallback
     PYTHON  = sys.executable
 LOCK_FILE   = os.path.join(BASE_DIR, "data", "tray.lock")
+RESTART_LOCK_FILE = os.path.join(BASE_DIR, "data", ".restart_in_progress.lock")
+RESTART_LOCK_TTL_SEC = 60  # lock 超過 60 秒視為 stale，watchdog 仍會 respawn
 
 os.environ["WATCHFILES_FORCE_POLLING"] = "true"
 UVICORN_CMD = [PYTHON, "main.py"]
@@ -138,6 +140,17 @@ def _wait_port_free(port=8000, timeout=10):
 
 _watchdog_running = False
 
+def _restart_lock_active() -> bool:
+    """restart.bat 有沒有在跑。lock 超過 TTL 視為 stale。"""
+    try:
+        if not os.path.exists(RESTART_LOCK_FILE):
+            return False
+        age = time.time() - os.path.getmtime(RESTART_LOCK_FILE)
+        return age < RESTART_LOCK_TTL_SEC
+    except Exception:
+        return False
+
+
 def _watchdog_loop():
     """背景執行緒：每 5 秒檢查 uvicorn + caddy，若死掉就自動重啟"""
     global _watchdog_running
@@ -145,6 +158,9 @@ def _watchdog_loop():
         time.sleep(5)
         if not _watchdog_running:
             break
+        # restart.bat 進行中 → 讓它處理，watchdog 不插手
+        if _restart_lock_active():
+            continue
         p = _procs.get("uvicorn")
         if p is not None and p.poll() is not None:
             _kill_port_8000()
