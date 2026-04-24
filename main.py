@@ -84,6 +84,7 @@ from handlers.internal import (
     handle_internal_set_rebate_target,
     handle_internal_unfulfilled,
     handle_internal_unclaimed,
+    handle_internal_ready_for_pickup,
     handle_internal_ad_query,
     handle_internal_customer_orders,
     handle_internal_showcase_push,
@@ -1198,6 +1199,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or handle_internal_rebate(combined, group_id)
         or handle_internal_unfulfilled(combined, group_id)
         or handle_internal_unclaimed(combined, group_id)
+        or handle_internal_ready_for_pickup(combined, group_id)
         or handle_internal_ad_query(combined, group_id)
         or handle_internal_customer_orders(combined, group_id)
         or handle_internal_consumable(combined, group_id)
@@ -1684,7 +1686,7 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     elif source_msg_id:
                         # 圖片辨識失敗（pHash+OCR+Claude 都沒命中）→ 告知辨識失敗
-                        ack = "⚠️ 圖片辨識失敗，請再傳一次或用「存圖 Z3432」+ 圖片指定貨號"
+                        ack = "⚠️ 圖片辨識失敗，請再傳一次或用「存圖 XXXX」+ 圖片指定貨號（XXXX 是該產品貨號）"
                     else:
                         ack = _dispatch_internal_fallback(combined, group_id, line_api, staff_id=user_id)
             else:
@@ -5317,6 +5319,7 @@ def on_message(event: MessageEvent):
                     or handle_internal_rebate(text)
                     or handle_internal_unfulfilled(text)
                     or handle_internal_unclaimed(text)
+                    or handle_internal_ready_for_pickup(text)
                     or handle_internal_ad_query(text)
                     or _spec_q(text)
                     or _inv_q(text)

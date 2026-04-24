@@ -4875,6 +4875,68 @@ def _refresh_unclaimed():
         print(f"[unclaimed] 自動更新失敗: {e}")
 
 
+_READY_PICKUP_KW = ["可通知取貨"]
+
+
+def handle_internal_ready_for_pickup(text: str, state_key: str | None = None) -> str | None:
+    """
+    內部群「可通知取貨」：列出全部品項（含預購）都備妥的客戶，輸出明細。
+    合併同名客戶（「林子翔-基隆」「林子翔-樹林」視為同一人「林子翔」）。
+    """
+    t = text.strip()
+    if not any(kw in t for kw in _READY_PICKUP_KW):
+        return None
+
+    # 資料過期自動刷
+    if _unfulfilled_needs_refresh():
+        print("[ready-pickup] 未備貨資料過期，自動更新...")
+        _refresh_unfulfilled()
+    if _unclaimed_needs_refresh():
+        print("[ready-pickup] 未取資料過期，自動更新...")
+        _refresh_unclaimed()
+
+    unfulfilled = _load_unfulfilled()
+    unclaimed = _load_unclaimed()
+
+    # 合併同名客戶 — 用 base_name（去掉 -後綴 / 括號）
+    from services.rebate import _get_base_name
+    pending_custs: set[str] = set()
+    for o in unfulfilled:
+        base = _get_base_name(o.get("customer", ""))
+        if base:
+            pending_custs.add(base)
+
+    # 按 base_name 分組已備貨未取，排除任何還有未備貨的客戶（含預購）
+    by_customer: dict[str, list[dict]] = {}
+    for o in unclaimed:
+        base = _get_base_name(o.get("customer", ""))
+        if not base or base in pending_custs:
+            continue
+        by_customer.setdefault(base, []).append(o)
+
+    if not by_customer:
+        return "📋 目前沒有「全品項都備妥（含預購）」的客戶"
+
+    # 先計算每位客戶的最早訂單日，再按日期升冪排（越早越前）
+    def _earliest_date(orders: list[dict]) -> str:
+        ds = []
+        for o in orders:
+            dn = (o.get("date_no") or "").split()[0].strip()
+            if dn and len(dn) >= 10:
+                ds.append(dn)
+        return min(ds) if ds else "9999/99/99"  # 無日期排最後
+
+    lines = [f"✅ 全品項已備妥（含預購），可通知取貨 {len(by_customer)} 位："]
+    for cust, cust_orders in sorted(by_customer.items(), key=lambda x: _earliest_date(x[1])):
+        total_qty = sum(o.get("qty", 0) for o in cust_orders)
+        earliest = _earliest_date(cust_orders)
+        date_note = f"，{earliest[5:]}起" if earliest != "9999/99/99" else ""
+        lines.append(f"\n{cust}（{len(cust_orders)} 筆，共 {total_qty:g} 件{date_note}）")
+        for o in cust_orders:
+            lines.append(f"  {o.get('product','')[:30]} *{o.get('qty',0):g}")
+    return "\n".join(lines)
+
+
 def handle_internal_unclaimed(text: str, state_key: str | None = None) -> str | None:
     """
     內部群未取訂單查詢：
