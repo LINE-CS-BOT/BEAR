@@ -51,7 +51,31 @@ def handle_price(user_id: str, text: str) -> str:
     """查詢產品售價並回覆"""
     product = _extract_product(text)
 
-    # 沒指定產品 → 從最近對話找剛推過的（到貨通知/產品推薦），1 個就自動用
+    # 沒指定產品 → 優先查 48h 內的到貨 snapshot，直接回該批總金額
+    if not product:
+        try:
+            from storage import arrival_snapshot as _ars
+            snap = _ars.get_snapshot(user_id)
+        except Exception:
+            snap = None
+        if snap and snap.get("products"):
+            lines = ["您的到貨品項金額如下："]
+            for p in snap["products"]:
+                up = p.get("unit_price") or 0
+                qty = p.get("qty") or 0
+                sub = p.get("subtotal") or 0
+                if up:
+                    lines.append(f"  • {p['name'][:20]} × {qty}　＝ ${sub:,}")
+                else:
+                    lines.append(f"  • {p['name'][:20]} × {qty}　（單價待確認）")
+            missing = snap.get("missing_price_count") or 0
+            if missing:
+                lines.append(f"\n💰 商品合計：${snap['total']:,}（有 {missing} 項單價需確認）")
+            else:
+                lines.append(f"\n💰 商品合計：${snap['total']:,}（純商品，不含運費）")
+            return "\n".join(lines)
+
+    # 還是沒指定產品 → 從最近對話找剛推過的，1 個就自動用
     if not product:
         recent = _find_recent_product_names(user_id)
         if len(recent) == 1:

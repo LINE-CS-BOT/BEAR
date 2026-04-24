@@ -1634,11 +1634,23 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                 source_msg_id = img_e["msg_id"]
             if source_msg_id:
                 img_pc = _img_identify_from_buf(source_msg_id)
+                # pHash/OCR 都失敗 → fallback 走 Claude vision（內部群專屬，客戶 1:1 已在 service.py 走過）
+                if not img_pc:
+                    from services.vision import download_image as _dl_im
+                    from services.claude_ai import ask_claude_image as _cai
+                    _im_bytes = _dl_im(source_msg_id)
+                    if _im_bytes:
+                        _claude_reply = _cai(_im_bytes, user_id=user_id)
+                        if _claude_reply:
+                            _codes = re.findall(r'[A-Za-z]{1,3}-?\d{3,6}', _claude_reply)
+                            if _codes:
+                                img_pc = _codes[0].upper()
+                                print(f"[txt-buf] Claude vision 辨識 → 內部群 {img_pc}", flush=True)
 
             if img_pc:
                 print(f"[txt-buf] 圖片+文字 → 內部群 {img_pc}")
             elif source_msg_id:
-                print("[txt-buf] 媒體+文字 → 內部群，圖片識別失敗")
+                print("[txt-buf] 媒體+文字 → 內部群，圖片識別失敗（含 Claude fallback）")
 
             # 圖片辨識成功 → 查庫存資訊回覆（不設 state，要下單打完整格式）
             ack = None
@@ -1671,8 +1683,8 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                             _new_prod_timer_reset(user_id, group_id, reply_token)
                             ack = "📝 品項建立模式，請依序輸入各品項資料\n完成後傳「完成」，或等待 30 秒自動處理"
                     elif source_msg_id:
-                        # 有圖片但辨識失敗 → 靜默，不把 PO 文當指令 dispatch
-                        ack = None
+                        # 圖片辨識失敗（pHash+OCR+Claude 都沒命中）→ 告知辨識失敗
+                        ack = "⚠️ 圖片辨識失敗，請再傳一次或用「存圖 Z3432」+ 圖片指定貨號"
                     else:
                         ack = _dispatch_internal_fallback(combined, group_id, line_api, staff_id=user_id)
             else:
@@ -2605,6 +2617,29 @@ def _check_and_notify_pickup():
                         add_chat_history(uid, "bot", notify_msg)
                     except Exception:
                         pass
+                    # 存到貨 snapshot —— 客戶問「多少錢」時直接回總金額（純商品不含運）
+                    try:
+                        from storage import arrival_snapshot as _ars
+                        from services.ecount import ecount_client as _ec_snap
+                        _snap_products = []
+                        for p in non_preorder_items:
+                            _code = p.get("prod_code", "")
+                            _qty = p.get("qty_wanted", 1) or 1
+                            _up = 0
+                            if _code:
+                                try:
+                                    _pr = _ec_snap.get_price(_code)
+                                    if _pr and _pr.get("price"):
+                                        _up = int(_pr["price"])
+                                except Exception:
+                                    pass
+                            _snap_products.append({
+                                "code": _code, "name": p.get("prod_name", ""),
+                                "qty": _qty, "unit_price": _up,
+                            })
+                        _ars.set_snapshot(uid, _snap_products)
+                    except Exception as _se:
+                        print(f"[pickup-notify] snapshot 失敗: {_se}", flush=True)
                     notified_count += 1
                     notified_list.append({
                         "name": cust_name,
@@ -5523,10 +5558,14 @@ def _handle_stateful(
                 print(f"[stateful] 改數量: {_last['prod_name']} → {_change_qty}", flush=True)
                 return tone.cart_item_added(_new_cart)
     if any(kw in text for kw in _CANCEL_KW_ORDER + _OTHER_CHANGE_KW):
-        state_manager.clear(user_id)
-        issue_store.add(user_id, "order_change", text)
-        print(f"[stateful] 改單/取消 → 清除狀態，進待處理 user={user_id[:10]}...: {text!r}")
-        return "稍等一下喔"
+        # awaiting_quantity 下的「追加N個」等 → 當成直接指定數量，走下面的 qty 建單流程
+        if action == "awaiting_quantity" and extract_quantity(text):
+            print(f"[stateful] awaiting_quantity + 追加詞+數字 → 當作 qty，不轉真人: {text!r}", flush=True)
+        else:
+            state_manager.clear(user_id)
+            issue_store.add(user_id, "order_change", text)
+            print(f"[stateful] 改單/取消 → 清除狀態，進待處理 user={user_id[:10]}...: {text!r}")
+            return "稍等一下喔"
 
     # ── 等待數量：客戶確認要購買幾個 ──────────────
     if action == "awaiting_quantity":
@@ -5573,7 +5612,6 @@ def _handle_stateful(
         # 問庫存數量攔截：「有多少個」「大概幾個」「還剩多少」→ 不透露數量
         _ask_qty_kw = ["多少個", "幾個", "多少", "剩多少", "剩幾", "有幾個", "有多少"]
         if any(kw in text for kw in _ask_qty_kw):
-            from storage.issues import issue_store
             prod_name = state.get("prod_name", "")
             issue_store.add(user_id, "ask_stock_qty", f"客戶問數量：{prod_name}")
             return tone.ask_qty_deflect()

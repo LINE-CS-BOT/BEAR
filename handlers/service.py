@@ -250,6 +250,19 @@ def handle_image_product(user_id: str, message_id: str, line_api: MessagingApi) 
                 from services.ecount import ecount_client as _ec_svc
                 _svc_item = _ec_svc.get_product_cache_item(_svc_cd)
                 _svc_name = (_svc_item.get("name") if _svc_item else None) or _svc_cd
+                # 從 Claude 回覆抓「× N 台/個/組/箱/隻/盒」— 客戶手寫在圖上的數量
+                _qty_m = _re_svc.search(
+                    r'[×xX]\s*(\d+)\s*(?:個|台|組|箱|隻|盒|顆|件)', _claude_reply,
+                )
+                if _qty_m:
+                    _svc_qty = int(_qty_m.group(1))
+                    from storage import cart as _cart_svc
+                    from storage.state import state_manager as _sm_svc
+                    _sm_svc.clear(user_id)  # 不設 awaiting_quantity，直接建單
+                    _new_cart = _cart_svc.add_item(user_id, _svc_cd, _svc_name, _svc_qty)
+                    print(f"[claude-ai] 圖片辨識含數量 → 直接加購物車: {_svc_cd} × {_svc_qty}", flush=True)
+                    return tone.cart_item_added(_new_cart)
+                # 沒抓到數量 → 維持原本 awaiting_quantity 等客戶補
                 from storage.state import state_manager as _sm_svc
                 _sm_svc.set(user_id, {
                     "action":    "awaiting_quantity",
