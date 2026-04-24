@@ -5261,6 +5261,8 @@ def on_message(event: MessageEvent):
                 _quick_reply = (
                     _handle_missing_ecount_name(text)
                     or _new_prod(text)
+                    or handle_internal_set_rebate_target(text)
+                    or handle_internal_rebate_push(text, line_api)
                     or handle_internal_rebate(text)
                     or handle_internal_unfulfilled(text)
                     or handle_internal_unclaimed(text)

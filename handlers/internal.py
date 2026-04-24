@@ -2469,7 +2469,9 @@ def handle_internal_inventory(text: str, state_key: str | None = None) -> str | 
         if not matched2:
             return f"🔍 找不到包含「{'、'.join(tokens)}」的產品，請用產品編號查詢"
 
-        results = []
+        in_stock_results  = []   # qty>0 的明細
+        out_stock_results = []   # qty<=0 / None 的明細
+        preorder_results  = []   # 預購模式結果
         result_codes = []   # 所有展示的產品（qty>0 或 preorder>0）
         stock_codes  = []   # 只有實際可售庫存（qty>0）的產品，用來設 state
         for raw_code in matched2:
@@ -2485,15 +2487,19 @@ def handle_internal_inventory(text: str, state_key: str | None = None) -> str | 
                 preorder = item.get("preorder")
                 if (preorder or 0) > 0:
                     name = item.get("name") or prod_code
-                    results.append(f"📦 {name}（{prod_code}）\n  可預購：{preorder} 個")
+                    preorder_results.append(f"📦 {name}（{prod_code}）\n  可預購：{preorder} 個")
                     result_codes.append((prod_code, name))
             else:
-                # 庫存模式：不管有無庫存都顯示完整明細
-                results.append(_fmt_inv_block(item, prod_code))
+                # 庫存模式：有可售庫存的放前面
+                block = _fmt_inv_block(item, prod_code)
                 result_codes.append((prod_code, item.get("name") or prod_code))
-                # 只記「實際可售庫存 qty > 0」的（供 state 判斷用）
                 if (item.get("qty") or 0) > 0:
+                    in_stock_results.append(block)
                     stock_codes.append((prod_code, item.get("name") or prod_code))
+                else:
+                    out_stock_results.append(block)
+
+        results = preorder_results + in_stock_results + out_stock_results
 
         kw_label = "".join(tokens)
         if not results:
