@@ -2848,13 +2848,20 @@ def _build_media_messages(prod_code: str, files: list[Path], base_url: str) -> l
 
 
 def _push_messages_chunked(
-    line_api, uid: str, text_msg: TextMessage, media_msgs: list
+    line_api, uid: str, text_msg: TextMessage, media_msgs: list,
+    prod_code: str | None = None,
 ) -> None:
     """
     單次 push：text + 最多 4 media（LINE 限 5 則/次），多的不送。
+    prod_code 有給且 push response 帶 sent_messages → 記錄圖片 msg_id → 貨號，
+    讓客戶日後 tag 回覆這張圖時 bot 能辨識是哪個產品（跟 reply 路徑行為一致）。
     """
-    batch = [text_msg] + media_msgs[:4]
-    line_api.push_message(PushMessageRequest(to=uid, messages=batch))
+    media_batch = media_msgs[:4]
+    batch = [text_msg] + media_batch
+    resp = line_api.push_message(PushMessageRequest(to=uid, messages=batch))
+    if prod_code and media_batch and hasattr(resp, 'sent_messages') and resp.sent_messages:
+        from main import _store_sent_image_ids
+        _store_sent_image_ids(resp.sent_messages, [prod_code] * len(media_batch))
 
 
 def _resolve_push_products(prod_query: str) -> list[tuple[str, str]]:
@@ -3091,7 +3098,7 @@ def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
                     time.sleep(3)
                 prefix = greeting_prefix if i == 0 else ""
                 text_msg = TextMessage(text=prefix + po_text)
-                _push_messages_chunked(line_api, uid, text_msg, media_msgs)
+                _push_messages_chunked(line_api, uid, text_msg, media_msgs, prod_code=prod_code)
             sent += 1
             codes_str = "、".join(c for c, *_ in prod_data)
             print(f"[internal-tag-push] {tag}／{codes_str} → {cust.get('name') or uid}")

@@ -2587,6 +2587,12 @@ def _check_and_notify_pickup():
                         to=uid, messages=[TextMessage(text=notify_msg)]
                     ))
                     print(f"[pickup-notify] ✅ 通知 {cust_name}（{len(_still_pending)} 品項）", flush=True)
+                    # 記入 chat_history，讓客戶回覆時 Claude 知道是在回應到貨通知
+                    try:
+                        from services.claude_ai import add_chat_history
+                        add_chat_history(uid, "bot", notify_msg)
+                    except Exception:
+                        pass
                     notified_count += 1
                     notified_list.append({
                         "name": cust_name,
@@ -6048,6 +6054,12 @@ def _handle_stateful(
 
     # ── 等待客戶說要登記通知的產品名稱 ────────────
     elif action == "awaiting_notify_product":
+        # 長訊息且不含貨號 → 客戶已經換話題，清狀態並轉真人（避免把整句話當產品名查）
+        _has_prod_code = bool(re.search(r'[A-Za-z]{1,3}-?\d{3,6}', text))
+        if len(text) > 20 and not _has_prod_code:
+            state_manager.clear(user_id)
+            from handlers.escalate import handle_unknown
+            return handle_unknown(user_id, text, line_api)
         state_manager.clear(user_id)
         from services.ecount import ecount_client as _ec
         from storage.notify import notify_store
