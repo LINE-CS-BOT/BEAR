@@ -4251,7 +4251,7 @@ def _parse_new_product_fields(text: str) -> dict | None:
 
 _CLASS_LABEL_NP = {"00001": "原裝", "00002": "改裝", "00004": "定裝"}
 # 以貨號開頭且後接空白的行（貨號+品名同行）
-_PROD_LINE_START_RE = re.compile(r'^([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)\s', re.IGNORECASE)
+_PROD_LINE_START_RE = re.compile(r'^([A-Za-z]{1,3}-?\d{3,6}(?:-\d+)?)[\s:：]', re.IGNORECASE)
 # 欄位關鍵字開頭的行（不會是品名）
 _FIELD_LINE_RE = re.compile(
     r'^(?:規格|售價|賣價|出庫單價|加盟商|入庫單價|進價|條碼|單位)[:：]',
