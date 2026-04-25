@@ -110,11 +110,22 @@ _MACHINE_KEYWORDS = {
     "超k":    "超K台",
 }
 
+# 主動詢問語：必須含才算「想看該台型有什麼」，否則是順便提到台型不該推送
+_MACHINE_QUERY_KEYWORDS = [
+    "有什麼", "有哪些", "推薦", "可以選", "想看", "看看",
+    "介紹", "哪些", "什麼好", "找一下", "看一下",
+]
+
+
 def detect_machine_query(text: str) -> str | None:
-    """從訊息中偵測台型查詢，回傳正規化台型名稱（或 None）"""
-    for kw, name in _MACHINE_KEYWORDS.items():
+    """從訊息中偵測台型查詢，回傳正規化台型名稱（或 None）。
+    要同時含「主動詢問語」+「台型關鍵字」才算，避免「K霸先取消」這種被誤觸推送。
+    iteration 時按 key 長度降冪排，避免「小K霸」被「K霸」攔截。"""
+    if not any(qkw in text for qkw in _MACHINE_QUERY_KEYWORDS):
+        return None
+    for kw in sorted(_MACHINE_KEYWORDS.keys(), key=len, reverse=True):
         if kw in text:
-            return name
+            return _MACHINE_KEYWORDS[kw]
     return None
 
 

@@ -189,10 +189,23 @@ ACKNOWLEDGE_KEYWORDS = [
 _CONFIRMATION_KEYWORDS = AFFIRMATIVE_KEYWORDS + ACKNOWLEDGE_KEYWORDS
 
 
+_ORDER_CHANGE_KEYWORDS = [
+    "改訂單", "改數量", "改成", "改為", "改下單",
+    "取消訂單", "我取消", "不要了", "我不要",
+    "先取消", "取消掉", "全部取消", "幫我取消", "取消",
+    "減少", "少叫", "多叫", "加訂", "追加",
+    "幫我改", "幫改", "修改訂單",
+]
+
+
 def detect_intent(text: str) -> Intent:
     # 忽略 LINE 收回訊息
     if "此內容已收回" in text:
         return None  # 靜默處理，不回覆
+
+    # 改單/取消（先於 MACHINE_SIZE 判，「K霸先取消」要走改單而不是台型查詢）
+    if any(kw in text for kw in _ORDER_CHANGE_KEYWORDS):
+        return Intent.ORDER_CHANGE
 
     # 娃娃機尺寸詢問（靜默記錄）
     for kw in _MACHINE_SIZE_KEYWORDS:
@@ -218,16 +231,6 @@ def detect_intent(text: str) -> Intent:
     for kw in _ADDRESS_QUERY_KEYWORDS:
         if kw in text:
             return Intent.ADDRESS_QUERY
-
-    # 改單/取消（在催貨之前判，避免「取消訂單」被誤判成催貨）
-    _ORDER_CHANGE_KEYWORDS = [
-        "改訂單", "改數量", "改成", "改為", "改下單",
-        "取消訂單", "我取消", "不要了", "我不要",
-        "減少", "少叫", "多叫", "加訂", "追加",
-        "幫我改", "幫改", "修改訂單",
-    ]
-    if any(kw in text for kw in _ORDER_CHANGE_KEYWORDS):
-        return Intent.ORDER_CHANGE
 
     # 非制式催貨（比正式查單先判，避免「到了嗎」干擾）
     for kw in _URGENT_ORDER_KEYWORDS:
