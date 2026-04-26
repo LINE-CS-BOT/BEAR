@@ -6646,6 +6646,14 @@ def _dispatch(
         print(f"[sold-out] dispatch 擋下 {_d_blocked} user={user_id[:10]}...", flush=True)
         return tone.sold_out_secret_kill()
 
+    # ── 台型推薦預算 follow-up：剛問過台型，這次只傳「300內」這類預算單句 ──
+    if not _d_codes:
+        from handlers.service import try_machine_budget_followup
+        _fu_reply = try_machine_budget_followup(user_id, text, line_api)
+        if _fu_reply:
+            print(f"[machine-followup] {user_id[:10]}... text={text!r}", flush=True)
+            return _fu_reply
+
     # ── 全局攔截：貨號 + 照片關鍵字 → 直接發照片 ──
     _photo_dispatch_kw = ["照片", "圖片", "看圖", "有圖", "看一下"]
     if any(kw in text for kw in _photo_dispatch_kw):

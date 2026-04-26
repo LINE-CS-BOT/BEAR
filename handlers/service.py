@@ -166,6 +166,41 @@ def _spec_price_int(spec: dict) -> int | None:
     return int(m.group()) if m else None
 
 
+# 記錄每個 user 上次的 machine_recommend：用於追問預算的 follow-up
+# {user_id: (machine_type, ts_epoch)}；TTL 5 分鐘
+_RECOMMEND_FOLLOWUP_TTL_SEC = 300
+_recommend_followup: dict[str, tuple[str, float]] = {}
+
+
+def remember_machine_followup(user_id: str, machine_type: str) -> None:
+    import time as _t
+    _recommend_followup[user_id] = (machine_type, _t.time())
+
+
+def try_machine_budget_followup(user_id: str, text: str, line_api: MessagingApi) -> str | None:
+    """客戶剛問過台型（5 分內），這次只傳預算（如「300內」）→ 用同台型+新預算重列"""
+    import time as _t
+    if not text:
+        return None
+    last = _recommend_followup.get(user_id)
+    if not last:
+        return None
+    machine_type, ts = last
+    if _t.time() - ts > _RECOMMEND_FOLLOWUP_TTL_SEC:
+        _recommend_followup.pop(user_id, None)
+        return None
+    # 必須 text 只是預算（不含台型也不含其他內容）
+    if extract_machine_type_loose(text):
+        return None  # 已含台型，正常 dispatch 處理
+    budget = extract_budget(text)
+    if not budget:
+        return None
+    # 額外保險：text 不能太長（避免完整句子被誤認）
+    if len(text.strip()) > 12:
+        return None
+    return handle_machine_recommend(user_id, machine_type, budget, line_api)
+
+
 def handle_machine_recommend(
     user_id: str, machine_type: str, budget: int | None, line_api: MessagingApi
 ) -> str | None:
@@ -195,6 +230,7 @@ def handle_machine_recommend(
 
     if not candidates:
         if budget:
+            remember_machine_followup(user_id, machine_type)  # 仍記住，方便客戶換預算追問
             return f"目前{machine_type} {budget}元以內的現貨剛好都沒有耶～有別的預算嗎？"
         return f"目前{machine_type}剛好都缺貨耶～有別的台型嗎？"
 
@@ -219,6 +255,7 @@ def handle_machine_recommend(
         lines.append(f"（共 {total} 件，先列前 10 件）")
     lines.append("")
     lines.append("需要哪款跟小編說貨號就好🙏")
+    remember_machine_followup(user_id, machine_type)
     return "\n".join(lines)
 
 
