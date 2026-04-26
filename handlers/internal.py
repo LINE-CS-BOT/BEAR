@@ -3414,6 +3414,7 @@ _RESTOCK_RE = re.compile(
 # Session 觸發詞與結束詞（「存圖」單獨傳也進 session；含貨號時走單品路徑）
 _UPLOAD_TRIGGERS  = {"上架", "存檔", "存圖"}
 _UPLOAD_FINISH_RE = re.compile(r'^(完成|好了|結束|done|finish)$', re.IGNORECASE)
+_UPLOAD_CANCEL_RE = re.compile(r'^(取消|cancel)$', re.IGNORECASE)
 
 
 # ── 共用：下載並儲存媒體（回傳 saved, failed 清單）────────────────────
@@ -4025,6 +4026,19 @@ def handle_internal_upload_finish(user_id: str) -> str:
 
     suffix = "\n" + "\n".join(label_lines) if label_lines else ""
     return "🏁 上架完成！\n" + "\n".join(results) + suffix
+
+
+def handle_internal_upload_cancel(user_id: str) -> str:
+    """「取消」→ 丟棄 uploading session 累積的 PO文/媒體，清 state（不存任何東西）"""
+    from storage.state import state_manager
+    state = state_manager.get(user_id)
+    if not state or state.get("action") != "uploading":
+        return "沒有進行中的上架作業"
+    groups = state.get("groups", [])
+    has_current = bool(state.get("current_code") or state.get("current_media") or state.get("current_po"))
+    n = len(groups) + (1 if has_current else 0)
+    state_manager.clear(user_id)
+    return f"❌ 已取消上架（清除 {n} 組未完成）" if n else "❌ 已取消上架"
 
 
 # ── 新增品項 ───────────────────────────────────────────────────────────────

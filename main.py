@@ -71,6 +71,7 @@ from handlers.internal import (
     handle_internal_mark_sold_out, handle_internal_unmark_sold_out,
     handle_internal_upload_start, handle_internal_upload_add_media,
     handle_internal_upload_text, handle_internal_upload_finish,
+    handle_internal_upload_cancel,
     handle_ambiguous_resolve, handle_name_order_confirm, handle_new_customer_confirm,
     handle_internal_new_product,
     _split_new_product_entries,
@@ -102,6 +103,7 @@ from handlers.internal import (
     _RESTOCK_RE  as _INTERNAL_RESTOCK_RE,
     _UPLOAD_TRIGGERS as _INTERNAL_UPLOAD_TRIGGERS,
     _UPLOAD_FINISH_RE as _INTERNAL_UPLOAD_FINISH_RE,
+    _UPLOAD_CANCEL_RE as _INTERNAL_UPLOAD_CANCEL_RE,
 )
 from handlers.ad_maker import handle_ad_update_trigger
 from handlers.payment import is_payment_message, handle_payment
@@ -583,8 +585,9 @@ def _msg_buf_add(
         has_text = bool(existing["lines"])
 
         _is_finish_cmd = _INTERNAL_UPLOAD_FINISH_RE.match(all_text.strip()) if all_text.strip() else False
-        if _is_finish_cmd:
-            wait_secs = 0.3  # 「完成」立即處理
+        _is_cancel_cmd = _INTERNAL_UPLOAD_CANCEL_RE.match(all_text.strip()) if all_text.strip() else False
+        if _is_finish_cmd or _is_cancel_cmd:
+            wait_secs = 0.3  # 「完成/取消」立即處理
         elif _is_upload_cmd:
             wait_secs = _MSG_UPLOAD_COALESCE_SECS
         elif has_media and not has_text:
@@ -1431,6 +1434,10 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                     lines = upload_state.get("lines", [])
                     state_manager.clear(user_id)
                     ack = handle_internal_new_product("\n".join(lines)) if lines else None
+                elif _INTERNAL_UPLOAD_CANCEL_RE.match(combined.strip()):   # 「取消」
+                    _new_prod_timer_cancel(user_id)
+                    state_manager.clear(user_id)
+                    ack = "❌ 已取消新增品項"
                 else:
                     upload_state["lines"].append(combined)
                     state_manager.set(user_id, upload_state)
@@ -1459,6 +1466,12 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         ack = handle_internal_add_images(_code, _collected)
                     else:
                         ack = handle_internal_save_images(_code, _collected)
+                elif _INTERNAL_UPLOAD_CANCEL_RE.match(combined.strip()):
+                    _code = _pending_img_state.get("prod_code", "")
+                    _n = len(_pending_img_state.get("media", []))
+                    state_manager.clear(group_id)
+                    state_manager.clear(user_id)
+                    ack = f"❌ {_code} 已取消（丟棄 {_n} 張）" if _n else f"❌ {_code} 已取消"
                 else:
                     # 非完成指令 → 累積圖片
                     if media_e:
@@ -1481,6 +1494,9 @@ def _msg_buf_flush_inner(user_id: str) -> None:
                         for _mi in media_e["media"]:
                             handle_internal_upload_add_media(group_id, _mi["msg_id"], _mi["type"])
                     ack = handle_internal_upload_finish(group_id)
+                elif _INTERNAL_UPLOAD_CANCEL_RE.match(combined.strip()):
+                    _upload_timer_cancel(group_id)
+                    ack = handle_internal_upload_cancel(group_id)
                 else:
                     # 收到文字也重置 timer，避免文字和 auto-finish 同時觸發兩個回覆
                     _upload_timer_reset(group_id, group_id, reply_token)
@@ -5174,6 +5190,10 @@ def on_message(event: MessageEvent):
                     _lines = _hq_np_state.get("lines", [])
                     state_manager.clear(user_id)
                     ack = handle_internal_new_product("\n".join(_lines)) if _lines else None
+                elif _INTERNAL_UPLOAD_CANCEL_RE.match(text.strip()):
+                    _new_prod_timer_cancel(user_id)
+                    state_manager.clear(user_id)
+                    ack = "❌ 已取消新增品項"
                 else:
                     _hq_np_state["lines"].append(text)
                     state_manager.set(user_id, _hq_np_state)
@@ -5213,6 +5233,9 @@ def on_message(event: MessageEvent):
                 if _INTERNAL_UPLOAD_FINISH_RE.match(text.strip()):
                     _upload_timer_cancel(hq_group_id)
                     ack = handle_internal_upload_finish(hq_group_id)
+                elif _INTERNAL_UPLOAD_CANCEL_RE.match(text.strip()):
+                    _upload_timer_cancel(hq_group_id)
+                    ack = handle_internal_upload_cancel(hq_group_id)
                 else:
                     _upload_timer_reset(hq_group_id, hq_group_id, event.reply_token)
                     ack = handle_internal_upload_text(hq_group_id, text)
