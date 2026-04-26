@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     ECOUNT_COMPANY_NO: str = ""
     ECOUNT_USER_ID: str = ""
     ECOUNT_API_CERT_KEY: str = ""
+    ECOUNT_WEB_PASSWORD: str = ""             # Ecount 網頁登入密碼（Chrome 自動化用）
     ECOUNT_ZONE: str = "IB"
     ECOUNT_BASE_URL: str = "https://oapiIB.ecount.com"
     ECOUNT_DEFAULT_CUST_CD: str = "LINECUST"  # LINE 新客戶預設客戶代碼
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     HQ_ECOUNT_BASE_URL: str = "https://oapiIB.ecount.com"
     HQ_ECOUNT_OUR_CUST_CD: str = "A05"        # 小蠻牛在總公司端的客戶編碼
     HQ_ECOUNT_OUR_WH_CD: str = "200"          # 總公司視角我方收貨倉庫
+    HQ_VENDOR_CD: str = "小蠻牛總部"          # 總公司在小蠻牛端 Ecount 的供應商（採購單客戶欄；可填編碼 10003 或中文名）
 
     # Google Calendar
     GOOGLE_CALENDAR_ID: str = ""

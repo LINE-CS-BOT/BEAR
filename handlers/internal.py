@@ -2997,6 +2997,122 @@ def _get_ngrok_url() -> str:
 _COMPETITOR_PRICE_RE = re.compile(r'^比[價对対]\s*([A-Za-z]\d{3,5}[A-Za-z\d-]*)$', re.I)
 
 
+# ---------------------------------------------------------------------------
+# 採購單：「採購單<換行>Z3754*50<換行>T1138*20」→ dry-run 預覽
+#         「送出」（5 分鐘內）→ 真送總公司訂貨單 API
+# ---------------------------------------------------------------------------
+_PURCHASE_TRIGGER_RE = re.compile(r'^採購單\s*$', re.MULTILINE)
+# 行格式：「Z3754*50」或「Z3754*50 不要黑色」（空白後到行尾為該品項摘要）
+_PURCHASE_LINE_RE = re.compile(rf'({_PROD_CODE_PAT})\s*[\*xX×]\s*(\d+)(?:\s+(\S.*))?', re.IGNORECASE)
+
+
+def _parse_purchase_lines(body: str) -> list[dict]:
+    """從 body 抓出 [{"prod_cd", "qty", "note"}, ...]，支援 *、x、X、× 為分隔符
+    每行可選用 `#備註` 結尾標 per-item 摘要"""
+    items = []
+    seen_codes = set()
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = _PURCHASE_LINE_RE.search(line)
+        if not m:
+            continue
+        code = m.group(1).upper()
+        if code in seen_codes:
+            continue  # 同貨號去重，第一筆為準
+        seen_codes.add(code)
+        try:
+            qty = int(m.group(2))
+        except ValueError:
+            continue
+        if qty <= 0:
+            continue
+        note = (m.group(3) or "").strip()
+        items.append({"prod_cd": code, "qty": qty, "note": note})
+    return items
+
+
+def _run_async(coro, timeout: int = 120):
+    """在 sync handler 內跑 async coroutine（dispatch chain 是 sync）"""
+    import asyncio as _aio
+    import threading as _th
+    result = {"value": None, "error": None}
+
+    def _runner():
+        try:
+            result["value"] = _aio.run(coro)
+        except Exception as e:
+            result["error"] = e
+
+    t = _th.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if result["error"]:
+        raise result["error"]
+    return result["value"]
+
+
+def handle_internal_purchase_order(text: str) -> str | None:
+    """
+    「採購單<換行>Z3525*50 不要黑色<換行>Z3245*20 訂單30」
+    → 直接執行：
+        1. Chrome 建小蠻牛採購單（供應商 10003）
+        2. 成功才送總公司訂貨單 API（客戶 A05 / 倉庫 200）
+    → 回覆「採購單建立成功 / 總部訂單建立成功」（含單號）
+    """
+    stripped = text.strip()
+    if not stripped.startswith("採購單"):
+        return None
+    body = "\n".join(stripped.splitlines()[1:]).strip()
+    if not body:
+        return (
+            "📋 採購單格式：\n"
+            "採購單\n"
+            "Z3525*50 不要黑色\n"
+            "Z3245*20 訂單30"
+        )
+
+    items = _parse_purchase_lines(body)
+    if not items:
+        return "❌ 採購單沒解析到任何品項，格式：Z3525*50 不要黑色"
+
+    total_qty = sum(it["qty"] for it in items)
+    header = f"📋 採購單處理中（{len(items)} 品 / {total_qty} 件）..."
+    print(f"[purchase-order] {header} items={items}", flush=True)
+
+    # ── Step 1: Chrome 建小蠻牛採購單 ──
+    async def _do_chrome():
+        from services.ecount_chrome import get_ecount_page, create_purchase_order
+        async with get_ecount_page() as page:
+            if not page:
+                return {"ok": False, "slip_no": None, "error": "Chrome 連不上"}
+            return await create_purchase_order(page, items=items, remark="LINE 採購單")
+
+    try:
+        chrome_res = _run_async(_do_chrome(), timeout=120)
+    except Exception as e:
+        chrome_res = {"ok": False, "slip_no": None, "error": f"Chrome exception: {e}"}
+
+    if not chrome_res or not chrome_res.get("ok"):
+        return (
+            f"❌ 小蠻牛採購單建立失敗（未送總公司）：\n"
+            f"   {chrome_res.get('error') if chrome_res else '未知錯誤'}"
+        )
+
+    # ── Step 2: API 送總公司訂貨單 ──
+    from services.ecount_hq import ecount_hq
+    api_res = ecount_hq.save_purchase_order(items=items, remark="LINE 採購單", dry_run=False)
+
+    lines = [f"📋 採購單已建立（{len(items)} 品 / {total_qty} 件）"]
+    lines.append(f"1️⃣ 小蠻牛採購單：✅ {chrome_res.get('slip_no')}")
+    if api_res["ok"]:
+        lines.append(f"2️⃣ 總公司訂貨單：✅ {api_res['slip_no']}")
+    else:
+        lines.append(f"2️⃣ 總公司訂貨單：❌ {api_res['error']}")
+    return "\n".join(lines)
+
+
 def handle_internal_competitor_price(text: str) -> str | None:
     """「比價 Z3754」→ 比對小蠻牛 vs dingshang 同業相似商品價格"""
     m = _COMPETITOR_PRICE_RE.match(text.strip())

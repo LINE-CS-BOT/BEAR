@@ -519,6 +519,7 @@ class EcountClient:
                         "code":    r.get("PROD_CD", "").strip(),
                         "name":    r.get("PROD_DES", "").strip(),
                         "price":   float(r.get("OUT_PRICE") or 0),
+                        "in_price": float(r.get("IN_PRICE") or 0),  # 進價（給總公司訂貨單帶 PRICE 用）
                         "unit":    r.get("UNIT", "").strip(),
                         "size_des": r.get("SIZE_DES", "").strip(),  # 規格（如 100個/箱）
                         "box_qty": int(float(r.get("EXCH_RATE") or 0)),  # 裝箱數

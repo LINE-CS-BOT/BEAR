@@ -94,6 +94,7 @@ from handlers.internal import (
     handle_internal_product_photo,
     handle_internal_product_po_photo,
     handle_internal_competitor_price,
+    handle_internal_purchase_order,
     handle_internal_label_queue,
     handle_internal_cart,
     _NEW_PROD_TRIGGER_RE,
@@ -1252,6 +1253,7 @@ def _dispatch_internal_fallback(combined: str, group_id: str, line_api, staff_id
         or handle_internal_ad_query(combined, group_id)
         or handle_internal_customer_orders(combined, group_id)
         or handle_internal_consumable(combined, group_id)
+        or handle_internal_purchase_order(combined)
         or handle_internal_competitor_price(combined)
         or handle_internal_product_po_photo(combined, line_api)
         or handle_internal_product_photo(combined, line_api)
@@ -5410,6 +5412,7 @@ def on_message(event: MessageEvent):
                     or handle_internal_unfulfilled(text)
                     or handle_internal_unclaimed(text)
                     or handle_internal_ready_for_pickup(text)
+                    or handle_internal_purchase_order(text)
                     or handle_internal_competitor_price(text)
                     or handle_internal_ad_query(text)
                     or _spec_q(text)
