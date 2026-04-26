@@ -2991,6 +2991,40 @@ def _get_ngrok_url() -> str:
     return "https://xmnline.duckdns.org/product-photo"
 
 
+# ---------------------------------------------------------------------------
+# 同業比價：「比價 Z3754」→ 對 dingshang.com.tw 抓相似品名+尺寸的競品價格
+# ---------------------------------------------------------------------------
+_COMPETITOR_PRICE_RE = re.compile(r'^比[價对対]\s*([A-Za-z]\d{3,5}[A-Za-z\d-]*)$', re.I)
+
+
+def handle_internal_competitor_price(text: str) -> str | None:
+    """「比價 Z3754」→ 比對小蠻牛 vs dingshang 同業相似商品價格"""
+    m = _COMPETITOR_PRICE_RE.match(text.strip())
+    if not m:
+        return None
+    code = m.group(1).upper()
+
+    from services.competitor_match import find_similar_by_code, format_for_line
+    import json as _json
+    from pathlib import Path as _P
+    specs_path = _P(__file__).resolve().parents[1] / "data" / "specs.json"
+    try:
+        specs = _json.loads(specs_path.read_text(encoding="utf-8"))
+    except Exception:
+        specs = {}
+    sp = specs.get(code)
+    if not sp:
+        return f"❌ 找不到貨號 {code} 的規格"
+
+    matches = find_similar_by_code(code, limit=5)
+    return format_for_line(
+        spec_code=code,
+        spec_name=sp.get("name", ""),
+        spec_price=sp.get("price", "未知"),
+        matches=matches,
+    )
+
+
 def handle_internal_tag_push(text: str, line_api: MessagingApi) -> str | None:
     """
     偵測「推送 [分類] [產品...]」指令，push PO文+圖片給所有有該標籤且有 LINE ID 的客戶。
