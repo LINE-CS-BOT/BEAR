@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     ECOUNT_BASE_URL: str = "https://oapiIB.ecount.com"
     ECOUNT_DEFAULT_CUST_CD: str = "LINECUST"  # LINE 新客戶預設客戶代碼
 
+    # 總公司 Ecount（上游供應商，採購單流程）
+    HQ_ECOUNT_COMPANY_NO: str = ""
+    HQ_ECOUNT_USER_ID: str = ""
+    HQ_ECOUNT_API_CERT_KEY: str = ""
+    HQ_ECOUNT_WEB_PASSWORD: str = ""
+    HQ_ECOUNT_ZONE: str = "IB"
+    HQ_ECOUNT_BASE_URL: str = "https://oapiIB.ecount.com"
+    HQ_ECOUNT_OUR_CUST_CD: str = "A05"        # 小蠻牛在總公司端的客戶編碼
+    HQ_ECOUNT_OUR_WH_CD: str = "200"          # 總公司視角我方收貨倉庫
+
     # Google Calendar
     GOOGLE_CALENDAR_ID: str = ""
     GOOGLE_CREDENTIALS_FILE: str = "credentials.json"

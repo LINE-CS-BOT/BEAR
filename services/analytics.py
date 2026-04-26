@@ -704,6 +704,9 @@ def new_product_suggestion(category: str, price: int) -> dict:
     # 取整到 10 的倍數
     suggested = round(suggested / 10) * 10
 
+    # 同業 dingshang 參考：用 category 字串去 dingshang db 找相似品 + 價位過濾
+    dingshang = _dingshang_market_reference(category, price)
+
     return {
         "category": category,
         "price": price,
@@ -714,6 +717,60 @@ def new_product_suggestion(category: str, price: int) -> dict:
         "suggested_qty": suggested,
         "top_in_category": sorted(same_cat, key=lambda x: -x["qty"])[:5],
         "top_in_priceband": sorted(same_band, key=lambda x: -x["qty"])[:5],
+        "dingshang": dingshang,
+    }
+
+
+def _dingshang_market_reference(category: str, price: int, price_tol: int = 80) -> dict:
+    """從 dingshang DB 撈品名含 category 的同業競品。
+    回傳：{count, price_min, price_median, price_max, samples (top 5 by score)}"""
+    try:
+        from services.competitor_match import find_similar
+    except Exception:
+        return {"count": 0, "samples": []}
+    matches = find_similar(spec_name=category, spec_size=None, min_score=3, limit=50)
+    if not matches:
+        return {"count": 0, "samples": []}
+
+    # 從 prices_raw 抽出「最低單價」當作參考價
+    # 關鍵：dingshang 階梯價格式「✅超商1箱8盒 $1120 ($140/盒，免運)」
+    # 「$1120」是箱總價、「$140/盒」才是真實單價。要抓「N/盒」「N/個」「N/件」這類單價標記。
+    import re as _re
+    # 單價 regex：「$N/單位」或「$N 元/盒」
+    unit_price_re = _re.compile(r"\$?\s*(\d{2,4})\s*[/／]\s*(?:盒|個|件|箱|組|支|包|片|套|顆|台|隻|條)")
+    # fallback：「(N元)」這類括號內單價
+    fallback_re = _re.compile(r"[（(]\s*\$?\s*(\d{2,4})\s*[/／]?\s*(?:元|/盒|/個|/件)?")
+    # 單純「$N」當總價（不可靠當單價）
+    enriched = []
+    for m in matches:
+        pr = m.get("prices_raw") or ""
+        prices = [int(n) for n in unit_price_re.findall(pr) if 30 < int(n) < 5000]
+        if not prices:
+            # 嘗試 fallback regex
+            prices = [int(n) for n in fallback_re.findall(pr) if 30 < int(n) < 5000]
+        if not prices:
+            continue
+        unit_min = min(prices)
+        m["_unit_min"] = unit_min
+        enriched.append(m)
+
+    if not enriched:
+        return {"count": 0, "samples": []}
+
+    prices_only = sorted(m["_unit_min"] for m in enriched)
+    n = len(prices_only)
+    median = prices_only[n // 2] if n % 2 else (prices_only[n // 2 - 1] + prices_only[n // 2]) // 2
+
+    # 預算內競品（取「同價位帶」交叉資訊）
+    in_band = [m for m in enriched if abs(m["_unit_min"] - price) <= price_tol]
+
+    return {
+        "count":         len(enriched),
+        "in_band_count": len(in_band),
+        "price_min":     prices_only[0],
+        "price_median":  median,
+        "price_max":     prices_only[-1],
+        "samples":       enriched[:5],   # 已按 score 排序
     }
 
 

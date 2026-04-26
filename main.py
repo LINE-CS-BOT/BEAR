@@ -863,6 +863,15 @@ def _handle_analytics_command(text: str) -> str | None:
             lines.append(f"\n同品類熱銷：")
             for p in s["top_in_category"][:3]:
                 lines.append(f"  {p['code']} {p['name'][:15]} {p['price']}元 銷{p['qty']}個")
+        ds = s.get("dingshang") or {}
+        if ds.get("count"):
+            diff = price - ds["price_median"]
+            cmp_str = (f"高 ${diff}" if diff > 0 else f"低 ${-diff}" if diff < 0 else "相同")
+            lines.append(f"\n🏪 dingshang 同業 {ds['count']} 件相似（{ds['in_band_count']} 件同價位帶）")
+            lines.append(f"   售價區間 ${ds['price_min']}–${ds['price_max']}，中位 ${ds['price_median']}（你定價 {cmp_str}）")
+            for sm in ds["samples"][:3]:
+                name = (sm.get("name") or "")[:24]
+                lines.append(f"   • ${sm['_unit_min']}  {name}")
         return "\n".join(lines)
 
     # ── 採購建議（貨號或PO文）──
@@ -972,6 +981,19 @@ def _analyze_purchase(po_text: str) -> str:
             f"月均銷量：{s['same_category_avg_monthly']} 個/品\n"
             f"各品銷量明細：\n{all_items_str}"
         )
+        # dingshang 同業參考（讓 Claude 在分析時也看到同業售價）
+        ds = s.get("dingshang") or {}
+        if ds.get("count"):
+            ds_lines = "\n".join(
+                f"  ${m['_unit_min']}  {(m.get('name') or '')[:30]}"
+                for m in ds["samples"][:5]
+            )
+            data_parts.append(
+                f"【dingshang 同業相似品（{ds['count']} 件）】\n"
+                f"售價區間：${ds['price_min']}–${ds['price_max']}（中位 ${ds['price_median']}）\n"
+                f"同價位帶：{ds['in_band_count']} 件\n"
+                f"競品 sample：\n{ds_lines}"
+            )
     if price > 0:
         s2 = new_product_suggestion(category if category != "其他" else "行動電源", price)
         data_parts.append(
@@ -1153,18 +1175,41 @@ def _analyze_purchase(po_text: str) -> str:
         )
         answer = result.stdout.decode("utf-8", errors="replace").strip()
         if answer and result.returncode == 0:
-            return f"🧠 採購分析報告\n{'='*20}\n{answer}"
+            # 固定附 dingshang 摘要（讓 user 看到 Claude 用的同業參考數據）
+            ds_suffix = ""
+            if category != "其他":
+                _s_for_ds = new_product_suggestion(category, price)
+                _ds = _s_for_ds.get("dingshang") or {}
+                if _ds.get("count"):
+                    _diff = price - _ds["price_median"]
+                    _cmp = (f"高 ${_diff}" if _diff > 0 else f"低 ${-_diff}" if _diff < 0 else "相同")
+                    _samples = "\n".join(
+                        f"   • ${m['_unit_min']}  {(m.get('name') or '')[:32]}"
+                        for m in _ds["samples"][:3]
+                    )
+                    ds_suffix = (
+                        f"\n\n🏪 dingshang 同業參考（Claude 已納入分析）\n"
+                        f"{len(_ds['samples'])}件 區間 ${_ds['price_min']}–${_ds['price_max']} 中位 ${_ds['price_median']}（你 {_cmp}）\n"
+                        f"{_samples}"
+                    )
+            return f"🧠 採購分析報告\n{'='*20}\n{answer}{ds_suffix}"
     except Exception as e:
         print(f"[purchase-analysis] Claude 分析失敗: {e}", flush=True)
 
     # Claude 失敗 fallback：用程式算
     if category != "其他" and price > 0:
         s = new_product_suggestion(category, price)
+        ds = s.get("dingshang") or {}
+        ds_line = ""
+        if ds.get("count"):
+            diff = price - ds["price_median"]
+            cmp_str = (f"高 ${diff}" if diff > 0 else f"低 ${-diff}" if diff < 0 else "相同")
+            ds_line = f"\n🏪 dingshang {ds['count']} 件相似 中位 ${ds['price_median']}（你 {cmp_str}）"
         return (
             f"🧠 採購建議（自動）\n"
             f"品類：{category} | 價位：{price}元\n"
             f"同品類 {s['same_category_count']} 品，月均 {s['same_category_avg_monthly']} 個\n"
-            f"💡 建議首批：{s['suggested_qty']} 個"
+            f"💡 建議首批：{s['suggested_qty']} 個{ds_line}"
         )
     return "⚠️ 無法分析，請確認 PO 文包含品名和價格"
 
