@@ -626,6 +626,11 @@ class EcountClient:
         self._ensure_product_cache()
         return self._product_by_code.get(prod_cd.strip().upper())
 
+    def force_refresh_product_cache(self) -> None:
+        """強制刷新品項快取（user 在 ecount 後台手動刪/改品項後呼叫）"""
+        self._cache_expires = 0
+        self._ensure_product_cache()
+
     # ------------------------------------------------------------------
     # 內部：庫存查詢
     # ------------------------------------------------------------------

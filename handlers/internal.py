@@ -57,30 +57,35 @@ def _resolve_customer(name: str) -> dict | None:
 _PROD_CODE_PAT = r'[A-Za-z]{1,3}-?\d{3,6}(?:-[A-Za-z0-9]+)*'
 
 # ── 正則 ──────────────────────────────────────────────────────────────
-# 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-J-23、-1、-A2 等），例：T1202、BB-232、Z3323-J-23
+# 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-J-23、-1、-A2 等），例：T1202、Z3323-J-23
 # 排除常見非貨號（PD=充電協議、USB、LED、MAX等）
 _NOT_PROD_CODE = {"PD", "USB", "LED", "MAX", "MAH", "LCD", "RGB", "GPS", "SOS", "DIY", "ABS", "TPU", "BTS"}
+# 排除型號/品牌標示：2-3 字母 + dash + 恰好 3 數字（且無後綴），例：TP-650、VPB-011
+# 房號實際格式為 1 字母 + 4 數字（Z3432）或 2-3 字母 + 4+ 數字（NN249），不會用此短格式
+_BRAND_MODEL_RE = re.compile(r'^[A-Za-z]{2,3}-\d{3}$')
 _PROD_CODE_RE_RAW = re.compile(rf'(?<![A-Za-z\-])({_PROD_CODE_PAT})(?!\d)')
+def _is_excluded_code(code: str) -> bool:
+    if code[:2].upper() in _NOT_PROD_CODE or code[:3].upper() in _NOT_PROD_CODE:
+        return True
+    if _BRAND_MODEL_RE.match(code):
+        return True
+    return False
 class _ProdCodeFinder:
     """findall/search 時自動排除非貨號"""
     def findall(self, text):
-        return [m for m in _PROD_CODE_RE_RAW.findall(text)
-                if m[:2].upper() not in _NOT_PROD_CODE and m[:3].upper() not in _NOT_PROD_CODE]
+        return [m for m in _PROD_CODE_RE_RAW.findall(text) if not _is_excluded_code(m)]
     def search(self, text):
         for m in _PROD_CODE_RE_RAW.finditer(text):
-            code = m.group(1)
-            if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
+            if not _is_excluded_code(m.group(1)):
                 return m
         return None
     def finditer(self, text):
         for m in _PROD_CODE_RE_RAW.finditer(text):
-            code = m.group(1)
-            if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
+            if not _is_excluded_code(m.group(1)):
                 yield m
     def sub(self, repl, text):
         def _repl_fn(m):
-            code = m.group(1)
-            if code[:2].upper() not in _NOT_PROD_CODE and code[:3].upper() not in _NOT_PROD_CODE:
+            if not _is_excluded_code(m.group(1)):
                 return repl if isinstance(repl, str) else repl(m)
             return m.group(0)
         return _PROD_CODE_RE_RAW.sub(_repl_fn, text)
@@ -3107,7 +3112,7 @@ def handle_internal_purchase_order(text: str) -> str | None:
     lines = [f"📋 採購單已建立（{len(items)} 品 / {total_qty} 件）"]
     lines.append(f"1️⃣ 小蠻牛採購單：✅ {chrome_res.get('slip_no')}")
     if api_res["ok"]:
-        lines.append(f"2️⃣ 總公司訂貨單：✅ {api_res['slip_no']}")
+        lines.append(f"2️⃣ 總公司訂貨單：✅ 預留 {api_res['slip_no']}（實際以後台為準）")
     else:
         lines.append(f"2️⃣ 總公司訂貨單：❌ {api_res['error']}")
     return "\n".join(lines)
@@ -4539,8 +4544,11 @@ def _build_one_product(fields: dict) -> str:
     if _prod_size:   extra["REMARKS_WIN"]  = _prod_size     # 尺寸 → REMARKS_WIN
     if _prod_weight: extra["CONT1"]        = _prod_weight   # 重量 → CONT1
 
-    # 先檢查品項是否已存在
+    # 先檢查品項是否已存在（cache 命中先 force refresh 一次，避免 user 剛在 ecount 後台刪/改品項時 cache stale）
     _existing = ecount_client.get_product_cache_item(prod_cd)
+    if _existing:
+        ecount_client.force_refresh_product_cache()
+        _existing = ecount_client.get_product_cache_item(prod_cd)
     already_existed = False
     existing_name = ""
     if _existing:
