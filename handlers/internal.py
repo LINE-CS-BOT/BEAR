@@ -60,7 +60,7 @@ _PROD_CODE_PAT = r'[A-Za-z]{1,3}-?\d{3,6}(?:-[A-Za-z0-9]+)*'
 # 商品編號：英文1~3碼（可含 -）+ 數字3~6碼 + 可選後綴（-J-23、-1、-A2 等），例：T1202、BB-232、Z3323-J-23
 # 排除常見非貨號（PD=充電協議、USB、LED、MAX等）
 _NOT_PROD_CODE = {"PD", "USB", "LED", "MAX", "MAH", "LCD", "RGB", "GPS", "SOS", "DIY", "ABS", "TPU", "BTS"}
-_PROD_CODE_RE_RAW = re.compile(rf'(?<![A-Za-z])({_PROD_CODE_PAT})(?!\d)')
+_PROD_CODE_RE_RAW = re.compile(rf'(?<![A-Za-z\-])({_PROD_CODE_PAT})(?!\d)')
 class _ProdCodeFinder:
     """findall/search 時自動排除非貨號"""
     def findall(self, text):
