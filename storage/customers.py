@@ -238,7 +238,7 @@ class CustomerStore:
         return dict(row) if row else None
 
     def search(self, keyword: str) -> list[dict]:
-        """搜尋名稱/電話/備註"""
+        """搜尋名稱/電話/備註/分類標籤"""
         q = f"%{keyword}%"
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
@@ -248,8 +248,9 @@ class CustomerStore:
                    WHERE c.display_name LIKE ? OR c.real_name LIKE ?
                       OR c.chat_label LIKE ? OR c.phone LIKE ?
                       OR p.phone LIKE ? OR c.note LIKE ? OR c.address LIKE ?
+                      OR c.tags LIKE ?
                    ORDER BY c.last_seen DESC LIMIT 50""",
-                (q, q, q, q, q, q, q)
+                (q, q, q, q, q, q, q, q)
             ).fetchall()
         return [dict(r) for r in rows]
 

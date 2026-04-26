@@ -1514,12 +1514,12 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
             prod_name = (item["name"] if item else "") or prod_code
             results   = []
             for nl in rest:
-                # 解析「名字  數量 單位」或「名字10箱」
+                # 解析「名字  數量 單位」或「名字10箱」；無數量 qty=0（純到貨通知）
                 mq = re.match(r'^(.+?)[\s　]+(\d+)\s*(個|件|盒|套|箱|組)?$', nl)
                 if not mq:
                     mq2 = re.match(r'^(.+?)(\d+)\s*(個|件|盒|套|箱|組)?$', nl)
                     cust_name_q = re.sub(r'\s+', '', mq2.group(1)) if mq2 else re.sub(r'\s+', '', nl)
-                    qty = int(mq2.group(2)) if mq2 else 1
+                    qty = int(mq2.group(2)) if mq2 else 0
                     unit = (mq2.group(3) or "") if mq2 else ""
                 else:
                     cust_name_q = re.sub(r'\s+', '', mq.group(1))
@@ -1571,7 +1571,7 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
         results = []
         for cust_name_q in name_list:
             results.append(_notify_register_and_push(
-                cust_name_q, prod_code_sh, prod_name_sh, 1, line_api
+                cust_name_q, prod_code_sh, prod_name_sh, 0, line_api
             ))
         return "\n".join(results)
 
@@ -1604,7 +1604,7 @@ def handle_internal_notify_register(text: str, line_api=None) -> str | None:
             continue
         cust_name_q = m.group(1).strip()
         prod_code   = m.group(2).upper()
-        qty         = _parse_qty(m.group(3)) if m.group(3) else 1
+        qty         = _parse_qty(m.group(3)) if m.group(3) else 0
         unit        = m.group(4) or ""
         from handlers.ordering import resolve_unit
         prod_code, qty, _warn = resolve_unit(prod_code, qty, unit or None)
@@ -1637,7 +1637,8 @@ def _notify_register_and_push(
             source="staff",
         )
         print(f"[internal] 通知登記(staff): #{notify_id} {cust_name_q}（到貨通知內部群）← {prod_name}({prod_code}) x{qty}")
-        return f"✅ {cust_name_q}｜{prod_name}（{prod_code}）× {qty} {_display_unit}（到貨通知內部群）"
+        qty_disp = f" × {qty} {_display_unit}" if qty > 0 else ""
+        return f"✅ {cust_name_q}｜{prod_name}（{prod_code}）{qty_disp}（到貨通知內部群）"
     if len(matches) > 1:
         ns = "、".join(r.get("real_name") or r.get("display_name", "?") for r in matches[:5])
         return f"⚠️ 「{cust_name_q}」有多位：{ns}"
@@ -1657,7 +1658,8 @@ def _notify_register_and_push(
     )
     tag = "（到貨通知內部群）" if cust_uid.startswith("ecount:") else ""
     print(f"[internal] 通知登記(staff): #{notify_id} {cust_label}{tag} ← {prod_name}({prod_code}) x{qty}")
-    return f"✅ {cust_label}｜{prod_name}（{prod_code}）× {qty} {_display_unit}{tag}"
+    qty_disp = f" × {qty} {_display_unit}" if qty > 0 else ""
+    return f"✅ {cust_label}｜{prod_name}（{prod_code}）{qty_disp}{tag}"
 
 
 # ── 3. 圖片識別 → PO文 + 等待訂單 ───────────────────────────────────

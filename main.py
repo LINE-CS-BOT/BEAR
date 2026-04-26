@@ -2668,7 +2668,9 @@ def _check_and_notify_pickup():
 
             # 只列非預購品項
             item_list = "\n".join(
-                f"  • {p['prod_name'][:20]} × {p.get('qty_wanted', 1)}" for p in non_preorder_items
+                (f"  • {p['prod_name'][:20]} × {p.get('qty_wanted')}"
+                 if p.get("qty_wanted") else f"  • {p['prod_name'][:20]}")
+                for p in non_preorder_items
             )
             # 如果還有預購品，加提示
             po_note = ""
@@ -2904,15 +2906,23 @@ async def _check_restock_notifications():
                 qty = result.get("qty") if result else None
                 balance = result.get("balance") or 0 if result else 0
                 unfilled = result.get("unfilled") or 0 if result else 0
-                # 條件1: 可售>0 || 條件2: 可售=0 但倉庫有貨且全部被訂單佔住（balance>0 且 balance==unfilled）
-                _should_notify = (qty and qty > 0) or (qty == 0 and balance > 0 and balance == unfilled)
+                source = record.get("source", "customer")
+                qty_wanted = record.get("qty_wanted", 1)
+                _has_actual_stock = bool(qty and qty > 0)             # 條件 1：可售 > 0
+                _stock_arrived_taken = (qty == 0 and balance > 0 and balance == unfilled)  # 條件 2：到貨但全被訂走
+                # 「無數量純通知」客戶（邀請語氣）→ 只在條件 1（真的有現貨可買）才通知
+                #   避免條件 2 跟客戶說「有貨」結果根本買不到
+                # 「有數量訂購」客戶（訂購語氣）→ 條件 1 or 2 都通知（隊伍中應收到）
+                _is_invitation = (source != "staff") or (not qty_wanted)
+                if _is_invitation:
+                    _should_notify = _has_actual_stock
+                else:
+                    _should_notify = _has_actual_stock or _stock_arrived_taken
                 if _should_notify:
-                    source = record.get("source", "customer")
-                    qty_wanted = record.get("qty_wanted", 1)
 
-                    if source == "staff":
-                        # 內部群登記：用訂購格式通知
-                        # 換算箱數顯示
+                    qty_display = ""  # ecount-only 分支也會用到
+                    if source == "staff" and qty_wanted:
+                        # 內部群代登且有指定數量 → 用「您之前訂的貨已經到了」訂購語氣
                         item = ecount_client.get_product_cache_item(record["prod_code"])
                         box_qty = (item.get("box_qty") or 0) if item else 0
                         prod_unit = (item.get("unit") or "") if item else ""
@@ -2925,7 +2935,7 @@ async def _check_restock_notifications():
                             f"{record['prod_name']}（{record['prod_code']}）× {qty_display}"
                         )
                     else:
-                        # 客戶自己登記：用原本的到貨通知格式
+                        # 客戶自己登記 OR 內部群代登無數量（純到貨通知）→ 邀請語氣
                         msg = tone.restock_back_in_stock(
                             name=record["prod_name"],
                             code=record["prod_code"],
@@ -2938,10 +2948,12 @@ async def _check_restock_notifications():
                         # 無 LINE ID → 推到內部群
                         _target_uid = settings.LINE_GROUP_ID
                         _cust_name = record["user_id"].replace("ecount:", "")
+                        _q = qty_display if source == "staff" else (qty_wanted or 0)
+                        _q_suffix = f" × {_q}" if _q else ""
                         msg = (
                             f"📬 到貨通知\n"
                             f"客戶：{_cust_name}\n"
-                            f"{record['prod_name']}（{record['prod_code']}）× {qty_display if source == 'staff' else qty_wanted}"
+                            f"{record['prod_name']}（{record['prod_code']}）{_q_suffix}"
                         )
 
                     if _push_quota_exhausted:
