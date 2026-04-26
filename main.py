@@ -2252,6 +2252,25 @@ async def _refresh_data_loop():
             print(f"[scheduler] 資料庫刷新失敗: {e}")
 
 
+async def _competitor_sync_loop():
+    """每天 01:00 同步 dingshang.com.tw + 產出 Excel 對比表到 資料/"""
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=1, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
+        try:
+            from scripts.competitor_dingshang_sync import sync as _ds_sync
+            result = await asyncio.to_thread(_ds_sync, True)
+            print(f"[competitor-sync] dingshang 完成 total={result['total']} new={len(result['new_pids'])} updated={result['updated']}", flush=True)
+            from scripts.competitor_dingshang_to_excel import _build as _ds_excel
+            out_file = await asyncio.to_thread(_ds_excel)
+            print(f"[competitor-sync] Excel 已輸出：{out_file}", flush=True)
+        except Exception as e:
+            print(f"[competitor-sync] 失敗: {e}", flush=True)
+
+
 async def _process_queued_messages():
     """處理離峰佇列中所有未處理的訊息（使用 push_message 補發回覆）"""
     msgs = queue_store.get_unprocessed()
@@ -3020,6 +3039,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(_cart_cleanup_loop())
     asyncio.create_task(_pickup_notify_loop())
     asyncio.create_task(_rebate_notify_loop())
+    asyncio.create_task(_competitor_sync_loop())
     # 離峰佇列已停用
     yield
     # ── shutdown：持久化未處理的文字 buffer ──
