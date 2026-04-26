@@ -6826,9 +6826,19 @@ def _dispatch(
         # 含貨號 → 可能是客戶貼 PO 文問庫存，不當台型查詢
         if _PROD_CODE_RE.search(text):
             return handle_inventory(user_id, text, line_api)
-        # 娃娃機尺寸詢問 → 靜默記錄，不回覆客戶
+        # 嘗試識別「需要中巨貨」「K霸 300 內」這類推薦請求 → 主動列現貨
+        from handlers.service import extract_machine_type_loose, extract_budget, handle_machine_recommend
+        _mt = extract_machine_type_loose(text)
+        if _mt:
+            _budget = extract_budget(text)
+            _reply = handle_machine_recommend(user_id, _mt, _budget, line_api)
+            if _reply:
+                # 同步登 issue 讓真人也能看到（但不阻塞回覆）
+                issue_store.add(user_id, "machine_size", f"{text}（已自動列{_mt}{f' {_budget}內' if _budget else ''}現貨）")
+                return _reply
+        # 看不出台型 → 登 issue + 短 ack（避免客戶以為訊息沒到）
         issue_store.add(user_id, "machine_size", text)
-        return None
+        return "收到～小編幫您看一下適合的，馬上來"
     elif intent == Intent.VISIT_STORE:
         # 優先用 real_name（客戶提供的真實姓名），否則用 LINE 顯示名稱
         _cust = customer_store.get_by_line_id(user_id)

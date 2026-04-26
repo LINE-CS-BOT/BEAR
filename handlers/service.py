@@ -116,6 +116,111 @@ _MACHINE_QUERY_KEYWORDS = [
     "介紹", "哪些", "什麼好", "找一下", "看一下",
 ]
 
+# 推薦觸發語：「需要 X 貨」「我要 X 的」「給我 X」這類請求語
+_MACHINE_RECOMMEND_PREFIXES = [
+    "需要", "想要", "我要", "給我", "找", "幫我找", "有沒有",
+]
+
+
+def extract_machine_type_loose(text: str) -> str | None:
+    """從訊息抓台型（不要求「主動詢問語」）。用於主動推薦場景。
+    例：「需要中巨貨」「我要 K 霸的」「巨無霸 300 內」都能命中。
+    """
+    if not text:
+        return None
+    # 按關鍵字長度降冪，避免「小K霸」被「K霸」攔截
+    for kw in sorted(_MACHINE_KEYWORDS.keys(), key=len, reverse=True):
+        if kw in text:
+            return _MACHINE_KEYWORDS[kw]
+    return None
+
+
+_BUDGET_RE = re.compile(
+    r"(\d{2,4})\s*(?:元|塊|圓)?\s*(?:內|以內|以下|左右|底|以)",
+)
+
+
+def extract_budget(text: str) -> int | None:
+    """從訊息抓預算數字。支援：「300內」「200元以下」「500以內」。"""
+    if not text:
+        return None
+    m = _BUDGET_RE.search(text)
+    if not m:
+        return None
+    try:
+        n = int(m.group(1))
+    except ValueError:
+        return None
+    # 排除過小（可能是時間/數量）或過大（不合理）
+    if n < 30 or n > 5000:
+        return None
+    return n
+
+
+def _spec_price_int(spec: dict) -> int | None:
+    """從 spec 的 price 欄位抓出整數價格"""
+    p = spec.get("price", "")
+    if not p:
+        return None
+    m = re.search(r"\d+", str(p))
+    return int(m.group()) if m else None
+
+
+def handle_machine_recommend(
+    user_id: str, machine_type: str, budget: int | None, line_api: MessagingApi
+) -> str | None:
+    """
+    主動推薦：給定台型 + 可選預算 → 列出有現貨的產品（top 10）。
+    格式：貨號 + 品名 + 價格（不顯示庫存數，符合 feedback_no_stock_qty）。
+    """
+    from services.ecount import ecount_client
+
+    all_specs = spec_store.get_by_machine(machine_type)
+    if not all_specs:
+        return f"目前沒有{machine_type}的產品資料唷～"
+
+    # 過濾：有庫存 + 預算內
+    candidates: list[tuple[dict, int]] = []
+    for sp in all_specs:
+        code = sp.get("code", "")
+        item = ecount_client.lookup(code)
+        qty = item.get("qty", 0) if item else 0
+        if qty <= 0:
+            continue
+        price = _spec_price_int(sp)
+        if budget is not None:
+            if price is None or price > budget:
+                continue
+        candidates.append((sp, qty))
+
+    if not candidates:
+        if budget:
+            return f"目前{machine_type} {budget}元以內的現貨剛好都沒有耶～有別的預算嗎？"
+        return f"目前{machine_type}剛好都缺貨耶～有別的台型嗎？"
+
+    # 排序：價格低 → 高（讓便宜的優先），同價按 qty 降冪當 tiebreak
+    def _sort_key(t):
+        sp, qty = t
+        return (_spec_price_int(sp) or 99999, -qty)
+    candidates.sort(key=_sort_key)
+
+    total = len(candidates)
+    show = candidates[:10]
+
+    title = f"🎯 {machine_type}" + (f" / {budget}元內" if budget else "") + " 現貨："
+    lines = [title]
+    for sp, _qty in show:
+        code = sp.get("code", "")
+        name = sp.get("name", "")[:20]
+        price = _spec_price_int(sp)
+        price_s = f"  ${price}" if price else ""
+        lines.append(f"• {code} {name}{price_s}")
+    if total > 10:
+        lines.append(f"（共 {total} 件，先列前 10 件）")
+    lines.append("")
+    lines.append("需要哪款跟小編說貨號就好🙏")
+    return "\n".join(lines)
+
 
 def detect_machine_query(text: str) -> str | None:
     """從訊息中偵測台型查詢，回傳正規化台型名稱（或 None）。
