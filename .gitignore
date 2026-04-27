@@ -1,8 +1,11 @@
 # 環境變數（重要！不能上傳）
 .env
 
-# Chrome 瀏覽器資料（Playwright）
+# Chrome 瀏覽器資料（Playwright / 含 cookies / login data，絕不能上傳）
 data/chrome_ecount_session/
+data/gemini_chrome_session/
+data/ecount_chrome_session/
+data/line_chrome_session/
 
 # 資料庫
 data/*.db
