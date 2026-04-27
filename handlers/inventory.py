@@ -260,6 +260,41 @@ def query_product(user_id: str, product: str, line_api: MessagingApi = None) -> 
 
     all_codes = ecount_client.search_products_by_name(product)
 
+    # 整段搜不到 → 拆 keyword 各別搜（如「野獸國 魯斯佛 跟 洪金寶」拆成三段各搜）
+    if not all_codes:
+        _STOP = {"請問", "還有", "有貨", "有沒", "有嗎", "有貨嗎", "嗎", "呢",
+                 "請", "問", "可以", "可不可以", "可訂", "能訂",
+                 "新北", "土城", "店", "謝謝", "感謝"}
+        _STRIP_PREFIXES = ("請問", "我要", "想要", "要訂", "想訂", "請")
+        _STRIP_SUFFIXES = ("嗎", "呢", "沒", "唷", "喔", "哦")
+        raw_tokens = [t.strip() for t in re.split(r'[\s、，,。和跟與同或還有]+', product) if t.strip()]
+        tokens = []
+        for tok in raw_tokens:
+            for pfx in _STRIP_PREFIXES:
+                if tok.startswith(pfx):
+                    tok = tok[len(pfx):]
+                    break
+            for sfx in _STRIP_SUFFIXES:
+                if tok.endswith(sfx):
+                    tok = tok[:-len(sfx)]
+                    break
+            if len(tok) >= 2 and tok not in _STOP:
+                tokens.append(tok)
+        # 排序：narrower (字數多) 在前，避免「野獸國」這類太廣 token 擠壓具體名稱
+        tokens.sort(key=lambda t: -len(t))
+        merged: list[str] = []
+        # 先預跑找 narrow tokens（hits ≤15）
+        token_hits = [(tok, ecount_client.search_products_by_name(tok)) for tok in tokens]
+        narrow = [(tok, hits) for tok, hits in token_hits if 0 < len(hits) <= 15]
+        # 有 narrow 命中就只用 narrow 結果（如「野獸國 魯斯佛」會選「魯斯佛」1 筆）
+        # 否則 fallback 到所有結果
+        chosen = narrow if narrow else token_hits
+        for tok, hits in chosen:
+            for c in hits:
+                if c not in merged:
+                    merged.append(c)
+        all_codes = merged
+
     if not all_codes:
         pending_store.add(user_id, product)
         return tone.product_not_found(product)
