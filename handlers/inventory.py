@@ -250,6 +250,13 @@ def _query_multi_products(codes: list[str]) -> str:
 
 def query_product(user_id: str, product: str, line_api: MessagingApi = None) -> str:
     """查詢特定產品庫存並處理結果（多筆匹配只列有貨款式）"""
+    # 先抽貨號（避免客戶 quote 整段 PO 文時找不到）
+    _code_m = re.search(r"[A-Za-z]\d{3,}(?:-\d+)?", product)
+    if _code_m:
+        _direct_code = _code_m.group(0).upper()
+        _direct_item = ecount_client.lookup(_direct_code)
+        if _direct_item:
+            return _query_single_product(user_id, _direct_code, line_api)
 
     all_codes = ecount_client.search_products_by_name(product)
 
